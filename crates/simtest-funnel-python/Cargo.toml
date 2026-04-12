@@ -12,5 +12,5 @@ simtest-funnel-core = { path = "../simtest-funnel-core" }
 pyo3 = { version = "0.24", features = ["extension-module"] }
 
 [lib]
-name = "_simtest_funnel"
+name = "simtest_funnel"
 crate-type = ["cdylib"]

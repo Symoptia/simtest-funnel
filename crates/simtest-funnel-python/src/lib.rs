@@ -7,7 +7,8 @@ fn compare_py() -> bool {
 }
 
 #[pymodule]
-fn _simtest_funnel(m: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pyo3(name = "_simtest_funnel")]
+fn init_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compare_py, m)?)?;
     Ok(())
 }
