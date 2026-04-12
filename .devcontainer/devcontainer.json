@@ -1,0 +1,43 @@
+{
+  "name": "simtest-funnel",
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile"
+  },
+  "remoteEnv": {
+    "HOST_HOME": "${localEnv:HOME:/home/codespace}",
+    "COPILOT_CONFIG": "${localEnv:COPILOT_CONFIG:/workspaces/simtest-funnel/.copilot}"
+  },
+  "mounts": [
+    "source=/snap,target=/snap,type=bind",
+    "source=${localEnv:HOME:/home/codespace},target=${localEnv:HOME:/home/codespace},type=bind",
+    "source=/mnt,target=/mnt,type=bind"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "username": "vscode"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "ms-python.vscode-pylance",
+        "GitHub.copilot",
+        "mhutchie.git-graph"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "jupyter.notebookFileRoot": "${workspaceFolder}",
+        "files.associations": {
+          "*.py": "python"
+        }
+      }
+    }
+  },
+  "initializeCommand": "bash .devcontainer/initializeCommand.sh",
+  "postCreateCommand": "bash .devcontainer/install-project-deps.sh",
+  "remoteUser": "vscode"
+}
