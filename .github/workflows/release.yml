@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    branches: [main, beta]
+
+jobs:
+  semantic-release:
+    runs-on: ubuntu-latest
+    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      new_release_version: ${{ steps.sr.outputs.new_release_version }}
+      new_release_published: ${{ steps.sr.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+      - run: npm install -g semantic-release @semantic-release/changelog
+              @semantic-release/git @semantic-release/exec @semantic-release/npm
+      - id: sr
+        run: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.semantic-release.outputs.new_release_version }}
+      - run: |
+          cd crates/simtest-funnel-python
+          maturin build --release
+      - run: pip install twine &&
+              twine upload --non-interactive
+              crates/simtest-funnel-python/target/wheels/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-crate:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.semantic-release.outputs.new_release_version }}
+      - run: cargo publish -p simtest-funnel-core
+              --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-docs:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - run: cargo doc --no-deps --workspace
+      - run: wrangler pages deploy target/doc
+              --project-name simtest-funnel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
