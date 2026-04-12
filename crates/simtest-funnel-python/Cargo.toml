@@ -1,0 +1,16 @@
+[package]
+name = "simtest-funnel-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Python bindings for simtest-funnel (PyO3 + maturin)"
+
+[dependencies]
+simtest-funnel-core = { path = "../simtest-funnel-core" }
+pyo3 = { version = "0.24", features = ["extension-module"] }
+
+[lib]
+name = "_simtest_funnel"
+crate-type = ["cdylib"]
