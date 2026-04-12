@@ -1,42 +1,18 @@
-# EXAMPLE USAGE:
-#
-#   Refer for explanation to following link:
-#   https://lefthook.dev/configuration/
-#
-# pre-push:
-#   jobs:
-#     - name: packages audit
-#       tags:
-#         - frontend
-#         - security
-#       run: yarn audit
-#
-#     - name: gems audit
-#       tags:
-#         - backend
-#         - security
-#       run: bundle audit
-#
-# pre-commit:
-#   parallel: true
-#   jobs:
-#     - run: yarn eslint {staged_files}
-#       glob: "*.{js,ts,jsx,tsx}"
-#
-#     - name: rubocop
-#       glob: "*.rb"
-#       exclude:
-#         - config/application.rb
-#         - config/routes.rb
-#       run: bundle exec rubocop --force-exclusion -- {all_files}
-#
-#     - name: govet
-#       files: git ls-files -m
-#       glob: "*.go"
-#       run: go vet -- {files}
-#
-#     - script: "hello.js"
-#       runner: node
-#
-#     - script: "hello.go"
-#       runner: go run
+pre-commit:
+  commands:
+    lint:
+      glob: "*.{rs,ts,tsx,js}"
+      run: make lint
+
+commit-msg:
+  commands:
+    conventional-commits:
+      run: |
+        msg=$(cat {1})
+        pattern='^(feat|fix|docs|style|refactor|perf|test|chore|ci)(\(.+\))?!?: .+'
+        if ! echo "$msg" | grep -qE "$pattern"; then
+          echo "ERROR: Commit message must follow Conventional Commits format."
+          echo "Format: <type>(<scope>): <subject>"
+          echo "Example: feat(core): add compare function"
+          exit 1
+        fi
