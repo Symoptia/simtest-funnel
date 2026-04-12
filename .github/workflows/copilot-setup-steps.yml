@@ -28,6 +28,25 @@ jobs:
       - name: Install system dependencies
         run: sudo bash .devcontainer/install-system-deps.sh
 
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Install Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install pnpm 9
+        uses: pnpm/action-setup@v5
+        with:
+          version: '9'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:

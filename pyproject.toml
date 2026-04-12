@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-v"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[dependency-groups]
+dev = ["pytest>=8.0", "mypy>=1.8"]

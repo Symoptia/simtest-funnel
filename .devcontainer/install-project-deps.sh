@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install project-level Python dependencies for simtest-funnel.
+# Install project-level dependencies for simtest-funnel.
 # Used by both the devcontainer postCreateCommand and copilot-setup-steps workflow.
 set -euo pipefail
 
@@ -9,4 +9,6 @@ ln -sfn "${HOST_HOME}"/.ssh /home/vscode/.ssh
 ln -sfn "${COPILOT_CONFIG}" /home/vscode/.copilot
 
 uv sync
+pnpm install --frozen-lockfile || pnpm install
+lefthook install
 
