@@ -11,8 +11,8 @@ jobs:
       contents: write
       id-token: write
     outputs:
-      new_release_version: ${{ steps.sr.outputs.new_release_version }}
-      new_release_published: ${{ steps.sr.outputs.new_release_published }}
+      new_release_version: ${{ steps.check-release.outputs.new_release_version }}
+      new_release_published: ${{ steps.check-release.outputs.new_release_published }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -23,11 +23,16 @@ jobs:
           node-version: 22
       - run: npm install -g semantic-release @semantic-release/changelog
               @semantic-release/git @semantic-release/exec @semantic-release/npm
-      - id: sr
-        run: semantic-release
+      - run: semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - id: check-release
+        run: |
+          if [ -f .release-version ]; then
+            echo "new_release_published=true" >> "$GITHUB_OUTPUT"
+            echo "new_release_version=$(cat .release-version)" >> "$GITHUB_OUTPUT"
+          fi
 
   publish-pypi:
     needs: semantic-release
@@ -36,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.semantic-release.outputs.new_release_version }}
+          ref: v${{ needs.semantic-release.outputs.new_release_version }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -47,7 +52,7 @@ jobs:
           maturin build --release
       - run: pip install twine &&
               twine upload --non-interactive
-              crates/simtest-funnel-python/target/wheels/*
+              target/wheels/*
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -59,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ needs.semantic-release.outputs.new_release_version }}
+          ref: v${{ needs.semantic-release.outputs.new_release_version }}
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo publish -p simtest-funnel-core
               --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

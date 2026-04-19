@@ -8,7 +8,8 @@
     "@semantic-release/release-notes-generator",
     ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
     ["@semantic-release/exec", {
-      "prepareCmd": "sed -i 's/^version = .*/version = \"${nextRelease.version}\"/' Cargo.toml && sed -i 's/^version = .*/version = \"${nextRelease.version}\"/' crates/simtest-funnel-python/pyproject.toml"
+      "prepareCmd": "sed -i 's/^version = .*/version = \"${nextRelease.version}\"/' Cargo.toml && sed -i 's/^version = .*/version = \"${nextRelease.version}\"/' crates/simtest-funnel-python/pyproject.toml",
+      "successCmd": "echo '${nextRelease.version}' > .release-version"
     }],
     ["@semantic-release/git", {
       "assets": [
