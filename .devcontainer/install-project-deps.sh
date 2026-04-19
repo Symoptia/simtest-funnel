@@ -12,5 +12,5 @@ ln -sfn "${COPILOT_CONFIG:-/workspaces/simtest-funnel/.copilot}" /home/vscode/.c
 
 uv sync
 pnpm install --frozen-lockfile || pnpm install
-lefthook install
+lefthook install 2>/dev/null || echo "lefthook not found, skipping hook installation"
 
