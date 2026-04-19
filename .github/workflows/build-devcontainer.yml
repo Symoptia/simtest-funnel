@@ -5,6 +5,10 @@ on:
     branches: [main, beta, develop]
     paths:
       - '.devcontainer/**'
+  pull_request:
+    branches: [main, beta, develop]
+    paths:
+      - '.devcontainer/**'
   workflow_dispatch:
 
 env:

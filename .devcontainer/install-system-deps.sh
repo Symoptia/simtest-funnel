@@ -7,7 +7,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
     build-essential cmake curl gnupg git ca-certificates
 
-pip install uv
+pip install uv "maturin[patchelf]"
 
 apt-get clean
 rm -rf /var/lib/apt/lists/*

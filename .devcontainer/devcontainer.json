@@ -17,7 +17,8 @@
     "ghcr.io/devcontainers/features/common-utils:2": {
       "installZsh": true,
       "username": "vscode"
-    }
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
   },
   "customizations": {
     "vscode": {

@@ -13,36 +13,60 @@ env:
 jobs:
   rust-test:
     runs-on: ubuntu-latest
-    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
   python-test:
     runs-on: ubuntu-latest
-    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: |
-          cd crates/simtest-funnel-python && python -m maturin develop --uv
-          cd /workspaces/simtest-funnel && uv run python -m pytest tests/python/ -v
+      - run: pip install uv "maturin[patchelf]"
+      - run: uv sync
+      - run: cd crates/simtest-funnel-python && maturin develop --uv
+      - run: uv run python -m pytest tests/python/ -v
 
   js-test:
     runs-on: ubuntu-latest
-    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
       - run: |
           wasm-pack build --target bundler crates/simtest-funnel-wasm --out-dir ../../packages/sdk/src/wasm
           cd packages/sdk && pnpm install && pnpm test
 
   lint:
     runs-on: ubuntu-latest
-    container: ghcr.io/symoptia/simtest-funnel-devcontainer:latest
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: cd packages/sdk && pnpm install
       - run: make lint
