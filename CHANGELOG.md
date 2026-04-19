@@ -1,3 +1,10 @@
+# [1.0.0-beta.3](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.2...v1.0.0-beta.3) (2026-04-19)
+
+
+### Bug Fixes
+
+* **ci:** wire semantic-release outputs to publish jobs ([8453a69](https://github.com/Symoptia/simtest-funnel/commit/8453a69ecf53dc2c68e509bc3147597b2f861dc1))
+
 # [1.0.0-beta.2](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.1...v1.0.0-beta.2) (2026-04-19)
 
 
