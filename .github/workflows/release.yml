@@ -81,6 +81,7 @@ jobs:
           node-version: 22
       - run: npm install -g wrangler@latest
       - run: cargo doc --no-deps --workspace
+      - run: cp docs/index.html target/doc/index.html
       - run: wrangler pages deploy target/doc
               --project-name simtest-funnel
         env:
