@@ -1,3 +1,10 @@
+# [1.0.0-beta.4](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2026-04-19)
+
+
+### Bug Fixes
+
+* **docs:** add API documentation and index page for docs site ([8c2cba3](https://github.com/Symoptia/simtest-funnel/commit/8c2cba3c3c2e57f5dacaf7d42715b51a20aa06e9))
+
 # [1.0.0-beta.3](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.2...v1.0.0-beta.3) (2026-04-19)
 
 
