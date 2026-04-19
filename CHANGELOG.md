@@ -1,3 +1,10 @@
+# [1.0.0-beta.2](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.1...v1.0.0-beta.2) (2026-04-19)
+
+
+### Features
+
+* **core:** add version() function across all bindings ([fb9351a](https://github.com/Symoptia/simtest-funnel/commit/fb9351aa4726634b5884dd88a1768f80a3aac739))
+
 # 1.0.0-beta.1 (2026-04-19)
 
 
