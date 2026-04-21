@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/simtest-funnel-core",
+  "crates/simtest-funnel-cli",
   "crates/simtest-funnel-python",
   "crates/simtest-funnel-wasm",
 ]

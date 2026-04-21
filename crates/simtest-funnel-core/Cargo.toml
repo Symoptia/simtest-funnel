@@ -7,4 +7,10 @@ authors.workspace = true
 repository.workspace = true
 description = "Core trajectory comparison library (Rust)"
 
+[features]
+default = []
+json = ["dep:serde", "dep:serde_json"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
