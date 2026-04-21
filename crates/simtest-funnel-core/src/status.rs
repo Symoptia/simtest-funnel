@@ -2,7 +2,7 @@
 //!
 //! See plan `scratch/02-base-algorithm.md` §3.2.1.
 
-/// Unified status returned by [`crate::compare`] and [`crate::compare_into`].
+/// Unified status returned by [`crate::compare()`] and [`crate::compare_into`].
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
