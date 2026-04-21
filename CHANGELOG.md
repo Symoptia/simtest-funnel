@@ -1,3 +1,10 @@
+# [1.0.0-beta.5](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.4...v1.0.0-beta.5) (2026-04-21)
+
+
+### Features
+
+* implement Funnel trajectory comparison algorithm ([540dca8](https://github.com/Symoptia/simtest-funnel/commit/540dca87777076dc2af43920a5409cbabd89da60)), closes [hi#level](https://github.com/hi/issues/level)
+
 # [1.0.0-beta.4](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.3...v1.0.0-beta.4) (2026-04-19)
 
 
