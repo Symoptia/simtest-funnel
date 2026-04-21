@@ -4,6 +4,7 @@ node_modules/
 scratch/
 .pnpm-store/
 target/
+target/doc/
 __pycache__/
 *.so
 *.pyc
