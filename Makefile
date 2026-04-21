@@ -7,6 +7,7 @@ help:  ## Show this help message (all targets, alphabetical)
 
 build:  ## Build Rust workspace + maturin develop + pnpm build
 	cargo build --workspace
+	cargo build -p simtest-funnel-cli --release
 	cd crates/simtest-funnel-python && python -m maturin develop --uv
 	cd packages/sdk && pnpm run build
 
@@ -31,7 +32,7 @@ lint-js:  ## Biome check (JavaScript/TypeScript)
 	cd packages/sdk && pnpm lint
 
 lint-rust:  ## Clippy + cargo fmt check
-	cargo clippy --workspace -- -D warnings
+	cargo clippy --workspace --all-targets --features simtest-funnel-core/json -- -D warnings
 	cargo fmt --all -- --check
 
 test: test-rust test-python test-js  ## Run all three language test suites
@@ -44,4 +45,4 @@ test-python:  ## pytest tests/python/
 	uv run python -m pytest tests/python/ -v
 
 test-rust:  ## cargo test --workspace
-	cargo test --workspace
+	cargo test --workspace --features simtest-funnel-core/json

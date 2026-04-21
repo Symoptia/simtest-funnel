@@ -10,6 +10,7 @@ description = "Python bindings for simtest-funnel (PyO3 + maturin)"
 [dependencies]
 simtest-funnel-core = { path = "../simtest-funnel-core" }
 pyo3 = { version = "0.24", features = ["extension-module"] }
+numpy = "0.24"
 
 [lib]
 name = "simtest_funnel"

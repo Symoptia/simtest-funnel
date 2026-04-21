@@ -148,6 +148,16 @@ When adding a new function:
 
 ---
 
+## Agent Rules
+
+- Agents MUST use the GitHub CLI (`gh`) as necessary and MUST NOT defer
+  GitHub actions (creating issues, PRs, managing secrets, etc.) to
+  interactive or manual steps.
+- Agents MUST ensure all linters pass (`make lint`) after any code change
+  before committing or considering a task complete.
+
+---
+
 ## Conventional Commits
 
 All commits must follow [Conventional Commits](https://www.conventionalcommits.org/).
