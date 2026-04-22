@@ -181,28 +181,57 @@ fn empty_result(status: Status) -> CompareResult {
     }
 }
 
+/// Classify the outcome of a comparison.
+///
+/// Implements Plan 02 §3.3 step 7:
+///
+/// 1. Any non-zero deviation `ey[j]` at a test point whose
+///    `t_test[j]` lies in the effective x-range `[eff_lo, eff_hi]`
+///    yields [`Status::Fail`]. `Fail` takes precedence over any
+///    range asymmetry (Plan 02 Q2 / Plan 02.1 §10 Q7).
+/// 2. Otherwise, if the test trajectory extends beyond the reference
+///    x-range by more than `eps`, return [`Status::MissingReference`].
+/// 3. Otherwise, if the reference trajectory extends beyond the test
+///    x-range by more than `eps`, return [`Status::MissingTest`].
+/// 4. Otherwise, [`Status::Pass`].
+///
+/// `eps = 1e-12 * max(|t_ref_max|, |t_test_max|)` guards the range
+/// comparisons against floating-point noise when the inputs share
+/// identical endpoints.
 fn classify_status(
-    _t_ref: &[f64],
-    _t_test: &[f64],
+    t_ref: &[f64],
+    t_test: &[f64],
     _ex: &[f64],
     ey: &[f64],
-    _eff_lo: f64,
-    _eff_hi: f64,
+    eff_lo: f64,
+    eff_hi: f64,
 ) -> Status {
-    // Match the C reference: status is driven solely by the errors
-    // array. Any nonzero deviation (at any x, including test points
-    // that land beyond the reference range and are scored against the
-    // clamped bound) is a Fail; otherwise Pass.
-    //
-    // The `MissingReference` / `MissingTest` variants in `Status`
-    // remain available for higher-level callers (e.g. the Python
-    // DataFrame wrapper) that want to flag range mismatches
-    // explicitly, but the core comparison never returns them.
-    for &e in ey {
+    // 1. Fail wins: any non-zero deviation inside the effective range.
+    for (j, &e) in ey.iter().enumerate() {
         if e != 0.0 {
-            return Status::Fail;
+            let x = t_test[j];
+            if x >= eff_lo && x <= eff_hi {
+                return Status::Fail;
+            }
         }
     }
+
+    // 2/3. Range-asymmetry checks.
+    let (Some(&tr_lo), Some(&tr_hi)) = (t_ref.first(), t_ref.last()) else {
+        return Status::Pass;
+    };
+    let (Some(&tt_lo), Some(&tt_hi)) = (t_test.first(), t_test.last()) else {
+        return Status::Pass;
+    };
+    let eps = 1e-12 * tr_hi.abs().max(tt_hi.abs());
+
+    if tt_hi > tr_hi + eps || tt_lo < tr_lo - eps {
+        return Status::MissingReference;
+    }
+    if tr_hi > tt_hi + eps || tr_lo < tt_lo - eps {
+        return Status::MissingTest;
+    }
+
     Status::Pass
 }
 
@@ -247,28 +276,66 @@ mod tests {
 
     #[test]
     fn status_missing_reference() {
-        // Test extends beyond reference x-range; the clamped bound
-        // value at the endpoint matches the interpolated test y
-        // exactly so no Fail is raised — the implementation keeps
-        // parity with the C reference, which simply reports Pass in
-        // this scenario. Higher-level callers can opt in to range
-        // enforcement with a dedicated check.
+        // Test extends beyond reference x-range; no out-of-tube
+        // points inside the common range → MissingReference.
         let t = [1.0, 2.0, 3.0];
         let y = [1.0, 2.0, 3.0];
         let tt = [0.0, 1.0, 2.0, 3.0, 4.0];
         let yt = [0.5, 1.0, 2.0, 3.0, 3.5];
         let r = compare(&t, &y, &tt, &yt, &opts_loose());
-        assert_eq!(r.status, Status::Pass);
+        assert_eq!(r.status, Status::MissingReference);
     }
 
     #[test]
     fn status_missing_test() {
-        // Reference extends beyond test x-range; same rationale as
-        // above — status is Pass, not MissingTest.
+        // Reference extends beyond test x-range; no out-of-tube
+        // points inside the common range → MissingTest.
         let t = [0.0, 1.0, 2.0, 3.0, 4.0];
         let y = [0.0, 1.0, 2.0, 3.0, 4.0];
         let tt = [1.0, 2.0, 3.0];
         let yt = [1.0, 2.0, 3.0];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::MissingTest);
+    }
+
+    #[test]
+    fn classify_fail_wins_over_range_mismatch() {
+        // Test extends beyond reference AND has an out-of-tube point
+        // inside the common range. Fail wins (Plan 02 §3.3 step 7).
+        let t = [1.0, 2.0, 3.0];
+        let y = [1.0, 2.0, 3.0];
+        let tt = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let yt = [0.5, 10.0, 10.0, 10.0, 3.5];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::Fail);
+    }
+
+    #[test]
+    fn classify_missing_reference_simple() {
+        let t = [0.0, 1.0];
+        let y = [0.0, 0.0];
+        let tt = [0.0, 1.0, 2.0];
+        let yt = [0.0, 0.0, 0.0];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::MissingReference);
+    }
+
+    #[test]
+    fn classify_missing_test_simple() {
+        let t = [0.0, 1.0, 2.0];
+        let y = [0.0, 0.0, 0.0];
+        let tt = [0.0, 1.0];
+        let yt = [0.0, 0.0];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::MissingTest);
+    }
+
+    #[test]
+    fn classify_pass_when_ranges_align() {
+        let t = [0.0, 1.0, 2.0];
+        let y = [0.0, 0.0, 0.0];
+        let tt = [0.0, 1.0, 2.0];
+        let yt = [0.0, 0.0, 0.0];
         let r = compare(&t, &y, &tt, &yt, &opts_loose());
         assert_eq!(r.status, Status::Pass);
     }

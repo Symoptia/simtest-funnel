@@ -44,15 +44,43 @@ fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus")
 }
 
-fn expected_status_from_c_errors(c_err_y: &[f64]) -> Status {
-    // C emits magnitudes; any nonzero (above fp noise) means the test
-    // point was outside the funnel, i.e. Fail.
-    let any_nonzero = c_err_y.iter().any(|v| v.abs() > 1e-15);
-    if any_nonzero {
-        Status::Fail
-    } else {
-        Status::Pass
+fn expected_status_from_c_errors(
+    c_err_x: &[f64],
+    c_err_y: &[f64],
+    t_ref: &[f64],
+    t_test: &[f64],
+) -> Status {
+    // Mirror `classify_status` (Plan 02 §3.3 step 7) against the
+    // C reference output. The C harness emits error magnitudes on
+    // the test x-grid; a non-zero value *inside the common
+    // reference x-range* indicates Fail. Outside that range, Rust
+    // clamps bounds and reports MissingReference/MissingTest via
+    // range asymmetry, so we must not use out-of-range C errors to
+    // infer a Fail.
+    let (tr_lo, tr_hi) = match (t_ref.first(), t_ref.last()) {
+        (Some(&a), Some(&b)) => (a, b),
+        _ => return Status::Pass,
+    };
+    let (tt_lo, tt_hi) = match (t_test.first(), t_test.last()) {
+        (Some(&a), Some(&b)) => (a, b),
+        _ => return Status::Pass,
+    };
+    let eps = 1e-12 * tr_hi.abs().max(tt_hi.abs());
+    let in_common = |x: f64| x >= tr_lo - eps && x <= tr_hi + eps;
+    let any_nonzero_in_common = c_err_x
+        .iter()
+        .zip(c_err_y.iter())
+        .any(|(&x, &v)| in_common(x) && v.abs() > 1e-15);
+    if any_nonzero_in_common {
+        return Status::Fail;
     }
+    if tt_hi > tr_hi + eps || tt_lo < tr_lo - eps {
+        return Status::MissingReference;
+    }
+    if tr_hi > tt_hi + eps || tr_lo < tt_lo - eps {
+        return Status::MissingTest;
+    }
+    Status::Pass
 }
 
 fn lerp(src_x: &[f64], src_y: &[f64], x: f64) -> f64 {
@@ -196,7 +224,7 @@ fn run_case(case: &str) -> Result<(), String> {
     let (cex, cey) = read_xy_csv(&results_dir.join("errors.csv"))
         .map_err(|e| format!("{case}: read C errors: {e}"))?;
 
-    let exp = expected_status_from_c_errors(&cey);
+    let exp = expected_status_from_c_errors(&cex, &cey, &t_ref, &t_test);
     if r.status != exp {
         return Err(format!(
             "{case}: status {:?}, expected {exp:?} (from C errors.csv)",
