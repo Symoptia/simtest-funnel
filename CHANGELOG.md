@@ -1,3 +1,20 @@
+# Unreleased
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `errors.csv` now contains **signed** deviations (positive
+  above the upper bound, negative below the lower bound) instead of
+  magnitudes. To restore LBNL-Funnel parity, apply `abs()` to the `y`
+  column in consumer scripts.
+
+### Bug Fixes
+
+* **core:** restore range-asymmetry `Status` classification so that
+  `MissingReference` / `MissingTest` are reachable from `compare`
+  (Plan 02 §3.3 step 7).
+* **cli:** emit signed errors and document the LBNL `errors.csv`
+  format divergence.
+
 # [1.0.0-beta.5](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.4...v1.0.0-beta.5) (2026-04-21)
 
 
