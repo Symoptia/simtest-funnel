@@ -15,6 +15,15 @@
 * **cli:** emit signed errors and document the LBNL `errors.csv`
   format divergence.
 
+### Tests
+
+* **core:** corpus parity harness now enforces the Plan 02 §7.2
+  tolerance (`max(1e-12, 1e-9 × max(|a|,|b|))`) on the error arrays
+  (worst observed drift `~2e-14`). Bound-array parity continues to
+  use a documented looser envelope
+  (`max(1e-8, 1e-6 × max(|a|,|b|))`) pending a corner-algorithm
+  `equ`-threshold fix; see plan 02.1 §10 Q1 for the follow-up.
+
 # [1.0.0-beta.5](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.4...v1.0.0-beta.5) (2026-04-21)
 
 
