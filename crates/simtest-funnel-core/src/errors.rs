@@ -1,19 +1,20 @@
 //! Error array computation: linearly interpolate lower/upper onto
 //! test x-points and record signed deviations outside the tube.
 //!
-//! Port of the interpolation + compare logic from
-//! [tube.c](/home/iakovn/projects/funnel/src/tube.c).
+//! Port of the interpolation + compare logic from the LBNL Funnel C
+//! reference (`src/tube.c`, see
+//! <https://github.com/lbl-srg/funnel>).
 
-/// Linearly interpolate a (source_x, source_y) curve onto `target_x`,
-/// clamping values outside `source_x` to the endpoint y values.
+/// Linearly interpolate a `(source_x, source_y)` curve onto
+/// `target_x`, clamping values outside `source_x` to the endpoint
+/// `y` values.
 ///
-/// Matches the behaviour of the C reference's error-array loop, which
-/// evaluates errors at every test point — including points past the
-/// end of the reference trajectory — by extending the last bound
-/// value. This intentionally differs from the C's `realloc`-based
-/// implementation, which reads past a shortened buffer (undefined
-/// behaviour); clamping produces the same in-bounds results without
-/// the UB.
+/// This mirrors the C reference's error-array loop, which evaluates
+/// deviations at every test point — including points past the ends
+/// of the reference trajectory. The C code achieves that by reading
+/// past a shortened buffer (undefined behaviour); the Rust port
+/// clamps to the last bound value instead, which produces the same
+/// in-bounds results without the UB.
 fn interpolate_clamped(source_x: &[f64], source_y: &[f64], target_x: &[f64]) -> Vec<f64> {
     debug_assert_eq!(source_x.len(), source_y.len());
     if source_x.is_empty() {
