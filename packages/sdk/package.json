@@ -16,10 +16,12 @@
     "build": "pnpm build:wasm && tsc",
     "test": "vitest run",
     "lint": "biome check .",
-    "format": "biome format . --write"
+    "format": "biome format . --write",
+    "docs": "typedoc src/index.ts --out ../../target/doc/js"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.7.0",
+    "typedoc": "^0.28.0",
     "typescript": "^5.3.0",
     "vite-plugin-wasm": "^3.3.0",
     "vite-plugin-top-level-await": "^1.4.0",

@@ -79,9 +79,23 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
       - run: npm install -g wrangler@latest
+      - run: pip install uv "maturin[patchelf]"
       - run: cargo doc --no-deps --workspace --exclude simtest-funnel-python
       - run: cp docs/index.html target/doc/index.html
+      - name: Build Python API reference (pdoc)
+        run: |
+          uv sync
+          cd crates/simtest-funnel-python && maturin develop --uv
+          cd ../.. && uv run pdoc simtest.funnel -o target/doc/python
+      - name: Build TypeScript API reference (typedoc)
+        run: make docs-js
       - run: wrangler pages deploy target/doc
               --project-name simtest-funnel
         env:
