@@ -24,6 +24,22 @@
   (`max(1e-8, 1e-6 × max(|a|,|b|))`) pending a corner-algorithm
   `equ`-threshold fix; see plan 02.1 §10 Q1 for the follow-up.
 
+### Documentation
+
+* **python:** ship `py.typed` marker and a `_simtest_funnel.pyi`
+  stub so `mypy --strict` works out of the box against
+  `simtest.funnel`. The `compare_dataframes` wrapper now rejects
+  non-numeric time / signal columns with a clear `TypeError`.
+* **site:** publish `pdoc`-generated Python and `typedoc`-generated
+  TypeScript API references under `target/doc/python/` and
+  `target/doc/js/` respectively, deployed alongside the Rust
+  rustdoc site on every release.
+* **readmes:** synchronise the top-level, core, CLI, Python and
+  SDK READMEs with the shipped `Status` enum, signed-error
+  semantics and default tolerances; add a single
+  "Differences from LBNL Funnel" section in the top-level README
+  cross-linked from each crate README.
+
 # [1.0.0-beta.5](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.4...v1.0.0-beta.5) (2026-04-21)
 
 

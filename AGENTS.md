@@ -70,6 +70,8 @@ All targets are defined in the `Makefile`:
 | `make test-rust` | `cargo test --workspace` |
 | `make test-python` | `pytest tests/python/` |
 | `make test-js` | vitest (JavaScript/TypeScript) |
+| `make docs-python` | Build the pdoc Python API reference (`target/doc/python`) |
+| `make docs-js` | Build the typedoc TypeScript API reference (`target/doc/js`) |
 | `make lint` | Run all linters |
 | `make lint-rust` | Clippy + `cargo fmt` check |
 | `make lint-js` | Biome check (JavaScript/TypeScript) |
