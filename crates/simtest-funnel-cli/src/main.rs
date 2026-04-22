@@ -23,10 +23,9 @@ use simtest_funnel_core::{compare, status_message, Options, Range, Status, Toler
     about = "Trajectory funnel comparison CLI.",
     long_about = "Trajectory funnel comparison CLI.\n\n\
         Writes five CSV files into --output: reference.csv, test.csv, \
-        lowerBound.csv, upperBound.csv, and errors.csv. For drop-in \
-        compatibility with the LBNL Funnel C CLI, errors.csv contains \
-        absolute values of the signed deviations that the Rust API \
-        otherwise returns."
+        lowerBound.csv, upperBound.csv, and errors.csv. See the crate \
+        README 'Differences from LBNL Funnel' section — in particular \
+        errors.csv contains *signed* deviations, not magnitudes."
 )]
 struct Args {
     /// JSON file with compare parameters (same shape as
@@ -183,10 +182,15 @@ fn run() -> Result<(Status, PathBuf)> {
         &result.upper.0,
         &result.upper.1,
     )?;
-    // C reference emits magnitudes; replicate that on disk for drop-in
-    // compatibility.
-    let errors_mag: Vec<f64> = result.errors.1.iter().map(|v| v.abs()).collect();
-    write_xy_csv(&r.output.join("errors.csv"), &result.errors.0, &errors_mag)?;
+    // `errors.csv` contains signed deviations (positive above upper
+    // bound, negative below lower bound). This differs from the LBNL
+    // `funnel` CLI, which writes magnitudes. See the crate README
+    // 'Differences from LBNL Funnel' section.
+    write_xy_csv(
+        &r.output.join("errors.csv"),
+        &result.errors.0,
+        &result.errors.1,
+    )?;
 
     Ok((result.status, r.output))
 }

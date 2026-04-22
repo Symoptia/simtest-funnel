@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Command-line trajectory comparison CLI (drop-in replacement for LBNL funnel)"
+readme = "README.md"
 
 [[bin]]
 name = "simtest-funnel"
