@@ -130,6 +130,8 @@ When adding a new function:
 - `cargo clippy -- -D warnings` must pass with zero warnings.
 - `cargo fmt --all` for formatting.
 - All public items must be documented.
+- **MSRV: 1.85.** Declared in `[workspace.package].rust-version` and
+  enforced by a dedicated CI matrix row.
 
 ### Python
 
