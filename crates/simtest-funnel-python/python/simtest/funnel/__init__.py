@@ -12,7 +12,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from simtest.funnel import _simtest_funnel as _ext  # type: ignore[import-untyped]
+from simtest.funnel import _simtest_funnel as _ext
 
 
 class Status(IntEnum):
@@ -127,6 +127,23 @@ def status_message(code: int) -> str:
     return str(_ext.status_message_py(int(code)))
 
 
+def _ensure_numeric(frame: Any, frame_name: str, column: str) -> None:
+    """Raise ``ValueError`` if ``frame[column]`` is not a numeric dtype.
+
+    `compare_dataframes` feeds every column through
+    ``np.asarray(..., dtype=np.float64)``; object / string / categorical
+    columns therefore fail with an opaque numpy coercion error. We
+    surface a clear message instead.
+    """
+    import pandas as pd  # local import to avoid a hard dep at module load
+
+    if not pd.api.types.is_numeric_dtype(frame[column]):
+        dtype = frame[column].dtype
+        raise ValueError(
+            f"column {column!r} in {frame_name} must be numeric, got dtype={dtype}"
+        )
+
+
 def compare_dataframes(
     reference: Any,
     test: Any,
@@ -153,11 +170,15 @@ def compare_dataframes(
         raise ValueError(
             f"first column of test must be '{time_column}', got {tst_cols[0]!r}"
         )
+    _ensure_numeric(reference, "reference", ref_cols[0])
+    _ensure_numeric(test, "test", tst_cols[0])
     t_ref = np.asarray(reference[ref_cols[0]].to_numpy(), dtype=np.float64)
     t_tst = np.asarray(test[tst_cols[0]].to_numpy(), dtype=np.float64)
     out: dict[str, CompareResult] = {}
     common = [c for c in ref_cols[1:] if c in tst_cols[1:]]
     for name in common:
+        _ensure_numeric(reference, "reference", name)
+        _ensure_numeric(test, "test", name)
         opts = overrides.get(name, default_options)
         y_ref = np.asarray(reference[name].to_numpy(), dtype=np.float64)
         y_tst = np.asarray(test[name].to_numpy(), dtype=np.float64)

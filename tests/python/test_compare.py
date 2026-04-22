@@ -125,3 +125,18 @@ def test_compare_dataframes_requires_time_first_column() -> None:
     tst = pd.DataFrame({"time": [0.0, 1.0], "a": [0.0, 1.0]})
     with pytest.raises(ValueError):
         compare_dataframes(ref, tst)
+
+
+def test_compare_dataframes_rejects_non_numeric_column() -> None:
+    t = np.linspace(0.0, 1.0, 5)
+    ref = pd.DataFrame({"time": t, "a": ["x", "y", "z", "w", "v"]})
+    tst = pd.DataFrame({"time": t, "a": ["x", "y", "z", "w", "v"]})
+    with pytest.raises(ValueError, match="must be numeric"):
+        compare_dataframes(ref, tst)
+
+
+def test_compare_dataframes_rejects_non_numeric_time() -> None:
+    ref = pd.DataFrame({"time": ["a", "b", "c"], "a": [0.0, 1.0, 2.0]})
+    tst = pd.DataFrame({"time": ["a", "b", "c"], "a": [0.0, 1.0, 2.0]})
+    with pytest.raises(ValueError, match="must be numeric"):
+        compare_dataframes(ref, tst)
