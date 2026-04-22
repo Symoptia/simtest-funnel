@@ -1,4 +1,4 @@
-.PHONY: build check-secrets clean fmt fmt-js fmt-rust help lint lint-js lint-rust \
+.PHONY: build check-secrets clean docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-rust \
         test test-docs test-js test-python test-rust
 
 help:  ## Show this help message (all targets, alphabetical)
@@ -17,6 +17,13 @@ check-secrets:  ## Validate .env vars and GitHub Secrets are configured
 clean:  ## Remove all build artifacts
 	cargo clean
 	cd packages/sdk && rm -rf dist node_modules src/wasm
+
+docs-python:  ## Generate Python API reference via pdoc
+	cd crates/simtest-funnel-python && python -m maturin develop --uv
+	uv run pdoc simtest.funnel -o target/doc/python
+
+docs-js:  ## Generate TypeScript API reference via typedoc
+	cd packages/sdk && pnpm install && pnpm build:wasm && pnpm docs
 
 fmt: fmt-rust fmt-js  ## Auto-format all code
 

@@ -33,4 +33,5 @@ dev = [
     "mypy>=1.8",
     "pandas-stubs",
     "maturin>=1.13.1",
+    "pdoc>=14",
 ]
