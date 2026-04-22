@@ -102,13 +102,31 @@ fn lerp(src_x: &[f64], src_y: &[f64], x: f64) -> f64 {
     }
 }
 
-/// Per-sample tolerance. Relaxed from the plan's `1e-9` to `1e-6`
-/// because the corner algorithm's `equ` threshold (`1e-10`) can flip
-/// a boundary comparison and re-order corners for large-n cases in
-/// ways that produce bounds differing by `~1e-7` at a few points
-/// while still correctly bounding the signal. The `max(1e-8, ...)`
-/// absolute floor covers values near zero.
-fn tol_eq(a: f64, b: f64) -> bool {
+/// Per-sample tolerance for **error array** parity — tracks the
+/// Plan 02 §7.2 target: `max(1e-12, 1e-9 * max(|a|, |b|))`.
+///
+/// Across the 17-case corpus this is comfortably met; the worst
+/// observed error drift is `~2e-14`.
+fn tol_errors(a: f64, b: f64) -> bool {
+    let diff = (a - b).abs();
+    let rel = 1e-9 * a.abs().max(b.abs());
+    diff <= 1e-12_f64.max(rel)
+}
+
+/// Per-sample tolerance for **bound array** parity. The Plan 02 §7.2
+/// target is the same as `tol_errors`, but for bounds we retain a
+/// looser `max(1e-8, 1e-6 * max(|a|, |b|))` envelope because the
+/// corner algorithm's `equ = 1e-10` threshold (see
+/// `simtest-funnel-core/src/corners.rs`) flips a handful of
+/// boundary comparisons on step / saw-tooth inputs (notably
+/// `success9`, `fail2`, `fail6`). The test-point errors still agree
+/// with the C reference to `~1e-14`, so the drift is purely in the
+/// bound polyline discretisation.
+///
+/// Tightening this back to the `tol_errors` target is tracked as a
+/// follow-up against the corner algorithm — see
+/// `scratch/02.1-base-algorithm.md` §10 Q1.
+fn tol_bounds(a: f64, b: f64) -> bool {
     let diff = (a - b).abs();
     let rel = 1e-6 * a.abs().max(b.abs());
     diff <= 1e-8_f64.max(rel)
@@ -133,7 +151,7 @@ fn compare_bounds(
         if diff > worst {
             worst = diff;
         }
-        if !tol_eq(rust_y[i], c) {
+        if !tol_bounds(rust_y[i], c) {
             bad += 1;
         }
     }
@@ -175,7 +193,7 @@ fn compare_errors_magnitude(
         if diff > worst {
             worst = diff;
         }
-        if !tol_eq(r, c) {
+        if !tol_errors(r, c) {
             bad += 1;
         }
     }
@@ -244,15 +262,15 @@ fn run_case(case: &str) -> Result<(), String> {
         .copied()
         .unwrap_or(f64::INFINITY)
         .min(cux.last().copied().unwrap_or(f64::INFINITY));
-    let (_e_bad, e_worst) =
+    let (e_bad, e_worst) =
         compare_errors_magnitude(&r.errors.0, &r.errors.1, &cex, &cey, bound_x_lo, bound_x_hi);
-    eprintln!("  errors worst_diff={e_worst:.3e}");
+    eprintln!("  errors worst_diff={e_worst:.3e} bad={e_bad}");
 
-    // Errors are the user-visible signal — require tight parity on
-    // magnitudes.
-    if e_worst > 1e-5 {
+    // Errors are the user-visible signal — require strict parity at
+    // the Plan 02 §7.2 target (`max(1e-12, 1e-9 * max(|a|, |b|))`).
+    if e_bad > 0 {
         return Err(format!(
-            "{case}: error magnitude drift {e_worst:.3e} exceeds 1e-5"
+            "{case}: {e_bad} error points exceed plan tolerance (worst={e_worst:.3e})"
         ));
     }
 
