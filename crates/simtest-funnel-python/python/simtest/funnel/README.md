@@ -4,6 +4,17 @@ Python bindings for the [simtest-funnel](https://github.com/Symoptia/simtest-fun
 trajectory comparison library. The underlying algorithm is implemented in
 Rust and re-exported through a typed dataclass-based interface.
 
+See the workspace
+[`README.md`](https://github.com/Symoptia/simtest-funnel#differences-from-lbnl-funnel)
+for how this library differs from LBNL Funnel (signed errors,
+`MissingReference` / `MissingTest` statuses, default tolerances).
+
+## Typing
+
+The wheel ships a `py.typed` marker and a hand-maintained stub for
+the native extension (`_simtest_funnel.pyi`), so `mypy --strict`
+works without further configuration.
+
 ## Install
 
 ```
@@ -58,3 +69,12 @@ matched case-insensitively against `time_column` (default `"time"`).
 
 See [`examples/compare_dataframes.py`](examples/compare_dataframes.py) for
 a runnable example.
+
+## Reference documentation
+
+A full `pdoc`-generated API reference is published alongside every
+release. To build it locally:
+
+```bash
+make docs-python    # writes target/doc/python/index.html
+```
