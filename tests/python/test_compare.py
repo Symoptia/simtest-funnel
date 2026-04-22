@@ -80,7 +80,7 @@ def test_missing_reference_status() -> None:
         x_range=Range(),
     )
     r = compare(xr, yr, xt, yt, opts)
-    assert r.status in (Status.MISSING_REFERENCE, Status.PASS)
+    assert r.status == Status.MISSING_REFERENCE
 
 
 def test_missing_test_status() -> None:
@@ -93,7 +93,7 @@ def test_missing_test_status() -> None:
         x_range=Range(),
     )
     r = compare(xr, yr, xt, yt, opts)
-    assert r.status in (Status.MISSING_TEST, Status.PASS)
+    assert r.status == Status.MISSING_TEST
 
 
 def test_compare_dataframes_two_signals_with_overrides() -> None:
