@@ -8,7 +8,7 @@ help:  ## Show this help message (all targets, alphabetical)
 build:  ## Build Rust workspace + maturin develop + pnpm build
 	cargo build --workspace
 	cargo build -p simtest-funnel-cli --release
-	cd crates/simtest-funnel-python && python -m maturin develop --uv
+	cd crates/simtest-funnel-python && uv run maturin develop --uv
 	cd packages/sdk && pnpm run build
 
 check-secrets:  ## Validate .env vars and GitHub Secrets are configured
@@ -19,7 +19,7 @@ clean:  ## Remove all build artifacts
 	cd packages/sdk && rm -rf dist node_modules src/wasm
 
 docs-python:  ## Generate Python API reference via pdoc
-	cd crates/simtest-funnel-python && python -m maturin develop --uv
+	cd crates/simtest-funnel-python && uv run maturin develop --uv
 	uv run pdoc simtest.funnel -o target/doc/python
 
 docs-js:  ## Generate TypeScript API reference via typedoc
@@ -48,7 +48,7 @@ test-js:  ## vitest (JavaScript/TypeScript)
 	cd packages/sdk && pnpm run build:wasm && pnpm test
 
 test-python:  ## pytest tests/python/
-	cd crates/simtest-funnel-python && python -m maturin develop --uv
+	cd crates/simtest-funnel-python && uv run maturin develop --uv
 	uv run python -m pytest tests/python/ -v
 
 test-docs:  ## cargo doc --no-deps (excludes FFI crates that trigger rustdoc ICE)
