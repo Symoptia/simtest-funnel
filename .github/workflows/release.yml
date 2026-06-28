@@ -20,13 +20,15 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1; the version
+      # bundled with Node is too old, so upgrade it explicitly.
+      - run: npm install -g npm@latest
       - run: npm install -g semantic-release @semantic-release/changelog
               @semantic-release/git @semantic-release/exec @semantic-release/npm
       - run: semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       - id: check-release
         run: |
           if [ -f .release-version ]; then

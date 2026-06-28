@@ -4,7 +4,10 @@
   "description": "Trajectory comparison library (WASM + TypeScript)",
   "type": "module",
   "license": "MIT",
-  "repository": "https://github.com/Symoptia/simtest-funnel.git",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Symoptia/simtest-funnel.git"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "publishConfig": {
