@@ -23,7 +23,7 @@ docs-python:  ## Generate Python API reference via pdoc
 	uv run pdoc simtest.funnel -o target/doc/python
 
 docs-js:  ## Generate TypeScript API reference via typedoc
-	cd packages/sdk && pnpm install && pnpm build:wasm && pnpm docs
+	cd packages/sdk && pnpm install && pnpm run build:wasm && pnpm run docs
 
 fmt: fmt-rust fmt-js  ## Auto-format all code
 
