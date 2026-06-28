@@ -13,10 +13,11 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": ["dist", "src"],
+  "files": ["dist"],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/simtest-funnel-wasm --target bundler --out-dir ../../packages/sdk/src/wasm",
-    "build": "pnpm build:wasm && tsc",
+    "build:dist": "tsc && cp -r src/wasm dist/wasm && rm -f dist/wasm/.gitignore dist/wasm/package.json",
+    "build": "pnpm build:wasm && pnpm build:dist",
     "test": "vitest run",
     "lint": "biome check .",
     "format": "biome format . --write",
