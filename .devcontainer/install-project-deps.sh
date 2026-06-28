@@ -13,5 +13,10 @@ ln -sfn "${COPILOT_CONFIG:-/workspaces/simtest-funnel/.copilot}" /home/vscode/.c
 uv sync
 pnpm install --frozen-lockfile || pnpm install
 lefthook install 2>/dev/null || echo "lefthook not found, skipping hook installation"
-openspec init --tools github-copilot --profile core
+# openspec is a local authoring tool only; skip it when the CLI is unavailable (e.g. CI).
+if command -v openspec >/dev/null 2>&1; then
+  openspec init --tools github-copilot --profile core
+else
+  echo "openspec not found, skipping openspec init"
+fi
 
