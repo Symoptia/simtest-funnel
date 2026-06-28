@@ -1,0 +1,3 @@
+# Cloudflare Pages: ensure WebAssembly is served with the correct MIME type.
+/*.wasm
+  Content-Type: application/wasm

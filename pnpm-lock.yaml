@@ -12,6 +12,28 @@ importers:
         specifier: ^8.1.0
         version: 8.1.0
 
+  examples/web:
+    dependencies:
+      '@simtest-js/funnel':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+    devDependencies:
+      '@biomejs/biome':
+        specifier: ^1.7.0
+        version: 1.9.4
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+      vite:
+        specifier: ^5.4.0
+        version: 5.4.21
+      vite-plugin-top-level-await:
+        specifier: ^1.4.0
+        version: 1.6.0(rollup@4.60.1)(vite@5.4.21)
+      vite-plugin-wasm:
+        specifier: ^3.3.0
+        version: 3.6.0(vite@5.4.21)
+
   packages/sdk:
     devDependencies:
       '@biomejs/biome':

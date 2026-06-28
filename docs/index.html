@@ -3,33 +3,62 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>simtest-funnel — API Documentation</title>
-  <meta http-equiv="refresh" content="0; url=simtest_funnel_core/index.html">
+  <title>simtest-funnel — trajectory comparison</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      max-width: 40rem; margin: 4rem auto; padding: 0 1rem;
-      color: #333;
+      max-width: 44rem; margin: 4rem auto; padding: 0 1rem;
+      color: #1f2933; line-height: 1.5;
     }
-    a { color: #4183c4; }
-    h1 { font-size: 1.5rem; }
+    a { color: #4183c4; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    h1 { font-size: 1.6rem; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; }
+    p.lead { color: #52606d; }
     ul { list-style: none; padding: 0; }
-    li { margin: 0.5rem 0; }
+    li { margin: 0.6rem 0; }
+    .desc { color: #7b8794; font-size: 0.9rem; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
   </style>
 </head>
 <body>
-  <h1>simtest-funnel — API Documentation</h1>
-  <p>Redirecting to <a href="simtest_funnel_core/index.html">simtest_funnel_core</a>…</p>
-  <h2>Crates</h2>
+  <h1>simtest-funnel</h1>
+  <p class="lead">
+    Trajectory comparison library that replicates the
+    <a href="https://github.com/lbl-srg/funnel">LBNL Funnel</a> algorithm, with
+    Rust, Python, and JavaScript/WASM bindings.
+  </p>
+
+  <h2>Try it</h2>
   <ul>
-    <li><a href="simtest_funnel_core/index.html">simtest_funnel_core</a> — Core trajectory comparison library</li>
-    <li><a href="simtest_funnel_wasm/index.html">simtest_funnel_wasm</a> — WASM bindings (wasm-bindgen)</li>
-    <li><a href="simtest_funnel/index.html">simtest_funnel</a> — Python bindings (PyO3)</li>
+    <li>
+      <a href="demo/">▶ Interactive demo</a>
+      <div class="desc">Runs the funnel comparison in your browser via WebAssembly.</div>
+    </li>
   </ul>
-  <h2>Bindings</h2>
+
+  <h2>Source</h2>
   <ul>
-    <li><a href="python/index.html">Python API (pdoc)</a> — <code>simtest.funnel</code> package reference</li>
-    <li><a href="js/index.html">JavaScript / TypeScript API (typedoc)</a> — <code>@simtest-js/funnel</code> SDK reference</li>
+    <li>
+      <a href="https://github.com/Symoptia/simtest-funnel">GitHub repository</a>
+      <div class="desc">Source code, issues, and contributing guide.</div>
+    </li>
+  </ul>
+
+  <h2>API documentation</h2>
+  <ul>
+    <li>
+      <a href="simtest_funnel_core/index.html">Rust — <code>simtest_funnel_core</code></a>
+      <div class="desc">Core trajectory comparison library.</div>
+    </li>
+    <li>
+      <a href="python/index.html">Python — <code>simtest.funnel</code></a>
+      <div class="desc">PyO3 bindings reference (pdoc).</div>
+    </li>
+    <li>
+      <a href="js/index.html">JavaScript / TypeScript — <code>@simtest-js/funnel</code></a>
+      <div class="desc">WASM SDK reference (typedoc).</div>
+    </li>
   </ul>
 </body>
 </html>

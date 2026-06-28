@@ -112,6 +112,8 @@ jobs:
           cd ../.. && uv run pdoc simtest.funnel -o target/doc/python
       - name: Build TypeScript API reference (typedoc)
         run: make docs-js
+      - name: Build browser demo into target/doc/demo
+        run: make demo
       - run: wrangler pages deploy target/doc
               --project-name simtest-funnel
         env:

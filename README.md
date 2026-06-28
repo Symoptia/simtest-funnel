@@ -147,6 +147,9 @@ All common tasks are available through `make`:
 | `make test-js` | vitest (JavaScript/TypeScript) |
 | `make docs-python` | Build the pdoc site under `target/doc/python` |
 | `make docs-js` | Build the typedoc site under `target/doc/js` |
+| `make build-sdk` | Build the `@simtest-js/funnel` SDK (wasm glue + dist) |
+| `make demo` | Build the browser demo into `target/doc/demo/` |
+| `make demo-serve` | Run the demo dev server (Vite) for local preview |
 | `make lint` | Run all linters |
 | `make lint-rust` | Clippy + `cargo fmt` check |
 | `make lint-js` | Biome check (JavaScript/TypeScript) |
@@ -155,6 +158,24 @@ All common tasks are available through `make`:
 | `make fmt-js` | Biome format write |
 | `make clean` | Remove all build artifacts |
 | `make check-secrets` | Validate `.env` vars and GitHub Secrets |
+
+---
+
+## Browser demo
+
+An interactive in-browser demo lives in [`examples/web`](examples/web). It loads
+two committed CSV fixtures (`time,x,y,z`), runs the funnel comparison via
+WebAssembly (`@simtest-js/funnel`), and renders three Plotly funnel plots.
+
+```bash
+make demo-serve   # local dev server (Vite) at http://localhost:5173
+make demo         # build into target/doc/demo/ (as deployed under /demo)
+```
+
+The demo resolves the **local** workspace SDK (`workspace:*`), so `make demo`
+builds the SDK first (via `make build-sdk`). The fixtures are generated from the
+formulas in [`tests/python/tools/demo_signals.py`](tests/python/tools/demo_signals.py)
+and verified by `tests/python/test_demo_fixtures.py`.
 
 ---
 

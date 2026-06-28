@@ -1,4 +1,4 @@
-.PHONY: build check-secrets clean docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-rust \
+.PHONY: build build-sdk check-secrets clean demo demo-serve docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-rust \
         test test-docs test-js test-python test-rust
 
 help:  ## Show this help message (all targets, alphabetical)
@@ -17,6 +17,20 @@ check-secrets:  ## Validate .env vars and GitHub Secrets are configured
 clean:  ## Remove all build artifacts
 	cargo clean
 	cd packages/sdk && rm -rf dist node_modules src/wasm
+
+build-sdk:  ## Build the @simtest-js/funnel SDK (wasm glue + dist)
+	cd packages/sdk && pnpm install && pnpm build
+
+demo: build-sdk  ## Build the browser demo into target/doc/demo/
+	cd examples/web && pnpm install && pnpm build
+	mkdir -p target/doc/demo
+	cp -r examples/web/dist/. target/doc/demo/
+	# Cloudflare Pages honors a single _headers file at the deploy root, so
+	# the wasm MIME rule must live at target/doc/_headers (not under demo/).
+	printf '/*.wasm\n  Content-Type: application/wasm\n' > target/doc/_headers
+
+demo-serve: build-sdk  ## Run the demo dev server (Vite) for local preview
+	cd examples/web && pnpm install && pnpm dev
 
 docs-python:  ## Generate Python API reference via pdoc
 	cd crates/simtest-funnel-python && uv run maturin develop --uv
@@ -37,6 +51,7 @@ lint: lint-rust lint-js  ## Run all linters
 
 lint-js:  ## Biome check (JavaScript/TypeScript)
 	cd packages/sdk && pnpm lint
+	cd examples/web && pnpm lint
 
 lint-rust:  ## Clippy + cargo fmt check
 	cargo clippy --workspace --all-targets --features simtest-funnel-core/json -- -D warnings
