@@ -1,3 +1,16 @@
+# [1.0.0-beta.6](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.5...v1.0.0-beta.6) (2026-06-28)
+
+
+### Bug Fixes
+
+* **cli:** emit signed errors and document LBNL divergence ([97d0fdf](https://github.com/Symoptia/simtest-funnel/commit/97d0fdfea9d73c199c84cd08414a109add435f24))
+* **core:** restore range-asymmetry status classification ([8d431bc](https://github.com/Symoptia/simtest-funnel/commit/8d431bc184ee14b9a104de277ecbaaf4de2ceda5))
+
+
+### Features
+
+* **python:** add py.typed, stubs, and column dtype validation ([5f8e3c6](https://github.com/Symoptia/simtest-funnel/commit/5f8e3c6a3e1f96dfbb0f5a18d2cdec710f90722a))
+
 # Unreleased
 
 ### ⚠ BREAKING CHANGES
