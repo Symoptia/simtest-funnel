@@ -1,3 +1,10 @@
+# [1.0.0-beta.9](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.8...v1.0.0-beta.9) (2026-06-28)
+
+
+### Bug Fixes
+
+* **ci:** use pnpm run docs to avoid npm builtin docs command ([d678d65](https://github.com/Symoptia/simtest-funnel/commit/d678d65f34868413df953ae77ac0325d88283de1))
+
 # [1.0.0-beta.8](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.7...v1.0.0-beta.8) (2026-06-28)
 
 
