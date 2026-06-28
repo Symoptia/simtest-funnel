@@ -1,3 +1,10 @@
+# [1.0.0-beta.8](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.7...v1.0.0-beta.8) (2026-06-28)
+
+
+### Bug Fixes
+
+* **ci:** install wasm-pack in publish-docs so typedoc build succeeds ([b4b7d67](https://github.com/Symoptia/simtest-funnel/commit/b4b7d670fcad9314d224d102a067a6f6845e4b7f))
+
 # [1.0.0-beta.7](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.6...v1.0.0-beta.7) (2026-06-28)
 
 
