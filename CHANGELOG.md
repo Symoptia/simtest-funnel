@@ -1,3 +1,10 @@
+# [1.0.0-beta.7](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.6...v1.0.0-beta.7) (2026-06-28)
+
+
+### Bug Fixes
+
+* **sdk:** ship self-contained dist with wasm in npm package ([c99121b](https://github.com/Symoptia/simtest-funnel/commit/c99121b3a162e4e686710cad644ef9f09654cc2f))
+
 # [1.0.0-beta.6](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.5...v1.0.0-beta.6) (2026-06-28)
 
 
