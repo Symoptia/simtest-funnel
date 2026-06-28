@@ -457,7 +457,7 @@ wheels = [
 
 [[package]]
 name = "simtest-funnel"
-version = "1.0.0b5"
+version = "1.0.0b9"
 source = { editable = "crates/simtest-funnel-python" }
 
 [[package]]
