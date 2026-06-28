@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    branches: [main, beta]
+
+jobs:
+  semantic-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      new_release_version: ${{ steps.check-release.outputs.new_release_version }}
+      new_release_published: ${{ steps.check-release.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+      # Build the publishable, self-contained SDK bundle (wasm glue + dist)
+      # before semantic-release so @semantic-release/npm packs real artifacts.
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: cd packages/sdk && pnpm install
+      - run: cd packages/sdk && pnpm build
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1; the version
+      # bundled with Node is too old, so upgrade it explicitly.
+      - run: npm install -g npm@latest
+      - run: npm install -g semantic-release @semantic-release/changelog
+              @semantic-release/git @semantic-release/exec @semantic-release/npm
+      - run: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - id: check-release
+        run: |
+          if [ -f .release-version ]; then
+            echo "new_release_published=true" >> "$GITHUB_OUTPUT"
+            echo "new_release_version=$(cat .release-version)" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish-pypi:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.semantic-release.outputs.new_release_version }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install "maturin[patchelf]"
+      - run: |
+          cd crates/simtest-funnel-python
+          maturin build --release
+      - run: pip install twine &&
+              twine upload --non-interactive
+              target/wheels/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-crate:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.semantic-release.outputs.new_release_version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish -p simtest-funnel-core
+              --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-docs:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+      - run: npm install -g wrangler@latest
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: pip install uv "maturin[patchelf]"
+      - run: cargo doc --no-deps --workspace --exclude simtest-funnel-python
+      - run: cp docs/index.html target/doc/index.html
+      - name: Build Python API reference (pdoc)
+        run: |
+          uv sync
+          cd crates/simtest-funnel-python && maturin develop --uv
+          cd ../.. && uv run pdoc simtest.funnel -o target/doc/python
+      - name: Build TypeScript API reference (typedoc)
+        run: make docs-js
+      - name: Build browser demo into target/doc/demo
+        run: make demo
+      - run: wrangler pages deploy target/doc
+              --project-name simtest-funnel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

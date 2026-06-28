@@ -1,0 +1,16 @@
+[workspace]
+members = [
+  "crates/simtest-funnel-core",
+  "crates/simtest-funnel-cli",
+  "crates/simtest-funnel-python",
+  "crates/simtest-funnel-wasm",
+]
+resolver = "2"
+
+[workspace.package]
+version = "1.0.0-beta.10"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Symoptia contributors"]
+repository = "https://github.com/Symoptia/simtest-funnel.git"

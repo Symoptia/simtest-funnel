@@ -1,0 +1,40 @@
+name: Build Devcontainer
+
+on:
+  push:
+    branches: [main, beta, develop]
+    paths:
+      - '.devcontainer/**'
+  pull_request:
+    branches: [main, beta, develop]
+    paths:
+      - '.devcontainer/**'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: symoptia/simtest-funnel-devcontainer
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .devcontainer
+          file: .devcontainer/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/symoptia/simtest-funnel-devcontainer:latest
+            ghcr.io/symoptia/simtest-funnel-devcontainer:${{ github.sha }}

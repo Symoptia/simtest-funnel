@@ -1,0 +1,37 @@
+[project]
+name = "simtest-funnel-workspace"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = [
+    "simtest-funnel",
+    "numpy>=1.26",
+    "pandas>=2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-v"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "crates/simtest-funnel-python/python"
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.uv.workspace]
+members = [
+    "crates/simtest-funnel-python",
+]
+
+[tool.uv.sources]
+simtest-funnel = { workspace = true, editable = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "mypy>=1.8",
+    "pandas-stubs",
+    "maturin>=1.13.1",
+    "pdoc>=14",
+]
