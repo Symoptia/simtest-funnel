@@ -31,3 +31,6 @@ RUN curl -1sLf 'https://dl.cloudsmith.io/public/evilmartians/lefthook/setup.deb.
 # wrangler (Cloudflare CLI, for Pages deploy and IAC)
 RUN npm install -g wrangler@latest
 
+# OpenSpec — spec-driven framework for AI coding assistants
+RUN npm install -g @fission-ai/openspec@latest
+

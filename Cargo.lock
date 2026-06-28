@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "simtest-funnel-cli"
-version = "1.0.0-beta.4"
+version = "1.0.0-beta.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "simtest-funnel-core"
-version = "1.0.0-beta.4"
+version = "1.0.0-beta.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "simtest-funnel-python"
-version = "1.0.0-beta.4"
+version = "1.0.0-beta.5"
 dependencies = [
  "numpy",
  "pyo3",
@@ -456,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "simtest-funnel-wasm"
-version = "1.0.0-beta.4"
+version = "1.0.0-beta.5"
 dependencies = [
  "js-sys",
  "serde",
