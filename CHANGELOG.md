@@ -1,3 +1,10 @@
+# [1.0.0-beta.11](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.10...v1.0.0-beta.11) (2026-11-15)
+
+
+### Bug Fixes
+
+* **deps:** upgrade pyo3 and numpy to 0.30 ([d8d72bc](https://github.com/Symoptia/simtest-funnel/commit/d8d72bcbf24000751f3895664084a651ddac4553))
+
 # [1.0.0-beta.10](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.9...v1.0.0-beta.10) (2026-06-28)
 
 
