@@ -1,3 +1,12 @@
+# [1.0.0-beta.12](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.11...v1.0.0-beta.12) (2026-11-15)
+
+
+### Features
+
+* **core:** add min/max signal downsampling ([da766eb](https://github.com/Symoptia/simtest-funnel/commit/da766ebf4d4134f67d623652f4a065ca52883abc))
+* **core:** add violation summary and align default tolerances ([2a3f3d6](https://github.com/Symoptia/simtest-funnel/commit/2a3f3d676aa5bd357b8b8faf1d8701e12851f037))
+* **mcp:** add local MCP server for funnel comparisons ([29064b6](https://github.com/Symoptia/simtest-funnel/commit/29064b62f0c0e7539dae1965c8dd33f73cdb91f1))
+
 # [1.0.0-beta.11](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.10...v1.0.0-beta.11) (2026-11-15)
 
 
