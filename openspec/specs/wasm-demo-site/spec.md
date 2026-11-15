@@ -1,7 +1,10 @@
 # wasm-demo-site Specification
 
 ## Purpose
-TBD - created by archiving change add-wasm-demo-landing. Update Purpose after archive.
+The public documentation site: a landing page linking to the repository, the
+API references and an interactive demo that runs funnel comparisons in the
+browser through the WebAssembly build.
+
 ## Requirements
 ### Requirement: Landing page navigation hub
 
