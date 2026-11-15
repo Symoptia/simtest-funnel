@@ -29,8 +29,12 @@ jobs:
           version: 9
       # prepareCmd (.releaserc.json) refreshes uv.lock with `uv lock`
       # (scripts/release-refresh-lockfiles.sh); Cargo.lock uses the Rust
-      # toolchain above.
+      # toolchain above. uv is pinned to the version that wrote uv.lock: a
+      # newer uv rewrites the lockfile format and the script's guard
+      # rejects the diff.
       - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
       # Build the publishable, self-contained SDK bundle (wasm glue + dist)
       # before semantic-release so @semantic-release/npm packs real artifacts.
       - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh

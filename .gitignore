@@ -12,3 +12,6 @@ __pycache__/
 .pytest_cache/
 dist/
 output.txt
+
+# Claude Code agent worktrees (local scratch checkouts)
+.claude/worktrees/
