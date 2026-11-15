@@ -1,0 +1,35 @@
+{
+  "name": "@simtest-js/funnel",
+  "version": "0.1.0",
+  "description": "Trajectory comparison library (WASM + TypeScript)",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Symoptia/simtest-funnel.git"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/simtest-funnel-wasm --target bundler --out-dir ../../packages/sdk/src/wasm",
+    "build:dist": "tsc && cp -r src/wasm dist/wasm && rm -f dist/wasm/.gitignore dist/wasm/package.json",
+    "build": "pnpm build:wasm && pnpm build:dist",
+    "test": "vitest run",
+    "lint": "biome check .",
+    "format": "biome format . --write",
+    "docs": "typedoc src/index.ts --out ../../target/doc/js"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
+    "typedoc": "^0.28.20",
+    "typescript": "^6.0.3",
+    "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^5.1.0"
+  }
+}

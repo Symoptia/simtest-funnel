@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "simtest-funnel": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--quiet", "simtest-funnel-mcp"]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "reference": "reference.csv",
+  "test": "test.csv",
+  "output": "results",
+  "atolx": 0.0,
+  "atoly": 0.0,
+  "rtolx": 0.002,
+  "rtoly": 0.002
+}

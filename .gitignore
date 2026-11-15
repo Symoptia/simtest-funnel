@@ -1,0 +1,17 @@
+node_modules/
+.env
+.copilot
+scratch/
+.pnpm-store/
+target/
+target/doc/
+__pycache__/
+*.so
+*.pyc
+*.pyo
+.pytest_cache/
+dist/
+output.txt
+
+# Claude Code agent worktrees (local scratch checkouts)
+.claude/worktrees/

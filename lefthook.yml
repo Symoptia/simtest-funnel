@@ -1,0 +1,18 @@
+pre-commit:
+  commands:
+    lint:
+      glob: "*.{rs,ts,tsx,js}"
+      run: make lint
+
+commit-msg:
+  commands:
+    conventional-commits:
+      run: |
+        msg=$(cat {1})
+        pattern='^(feat|fix|docs|style|refactor|perf|test|chore|ci)(\(.+\))?!?: .+'
+        if ! echo "$msg" | grep -qE "$pattern"; then
+          echo "ERROR: Commit message must follow Conventional Commits format."
+          echo "Format: <type>(<scope>): <subject>"
+          echo "Example: feat(core): add compare function"
+          exit 1
+        fi
