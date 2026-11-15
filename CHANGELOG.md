@@ -1,3 +1,16 @@
+# [1.0.0-beta.13](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.12...v1.0.0-beta.13) (2026-11-15)
+
+
+### Bug Fixes
+
+* **core:** judge coverage within the x-range and align API shapes ([ddfbcd6](https://github.com/Symoptia/simtest-funnel/commit/ddfbcd68a2e368e373dbef0fbe36645a2fcaf97b))
+* **mcp:** harden CSV reading, bound output size and make snippets portable ([fb5b634](https://github.com/Symoptia/simtest-funnel/commit/fb5b6348d54b19c5c57e63da4e28d0c3b75f3f8a))
+
+
+### Features
+
+* **mcp:** add plot tool ([e6637a6](https://github.com/Symoptia/simtest-funnel/commit/e6637a6bce412c06425fa4a4717ce5055639a80f))
+
 # [1.0.0-beta.12](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.11...v1.0.0-beta.12) (2026-11-15)
 
 
