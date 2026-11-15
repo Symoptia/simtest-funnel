@@ -102,18 +102,29 @@ impl From<Tolerances> for JsTolerances {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+/// A resolved range, as returned to JS (both bounds always present;
+/// unbounded sides are `-Infinity` / `Infinity`).
+#[derive(Debug, Serialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 struct JsRange {
     lo: f64,
     hi: f64,
 }
 
-impl Default for JsRange {
-    fn default() -> Self {
-        Self {
-            lo: f64::NEG_INFINITY,
-            hi: f64::INFINITY,
+/// An x-range as given by the caller: a missing, `undefined` or `null`
+/// bound is unbounded on that side (same as the Python `Range`).
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "camelCase", default)]
+struct JsRangeIn {
+    lo: Option<f64>,
+    hi: Option<f64>,
+}
+
+impl From<JsRangeIn> for Range {
+    fn from(r: JsRangeIn) -> Self {
+        Range {
+            lo: r.lo.unwrap_or(f64::NEG_INFINITY),
+            hi: r.hi.unwrap_or(f64::INFINITY),
         }
     }
 }
@@ -124,7 +135,7 @@ struct JsOptionsIn {
     #[serde(default)]
     tolerances: Option<JsTolerancesIn>,
     #[serde(default)]
-    x_range: Option<JsRange>,
+    x_range: Option<JsRangeIn>,
 }
 
 impl From<JsOptionsIn> for Options {
@@ -133,10 +144,7 @@ impl From<JsOptionsIn> for Options {
     fn from(o: JsOptionsIn) -> Self {
         Options {
             tolerances: PartialTolerances::from(o.tolerances.unwrap_or_default()).resolve(),
-            x_range: o
-                .x_range
-                .map(|r| Range { lo: r.lo, hi: r.hi })
-                .unwrap_or_default(),
+            x_range: o.x_range.map(Range::from).unwrap_or_default(),
         }
     }
 }
@@ -279,7 +287,7 @@ pub fn summarize(
         upper: (typed_array_to_vec(upper_x), typed_array_to_vec(upper_y)),
         errors: (typed_array_to_vec(errors_x), typed_array_to_vec(errors_y)),
     };
-    let s = core_summarize(&typed_array_to_vec(reference_x), &opts, &result);
+    let s = core_summarize(&result, &typed_array_to_vec(reference_x), &opts);
     let out = JsViolationSummary {
         status: s.status as i32,
         tolerances: s.tolerances.into(),

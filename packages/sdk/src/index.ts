@@ -30,8 +30,21 @@ export interface Tolerances {
 /** The six effective tolerance coefficients after resolution. */
 export type ResolvedTolerances = { [K in keyof Tolerances]-?: number };
 
-/** X-range filter. */
+/**
+ * X-range filter passed in {@link Options}. A bound that is omitted,
+ * `undefined` or `null` is unbounded on that side, so `{ lo: 0.5 }` means
+ * `[0.5, Infinity]` (same as the Python `Range`).
+ */
 export interface XRange {
+  lo?: number | null;
+  hi?: number | null;
+}
+
+/**
+ * A range as returned by the library: both bounds present, unbounded
+ * sides are `-Infinity` / `Infinity`.
+ */
+export interface ResolvedXRange {
   lo: number;
   hi: number;
 }
@@ -48,7 +61,7 @@ export interface Options {
 /** Fully explicit options, as returned by {@link defaultOptions}. */
 export interface ResolvedOptions {
   tolerances: ResolvedTolerances;
-  xRange: XRange;
+  xRange: ResolvedXRange;
 }
 
 /** Status codes (mirror `simtest_funnel_core::Status`). */
@@ -160,9 +173,9 @@ export interface ViolationSummary {
   status: StatusCode;
   /** The six resolved tolerance values used. */
   tolerances: ResolvedTolerances;
-  xRange: XRange;
+  xRange: ResolvedXRange;
   /** First to last judged test point. */
-  comparedRange: XRange | null;
+  comparedRange: ResolvedXRange | null;
   intervals: ViolationInterval[];
   worst: WorstDeviation | null;
   pointsCompared: number;

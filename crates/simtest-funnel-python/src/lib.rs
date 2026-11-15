@@ -212,7 +212,7 @@ fn summarize<'py>(
         upper: xy_to_vecs(upper_x, upper_y)?,
         errors: xy_to_vecs(errors_x, errors_y)?,
     };
-    let s = core_summarize(t_reference.as_slice()?, &opts, &result);
+    let s = core_summarize(&result, t_reference.as_slice()?, &opts);
 
     let out = PyDict::new(py);
     out.set_item("status", s.status as i32)?;

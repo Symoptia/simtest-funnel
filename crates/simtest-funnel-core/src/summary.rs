@@ -137,7 +137,8 @@ fn tube_half_width_at(result: &CompareResult, x: f64) -> f64 {
 /// Summarize how much a comparison violated its tolerances.
 ///
 /// `t_ref` and `opts` must be the reference x-values and options that were
-/// passed to [`crate::compare()`] to produce `result`. Only the first and
+/// passed to [`crate::compare()`] to produce `result`. The argument order
+/// `(result, t_ref, opts)` is the same in the Python and TypeScript APIs. Only the first and
 /// last value of `t_ref` are used (to delimit the effective range); test
 /// x-values and deviations are taken from `result.errors`.
 ///
@@ -147,7 +148,7 @@ fn tube_half_width_at(result: &CompareResult, x: f64) -> f64 {
 /// no test point is judged — the summary carries only the status and the
 /// echoed settings: no intervals, no worst deviation, no compared range,
 /// zero counts and `None` shares.
-pub fn summarize(t_ref: &[f64], opts: &Options, result: &CompareResult) -> ViolationSummary {
+pub fn summarize(result: &CompareResult, t_ref: &[f64], opts: &Options) -> ViolationSummary {
     let mut s = ViolationSummary {
         status: result.status,
         tolerances: opts.tolerances,
@@ -286,7 +287,7 @@ mod tests {
     fn one_excursion_above() {
         let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
         let r = flat(&xs, &[0.0, 0.2, 0.5, 0.1, 0.0], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         assert_eq!(s.status, Status::Fail);
         assert_eq!(s.intervals.len(), 1);
         let iv = s.intervals[0];
@@ -308,7 +309,7 @@ mod tests {
     fn sign_flip_splits_intervals() {
         let xs = [0.0, 1.0, 2.0, 3.0];
         let r = flat(&xs, &[0.0, 0.3, -0.4, 0.0], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         assert_eq!(s.intervals.len(), 2);
         assert_eq!(s.intervals[0].direction, Direction::Above);
         assert_eq!(s.intervals[1].direction, Direction::Below);
@@ -319,7 +320,7 @@ mod tests {
     fn boundary_single_point_violations() {
         let xs = [0.0, 1.0, 2.0, 3.0];
         let r = flat(&xs, &[-0.2, 0.0, 0.0, 0.1], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         assert_eq!(s.intervals.len(), 2);
         let a = s.intervals[0];
         assert_eq!((a.start_x, a.end_x, a.point_count), (0.0, 0.0, 1));
@@ -333,7 +334,7 @@ mod tests {
     fn span_share_weights_by_spacing() {
         let xs = [0.0, 1.0, 2.0, 4.0];
         let r = flat(&xs, &[0.0, 0.0, 0.0, 0.5], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         assert_eq!(s.fraction_of_points_outside, Some(0.25));
         assert_eq!(s.fraction_of_span_outside, Some(0.25));
     }
@@ -342,7 +343,7 @@ mod tests {
     fn all_outside_shares_are_one() {
         let xs = [0.0, 1.0, 3.0];
         let r = flat(&xs, &[0.5, 0.5, 0.5], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         assert_eq!(s.fraction_of_points_outside, Some(1.0));
         assert_eq!(s.fraction_of_span_outside, Some(1.0));
     }
@@ -351,7 +352,7 @@ mod tests {
     fn zero_length_range_falls_back_to_point_share() {
         let xs = [1.0, 1.0];
         let r = flat(&xs, &[0.0, 0.5], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         assert_eq!(s.compared_range, Some(Range { lo: 1.0, hi: 1.0 }));
         assert_eq!(s.fraction_of_span_outside, Some(0.5));
     }
@@ -360,7 +361,7 @@ mod tests {
     fn ties_pick_first_occurrence() {
         let xs = [0.0, 1.0, 2.0];
         let r = flat(&xs, &[0.5, -0.5, 0.5], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         let w = s.worst.unwrap();
         assert_eq!((w.x, w.deviation), (0.0, 0.5));
     }
@@ -377,13 +378,38 @@ mod tests {
         let r = compare(&t, &y, &tt, &yt, &opts);
         assert_eq!(r.status, Status::MissingReference);
         assert!(r.errors.1.iter().any(|&e| e != 0.0));
-        let s = summarize(&t, &opts, &r);
+        let s = summarize(&r, &t, &opts);
         assert!(s.intervals.is_empty());
         assert!(s.worst.is_none());
         assert_eq!(s.points_compared, 3);
         assert_eq!(s.points_outside, 0);
         assert_eq!(s.fraction_of_span_outside, Some(0.0));
         assert_eq!(s.compared_range, Some(Range { lo: 1.0, hi: 3.0 }));
+    }
+
+    #[test]
+    fn coverage_window_consistent_with_status() {
+        // Test covers 0..1.1, reference 0..1. With x_range [0, 1] the
+        // coverage check passes and the summary judges exactly the test
+        // points inside the window.
+        let t = [0.0, 0.5, 1.0];
+        let y = [0.0, 0.5, 1.0];
+        let tt = [0.0, 0.25, 0.5, 0.75, 1.0, 1.1];
+        let yt = [0.0, 0.25, 0.5, 0.75, 1.0, 5.0];
+        let opts = Options {
+            x_range: Range { lo: 0.0, hi: 1.0 },
+            ..atoly(0.1)
+        };
+        let r = compare(&t, &y, &tt, &yt, &opts);
+        assert_eq!(r.status, Status::Pass);
+        let s = summarize(&r, &t, &opts);
+        assert_eq!(s.points_compared, 5);
+        assert_eq!(s.points_outside, 0);
+        assert_eq!(s.compared_range, Some(Range { lo: 0.0, hi: 1.0 }));
+        // Unbounded: the same data is MissingReference, still no violation.
+        let r = compare(&t, &y, &tt, &yt, &atoly(0.1));
+        assert_eq!(r.status, Status::MissingReference);
+        assert_eq!(summarize(&r, &t, &atoly(0.1)).points_outside, 0);
     }
 
     #[test]
@@ -394,7 +420,7 @@ mod tests {
             x_range: Range { lo: 1.0, hi: 3.0 },
             ..atoly(1.0)
         };
-        let s = summarize(&xs, &opts, &r);
+        let s = summarize(&r, &xs, &opts);
         assert_eq!(s.x_range, Range { lo: 1.0, hi: 3.0 });
         assert_eq!(s.compared_range, Some(Range { lo: 1.0, hi: 3.0 }));
         assert_eq!(s.points_compared, 3);
@@ -407,7 +433,7 @@ mod tests {
         let y = [0.0, 1.0, 2.0, 3.0];
         let opts = atoly(0.5);
         let r = compare(&t, &y, &t, &y, &opts);
-        let s = summarize(&t, &opts, &r);
+        let s = summarize(&r, &t, &opts);
         assert_eq!(s.status, Status::Pass);
         assert!(s.intervals.is_empty());
         assert!(s.worst.is_none());
@@ -429,7 +455,7 @@ mod tests {
             x_range: Range::default(),
         };
         let r = compare(&t, &y, &t, &y, &opts);
-        let s = summarize(&t, &opts, &r);
+        let s = summarize(&r, &t, &opts);
         assert_eq!(
             s.tolerances,
             Tolerances {
@@ -438,7 +464,7 @@ mod tests {
                 ..Tolerances::ZERO
             }
         );
-        let s_default = summarize(&t, &Options::default(), &r);
+        let s_default = summarize(&r, &t, &Options::default());
         assert_eq!(s_default.tolerances, Tolerances::DEFAULT);
     }
 
@@ -449,7 +475,7 @@ mod tests {
         let opts = atoly(0.5);
         let r = compare(&t, &y, &[0.0, 1.0, 2.0], &y, &opts);
         assert_eq!(r.status, Status::NonMonotonic);
-        let s = summarize(&t, &opts, &r);
+        let s = summarize(&r, &t, &opts);
         assert_eq!(s.status, Status::NonMonotonic);
         assert_eq!(s.tolerances, opts.tolerances);
         assert_eq!(s.x_range, opts.x_range);
@@ -470,13 +496,13 @@ mod tests {
         let r = compare(&t, &y, &t, &yt, &opts);
         assert_eq!(r.status, Status::Fail);
         let before = (r.errors.clone(), r.lower.clone(), r.upper.clone());
-        let s = summarize(&t, &opts, &r);
+        let s = summarize(&r, &t, &opts);
         assert_eq!(before, (r.errors.clone(), r.lower.clone(), r.upper.clone()));
         let w = s.worst.unwrap();
         assert_eq!(w.x, 2.0);
         assert!((w.deviation - 0.3).abs() < 1e-12);
         assert!((w.tube_half_width_y - 0.2).abs() < 1e-12);
-        assert_eq!(s, summarize(&t, &opts, &r));
+        assert_eq!(s, summarize(&r, &t, &opts));
     }
 
     #[test]
@@ -487,7 +513,7 @@ mod tests {
             upper: (vec![], vec![]),
             errors: (vec![0.0, 1.0], vec![0.5, 0.0]),
         };
-        let s = summarize(&[0.0, 1.0], &atoly(0.1), &r);
+        let s = summarize(&r, &[0.0, 1.0], &atoly(0.1));
         assert!(s.worst.unwrap().tube_half_width_y.is_nan());
     }
 
@@ -496,7 +522,7 @@ mod tests {
     fn json_serialisation() {
         let xs = [0.0, 1.0, 2.0];
         let r = flat(&xs, &[0.0, 0.5, 0.0], Status::Fail);
-        let s = summarize(&xs, &atoly(1.0), &r);
+        let s = summarize(&r, &xs, &atoly(1.0));
         let j = serde_json::to_string(&s).unwrap();
         assert!(j.contains("\"status\":\"Fail\""), "{j}");
         assert!(j.contains("\"direction\":\"above\""), "{j}");

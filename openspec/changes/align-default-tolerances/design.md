@@ -117,7 +117,10 @@ tree before this change:
   `DEFAULT`).
 - [CLI with an LBNL param file that omits a whole axis no longer gets
   LBNL's zero on that axis] → documented in the CLI README "Differences
-  from LBNL Funnel"; add explicit zero keys for exact parity.
+  from LBNL Funnel"; add explicit zero keys for exact parity. After
+  review, the `--params` help text and the CLI and root READMEs also say
+  explicitly that param files share LBNL's keys but not its meaning of a
+  missing key (documentation only; no new flag).
 
 ## Migration Plan
 

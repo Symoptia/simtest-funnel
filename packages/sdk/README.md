@@ -61,6 +61,11 @@ identical inputs give identical verdicts everywhere:
 | `{ tolerances: { atoly: 0.05 } }`           | `atoly = 0.05`, `rtolx = 2e-3`, rest `0` |
 | `{ tolerances: { atolx: 0, atoly: 0.05 } }` | `atoly = 0.05`, rest `0`                 |
 
+`xRange` restricts the comparison to an x-window; each bound is optional
+(omitted, `undefined` or `null` = unbounded), so `{ xRange: { lo: 0.5 } }`
+compares `x >= 0.5`. Results report ranges as `ResolvedXRange` with both
+bounds present (`-Infinity` / `Infinity` when unbounded).
+
 `defaultOptions()` returns the six default values explicitly (passing
 them is identical to omitting `options`), and `summarize()` echoes the
 six resolved values (`ResolvedTolerances`).
@@ -132,6 +137,10 @@ Mirror `simtest_funnel_core::Status`:
 | `EmptyRange`       |   12 |
 | `BufferTooSmall`   |   13 |
 | `InsufficientData` |   14 |
+
+`MissingReference` / `MissingTest` are judged within `xRange`: both
+x-extents are clipped to it first, so a window inside the overlap of the
+two trajectories yields `Pass` or `Fail`.
 
 ## Reference documentation
 

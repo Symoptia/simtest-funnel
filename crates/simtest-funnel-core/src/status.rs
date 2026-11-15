@@ -12,11 +12,15 @@ pub enum Status {
     /// At least one test point within the common x-range lies outside
     /// the lower/upper envelope.
     Fail = -1,
-    /// Inside the common x-range the comparison passed, but the test
-    /// trajectory extends beyond the reference x-range.
+    /// Inside the common x-range the comparison passed, but within the
+    /// requested `x_range` the test trajectory extends beyond the
+    /// reference x-range. Coverage is judged on both x-extents clipped to
+    /// `x_range`: restricting `x_range` to the overlap of both
+    /// trajectories yields `Pass` or `Fail` instead.
     MissingReference = 1,
-    /// Inside the common x-range the comparison passed, but the
-    /// reference trajectory extends beyond the test x-range.
+    /// Inside the common x-range the comparison passed, but within the
+    /// requested `x_range` the reference trajectory extends beyond the
+    /// test x-range (clipped to `x_range` as for `MissingReference`).
     MissingTest = 2,
     /// Reference or test `x` array is not monotonically non-decreasing.
     NonMonotonic = 10,

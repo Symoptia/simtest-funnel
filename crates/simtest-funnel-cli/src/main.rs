@@ -39,8 +39,11 @@ use simtest_funnel_core::{
         given."
 )]
 struct Args {
-    /// JSON file with compare parameters (same shape as
-    /// `funnel/tests/*/param.json`).
+    /// JSON file with compare parameters (same keys as LBNL
+    /// `funnel/tests/*/param.json`). Unlike LBNL, a missing (or null)
+    /// tolerance key is not 0: the coefficients present are resolved per
+    /// axis, so an axis with no key present gets rtol = 2e-3. For LBNL
+    /// semantics give at least one coefficient per axis (e.g. "atolx": 0).
     #[arg(long)]
     params: Option<PathBuf>,
 
@@ -235,6 +238,18 @@ mod tests {
         resolve(Args::try_parse_from(full).unwrap())
             .unwrap()
             .tolerances
+    }
+
+    #[test]
+    fn params_help_states_missing_keys_are_not_zero() {
+        use clap::CommandFactory;
+        let help = Args::command().render_long_help().to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(help.contains("same keys as LBNL"), "{help}");
+        assert!(
+            help.contains("a missing (or null) tolerance key is not 0"),
+            "{help}"
+        );
     }
 
     fn write_params(name: &str, json: &str) -> PathBuf {

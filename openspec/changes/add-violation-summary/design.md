@@ -36,10 +36,13 @@ dataclasses; the WASM binding serialises camelCase structs through
 
 ### D1. Core API: free function over existing comparison
 
-`pub fn summarize(t_ref: &[f64], opts: &Options, result: &CompareResult) ->
+`pub fn summarize(result: &CompareResult, t_ref: &[f64], opts: &Options) ->
 ViolationSummary` in a new public module `summary.rs`, re-exported from the
 crate root together with `ViolationSummary`, `ViolationInterval`,
-`WorstDeviation` and `Direction`.
+`WorstDeviation` and `Direction`. The argument order `(result, t_ref, opts)`
+matches the Python `summarize(result, t_reference, options)` and TypeScript
+`summarize(result, referenceX, options)` APIs (aligned before 1.0 after
+review; the first beta used `(t_ref, opts, result)`).
 - Only `t_ref` (its first/last value) and `opts` are needed besides the
   result: the effective range needs the reference extent and `x_range`; test
   x-values are `result.errors.0`. Taking all four input arrays was rejected
@@ -54,6 +57,15 @@ A test point is *judged* iff `eff_lo <= x <= eff_hi` — the same predicate as
 reference for `MissingReference`) are ignored, so a `Pass` /
 `MissingReference` / `MissingTest` summary always has zero violations, and a
 `Fail` summary always has at least one.
+
+Coverage (review follow-up): `classify_status` judges `MissingReference` /
+`MissingTest` on both trajectories' x-extents clipped to the requested
+`x_range`, so a window inside the overlap of both trajectories (reference
+`0..1`, test `0..1.1`, `x_range = [0, 1]`) is `Pass`/`Fail`, not "missing".
+With the default unbounded range the clipping is a no-op and LBNL corpus
+parity is unchanged. The judged-point predicate above is unaffected: it is
+still the predicate that decides `Fail`, so the summary keeps mirroring
+`classify_status`.
 
 ### D3. Compared range = first..last judged test point
 
@@ -136,6 +148,14 @@ referenceX, options?) : ViolationSummary` with interfaces
 `ViolationSummary`, `ViolationInterval`, `WorstDeviation` and
 `direction: 'above' | 'below'`; absent values are `null`. Undefined options map
 to the same defaults the wasm `compare` uses for undefined options.
+
+Review follow-up (before 1.0): the input `XRange` (`options.xRange`) has
+optional bounds in the wasm options parser (serde default per field) and in
+the SDK type (`lo?: number | null; hi?: number | null`); an absent or `null`
+bound is unbounded, matching the Python `Range` (e.g. `{ lo: 0.5 }`).
+Ranges returned by the library (`ViolationSummary.xRange`,
+`comparedRange`, `ResolvedOptions.xRange`) use the new `ResolvedXRange`
+type with both bounds present (`-Infinity` / `Infinity` when unbounded).
 
 ## Risks / Trade-offs
 

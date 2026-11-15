@@ -34,6 +34,13 @@ assert_eq!(r.status, Status::Pass);
 
 ## Tolerances
 
+At each reference sample the tube half-widths are
+`max(atol, rtol * range, ltol * |value|)` per axis, where `range` is the
+reference extent within `x_range`. If that is effectively zero
+(`< 1e-10`, e.g. only `rtoly` given on a constant reference) it falls
+back to `rtol * max|value|` (when `rtol > 0`), then to `1e-10`; give
+`atoly` for constant or near-constant signals.
+
 `Options::default()` uses `Tolerances::DEFAULT`: `rtolx = rtoly = 2e-3`,
 all other coefficients zero. Partially specified tolerances
 (`PartialTolerances`, each coefficient `Option<f64>`) are resolved per
@@ -75,7 +82,7 @@ let mut y_tst = y_ref.clone();
 y_tst[500] += 1.0; // a one-sample spike
 let opts = Options::default();
 let r = compare(&t, &y_ref, &t, &y_tst, &opts);
-let s = summarize(&t, &opts, &r);
+let s = summarize(&r, &t, &opts);
 let pins: Vec<f64> = s.intervals.iter().map(|iv| iv.worst_x).collect();
 let d = downsample_min_max(&t, &y_tst, 20, &pins).unwrap();
 assert!(d.x.contains(&500.0));
@@ -87,15 +94,19 @@ assert!(d.x.contains(&500.0));
 |---------------------|-----:|-----------------------------------------------------|
 | `Pass`              |   0  | All test points inside the funnel                   |
 | `Fail`              |  -1  | At least one test point outside the funnel          |
-| `MissingReference`  |   1  | Test x-range extends past reference                 |
-| `MissingTest`       |   2  | Reference x-range extends past test                 |
+| `MissingReference`  |   1  | Within `x_range`, test x-range extends past reference |
+| `MissingTest`       |   2  | Within `x_range`, reference x-range extends past test |
 | `NonMonotonic`      |  10  | x-array not non-decreasing                          |
 | `LengthMismatch`    |  11  | x and y arrays differ in length                     |
 | `EmptyRange`        |  12  | `x_range` does not intersect reference or test data |
 | `BufferTooSmall`    |  13  | Caller-provided output buffer undersized            |
 | `InsufficientData`  |  14  | Fewer than two points after `x_range` filter        |
 
-See the rustdoc for `simtest_funnel_core::Status` for full details.
+Coverage (`MissingReference` / `MissingTest`) is judged on both
+x-extents clipped to `x_range`; with the default unbounded range this
+compares the full extents. A window inside the overlap of both
+trajectories therefore yields `Pass` or `Fail`. See the rustdoc for
+`simtest_funnel_core::Status` for full details.
 
 ## Documentation
 

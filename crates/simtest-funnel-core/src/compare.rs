@@ -3,7 +3,7 @@
 
 use crate::corners::build_bounds;
 use crate::errors::compute_errors;
-use crate::options::Options;
+use crate::options::{Options, Range};
 use crate::status::Status;
 use crate::tube::{get_data_char, tube_halfwidths};
 
@@ -122,7 +122,7 @@ pub fn compare(
     let (ex, ey) = compute_errors(t_test, y_test, &lx, &ly, &ux, &uy);
 
     // 6. classify status
-    let status = classify_status(t_ref, t_test, &ex, &ey, eff_lo, eff_hi);
+    let status = classify_status(t_ref, t_test, &ey, eff_lo, eff_hi, opts.x_range);
 
     CompareResult {
         status,
@@ -183,17 +183,27 @@ fn empty_result(status: Status) -> CompareResult {
 
 /// Classify the outcome of a comparison.
 ///
-/// Implements Plan 02 §3.3 step 7:
+/// Implements Plan 02 §3.3 step 7, with coverage judged within the
+/// requested x-range:
 ///
 /// 1. Any non-zero deviation `ey[j]` at a test point whose
 ///    `t_test[j]` lies in the effective x-range `[eff_lo, eff_hi]`
+///    (the requested `x_range` intersected with the reference extent)
 ///    yields [`Status::Fail`]. `Fail` takes precedence over any
 ///    range asymmetry (Plan 02 Q2 / Plan 02.1 §10 Q7).
-/// 2. Otherwise, if the test trajectory extends beyond the reference
-///    x-range by more than `eps`, return [`Status::MissingReference`].
-/// 3. Otherwise, if the reference trajectory extends beyond the test
-///    x-range by more than `eps`, return [`Status::MissingTest`].
+/// 2. Otherwise both trajectories' x-extents (`[first, last]` x, not
+///    only the samples inside the window) are clipped to `x_range`. If
+///    the clipped test extent reaches beyond the clipped reference
+///    extent by more than `eps`, return [`Status::MissingReference`].
+/// 3. Otherwise, if the clipped reference extent reaches beyond the
+///    clipped test extent by more than `eps`, return
+///    [`Status::MissingTest`].
 /// 4. Otherwise, [`Status::Pass`].
+///
+/// With the default unbounded `x_range` the clipping is a no-op, so the
+/// coverage checks compare the full extents (LBNL corpus behaviour). A
+/// window inside the overlap of both trajectories, e.g. reference
+/// `0..1`, test `0..1.1`, `x_range = [0, 1]`, is therefore not "missing".
 ///
 /// `eps = 1e-12 * max(|t_ref_max|, |t_test_max|)` guards the range
 /// comparisons against floating-point noise when the inputs share
@@ -201,10 +211,10 @@ fn empty_result(status: Status) -> CompareResult {
 fn classify_status(
     t_ref: &[f64],
     t_test: &[f64],
-    _ex: &[f64],
     ey: &[f64],
     eff_lo: f64,
     eff_hi: f64,
+    x_range: Range,
 ) -> Status {
     // 1. Fail wins: any non-zero deviation inside the effective range.
     for (j, &e) in ey.iter().enumerate() {
@@ -216,7 +226,7 @@ fn classify_status(
         }
     }
 
-    // 2/3. Range-asymmetry checks.
+    // 2/3. Range-asymmetry checks within the requested x-range.
     let (Some(&tr_lo), Some(&tr_hi)) = (t_ref.first(), t_ref.last()) else {
         return Status::Pass;
     };
@@ -224,11 +234,13 @@ fn classify_status(
         return Status::Pass;
     };
     let eps = 1e-12 * tr_hi.abs().max(tt_hi.abs());
+    let (r_lo, r_hi) = (tr_lo.max(x_range.lo), tr_hi.min(x_range.hi));
+    let (t_lo, t_hi) = (tt_lo.max(x_range.lo), tt_hi.min(x_range.hi));
 
-    if tt_hi > tr_hi + eps || tt_lo < tr_lo - eps {
+    if t_hi > r_hi + eps || t_lo < r_lo - eps {
         return Status::MissingReference;
     }
-    if tr_hi > tt_hi + eps || tr_lo < tt_lo - eps {
+    if r_hi > t_hi + eps || r_lo < t_lo - eps {
         return Status::MissingTest;
     }
 
@@ -238,7 +250,7 @@ fn classify_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::{Range, Tolerances};
+    use crate::options::Tolerances;
 
     fn opts_loose() -> Options {
         Options {
@@ -337,6 +349,61 @@ mod tests {
         let tt = [0.0, 1.0, 2.0];
         let yt = [0.0, 0.0, 0.0];
         let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::Pass);
+    }
+
+    fn opts_loose_range(lo: f64, hi: f64) -> Options {
+        Options {
+            x_range: Range { lo, hi },
+            ..opts_loose()
+        }
+    }
+
+    #[test]
+    fn coverage_judged_within_x_range_missing_reference() {
+        // Test covers 0..1.1, reference 0..1: unbounded range reports the
+        // asymmetry, but an x_range inside the overlap compares cleanly.
+        let t = [0.0, 0.5, 1.0];
+        let y = [0.0, 0.5, 1.0];
+        let tt = [0.0, 0.25, 0.5, 0.75, 1.0, 1.1];
+        let yt = [0.0, 0.25, 0.5, 0.75, 1.0, 1.1];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::MissingReference);
+        let r = compare(&t, &y, &tt, &yt, &opts_loose_range(0.0, 1.0));
+        assert_eq!(r.status, Status::Pass);
+        // The window still extends past the reference: still missing.
+        let r = compare(&t, &y, &tt, &yt, &opts_loose_range(0.0, 1.05));
+        assert_eq!(r.status, Status::MissingReference);
+        // Unbounded below, clipped above.
+        let r = compare(&t, &y, &tt, &yt, &opts_loose_range(f64::NEG_INFINITY, 1.0));
+        assert_eq!(r.status, Status::Pass);
+    }
+
+    #[test]
+    fn coverage_judged_within_x_range_missing_test() {
+        // Reference covers -1..2, test 0..1 (sampled more coarsely than
+        // the window bounds): the window [0, 1] is covered by both.
+        let t = [-1.0, 0.0, 1.0, 2.0];
+        let y = [-1.0, 0.0, 1.0, 2.0];
+        let tt = [0.0, 0.5, 1.0];
+        let yt = [0.0, 0.5, 1.0];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose());
+        assert_eq!(r.status, Status::MissingTest);
+        let r = compare(&t, &y, &tt, &yt, &opts_loose_range(0.0, 1.0));
+        assert_eq!(r.status, Status::Pass);
+        let r = compare(&t, &y, &tt, &yt, &opts_loose_range(-0.5, 1.0));
+        assert_eq!(r.status, Status::MissingTest);
+    }
+
+    #[test]
+    fn coverage_window_not_aligned_with_samples() {
+        // The test trajectory spans past the window even though it has no
+        // sample exactly at the window bound: coverage uses the extent.
+        let t = [0.0, 0.5, 1.0];
+        let y = [0.0, 0.0, 0.0];
+        let tt = [0.0, 0.3, 0.7, 1.2];
+        let yt = [0.0, 0.0, 0.0, 0.0];
+        let r = compare(&t, &y, &tt, &yt, &opts_loose_range(0.0, 1.0));
         assert_eq!(r.status, Status::Pass);
     }
 

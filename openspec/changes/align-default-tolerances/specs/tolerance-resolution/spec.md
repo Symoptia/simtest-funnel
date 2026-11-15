@@ -85,7 +85,9 @@ The command-line tool SHALL take each coefficient from its flag when the
 flag is present (including an explicit `0`), otherwise from the
 parameter file when the file contains that key, and SHALL then resolve
 the combined set of given coefficients with the per-axis rule. A key
-absent from the parameter file SHALL count as not given.
+absent from the parameter file SHALL count as not given. The tool's help
+for the parameter file SHALL state that it uses the LBNL keys but that a
+missing tolerance key is resolved per axis rather than meaning zero.
 
 #### Scenario: Flag only on the y axis
 - **WHEN** the tool is run with `--atoly 0.05` and no other tolerance flag or parameter file
@@ -94,6 +96,10 @@ absent from the parameter file SHALL count as not given.
 #### Scenario: Parameter file without tolerance keys
 - **WHEN** the tool is run with a parameter file that names the trajectories but contains no tolerance keys, and no tolerance flags
 - **THEN** it compares with the default tolerances
+
+#### Scenario: Help explains parameter-file semantics
+- **WHEN** a user reads the help for `--params`
+- **THEN** it says the file has the LBNL keys and that a missing tolerance key is not zero but resolved per axis
 
 #### Scenario: Flag and parameter file combined
 - **WHEN** the parameter file gives `atolx = 0.1` and `atoly = 0.1` and the tool is run with `--rtoly 0.01`

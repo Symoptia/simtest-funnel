@@ -19,7 +19,7 @@ fn fail1_hard_downsampling_keeps_every_violation() {
     let (tt, yt) = read_xy_csv(&dir.join("simulated.csv")).unwrap();
     let opts = Options::default_options();
     let r = compare(&tr, &yr, &tt, &yt, &opts);
-    let s = summarize(&tr, &opts, &r);
+    let s = summarize(&r, &tr, &opts);
     assert!(s.intervals.len() > 1);
 
     let buckets = 50;
@@ -65,7 +65,7 @@ fn fail1_hard_downsampling_keeps_every_violation() {
         (&r2.lower, &r2.upper, &r2.errors),
         (&r.lower, &r.upper, &r.errors)
     );
-    assert_eq!(summarize(&tr, &opts, &r2), s);
+    assert_eq!(summarize(&r2, &tr, &opts), s);
 
     // Pinned values (shared with the Python and TypeScript tests).
     assert_eq!(tt.len(), 5041);

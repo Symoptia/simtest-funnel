@@ -47,6 +47,13 @@ This is the same rule the Rust, Python and TypeScript APIs use.
 simtest-funnel --params cases/success1/param.json
 ```
 
+The `--params` file uses the same keys as LBNL Funnel's
+`funnel/tests/*/param.json`, but **missing tolerance keys do not mean 0**:
+as described above, the keys present are resolved per axis, so a file
+that omits every x (or y) coefficient compares that axis with
+`rtol = 2e-3`. An LBNL param file therefore gives LBNL results only if it
+names at least one coefficient per axis (add e.g. `"atolx": 0`).
+
 Writes five CSV files into the output directory (default `results`):
 
 - `reference.csv` — echoed reference `(x, y)`

@@ -7,9 +7,14 @@
 /// At each reference point `i` the effective half-width in each direction is:
 ///
 /// ```text
-/// half_x[i] = max(max(atolx, rtolx*range_x), ltolx*|t_ref[i]|).max(1e-10)
-/// half_y[i] = max(max(atoly, rtoly*range_y), ltoly*|y_ref[i]|).max(1e-10)
+/// half_x[i] = max(atolx, rtolx*range_x, ltolx*|t_ref[i]|)
+/// half_y[i] = max(atoly, rtoly*range_y, ltoly*|y_ref[i]|)
 /// ```
+///
+/// where `range_*` is the reference extent within `x_range`. A half-width
+/// below `1e-10` (e.g. only `rtoly` on a constant reference, `range_y = 0`)
+/// falls back to `rtol * max|reference value|` on that axis when `rtol > 0`,
+/// then to the `1e-10` floor.
 ///
 /// A `Tolerances` value is always fully explicit and used verbatim.
 /// It deliberately has no `Default` impl: use [`Tolerances::DEFAULT`]

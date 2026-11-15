@@ -121,7 +121,11 @@ aware of the following:
 - **Richer `Status` enum.** In addition to `Pass` (`0`) and `Fail`
   (`-1`), `simtest-funnel` reports `MissingReference` (`1`) and
   `MissingTest` (`2`) when one trajectory extends past the other's
-  x-range. LBNL returns `0` in both cases. Validation errors use
+  x-range. Coverage is judged within the requested `x_range`: both
+  x-extents are clipped to it first, so restricting `x_range` to the
+  overlap of the two trajectories (e.g. reference `0..1`, test `0..1.1`,
+  `x_range = [0, 1]`) yields `Pass`/`Fail` instead. LBNL returns `0` in
+  both cases. Validation errors use
   codes `10..14` (`NonMonotonic`, `LengthMismatch`, `EmptyRange`,
   `BufferTooSmall`, `InsufficientData`).
 - **Non-zero CLI exit codes.** The CLI maps the `Status` enum onto
@@ -137,7 +141,9 @@ aware of the following:
   one coefficient given uses zero for its other coefficients; an
   explicit `0` counts as given. So giving only `atoly` keeps
   `rtolx = 2e-3` on the x axis. For exact LBNL parity give at least one
-  coefficient per axis (e.g. `atolx = 0`).
+  coefficient per axis (e.g. `atolx = 0`). This also applies to CLI
+  `--params` files: they use the LBNL `param.json` keys, but a missing
+  tolerance key is resolved per axis instead of meaning `0`.
 
 The core and CLI READMEs cross-link back to this section.
 

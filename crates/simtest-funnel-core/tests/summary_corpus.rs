@@ -21,7 +21,7 @@ fn fail1_summary_is_consistent_with_result() {
         x_range: Range::default(),
     };
     let r = compare(&tr, &yr, &tt, &yt, &opts);
-    let s = summarize(&tr, &opts, &r);
+    let s = summarize(&r, &tr, &opts);
     assert_eq!(s.status, Status::Fail);
 
     // Consistency with the raw result.

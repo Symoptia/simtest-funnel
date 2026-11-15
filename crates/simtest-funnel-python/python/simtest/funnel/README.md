@@ -85,6 +85,10 @@ intersected with the reference x-extent) count. For validation statuses
 (e.g. `NON_MONOTONIC`) the summary carries only the status and the echoed
 settings; `worst`, `compared_range` and both fractions are `None`.
 
+`MISSING_REFERENCE` / `MISSING_TEST` are judged within `x_range`: both
+x-extents are clipped to it first, so `Range(lo, hi)` inside the overlap
+of the two trajectories yields `PASS` or `FAIL`.
+
 ## Downsampling for plots
 
 `downsample_min_max` reduces a long signal for plotting or reporting. It

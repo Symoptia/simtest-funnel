@@ -3,7 +3,7 @@
 ## 1. Rust core
 
 - [x] 1.1 Promote the clamped interpolation helper in `errors.rs` to `pub(crate)` without behaviour change; verify `cargo test -p simtest-funnel-core` still passes
-- [x] 1.2 Add `summary.rs` with documented `ViolationSummary`, `ViolationInterval`, `WorstDeviation`, `Direction` and `summarize(t_ref, opts, result)` per design D1–D8; re-export from `lib.rs`; verify with unit tests covering one excursion, sign flip, boundary single-point violation, ignored out-of-range deviations, tie-break, tube half-width, span/point shares (incl. zero-length range), PASS, and validation statuses
+- [x] 1.2 Add `summary.rs` with documented `ViolationSummary`, `ViolationInterval`, `WorstDeviation`, `Direction` and `summarize(result, t_ref, opts)` per design D1–D8; re-export from `lib.rs`; verify with unit tests covering one excursion, sign flip, boundary single-point violation, ignored out-of-range deviations, tie-break, tube half-width, span/point shares (incl. zero-length range), PASS, and validation statuses
 - [x] 1.3 Add `Serialize` (under the `json` feature) for the summary types plus `Status`, `Tolerances`, `Range` per D9; verify with a `json`-feature unit test asserting `"status":"Fail"`, `"direction":"above"` and `null` for an unbounded x-range
 - [x] 1.4 Add a corpus-based integration test (fail1) asserting the summary is consistent with the result (status FAIL, ≥1 interval, worst equals max |error| in range); verify `cargo test --workspace --features simtest-funnel-core/json` passes
 

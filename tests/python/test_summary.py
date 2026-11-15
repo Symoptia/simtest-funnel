@@ -130,3 +130,22 @@ def test_fail1_matches_rust_pinned_values() -> None:
     assert (s.points_compared, s.points_outside) == (5041, 498)
     assert s.fraction_of_points_outside == 0.09878992263439794
     assert s.fraction_of_span_outside == 0.0988095238095238
+
+
+def test_coverage_is_judged_within_x_range() -> None:
+    """Test covering 0..1.1 against a 0..1 reference is MISSING_REFERENCE
+    unbounded, but a window inside the overlap compares normally and the
+    summary judges exactly the points in that window."""
+    t = np.array([0.0, 0.5, 1.0])
+    y = np.zeros(3)
+    tt = np.array([0.0, 0.25, 0.5, 0.75, 1.0, 1.1])
+    yt = np.zeros(6)
+    tol = Tolerances(atolx=0.0, atoly=0.1)
+    assert compare(t, y, tt, yt, Options(tolerances=tol)).status == Status.MISSING_REFERENCE
+    opts = Options(tolerances=tol, x_range=Range(0.0, 1.0))
+    r = compare(t, y, tt, yt, opts)
+    assert r.status == Status.PASS
+    s = summarize(r, t, opts)
+    assert (s.points_compared, s.points_outside) == (5, 0)
+    one_sided = Options(tolerances=tol, x_range=Range(hi=1.0))
+    assert compare(t, y, tt, yt, one_sided).status == Status.PASS
