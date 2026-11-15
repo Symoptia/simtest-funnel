@@ -4,28 +4,35 @@ version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
     "simtest-funnel",
+    "simtest-funnel-mcp",
     "numpy>=1.26",
     "pandas>=2",
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/python"]
+testpaths = ["tests/python", "python/simtest-funnel-mcp/tests"]
 addopts = "-v"
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
-mypy_path = ["crates/simtest-funnel-python/python", "tests/python/tools"]
+mypy_path = [
+    "crates/simtest-funnel-python/python",
+    "tests/python/tools",
+    "python/simtest-funnel-mcp/src",
+]
 namespace_packages = true
 explicit_package_bases = true
 
 [tool.uv.workspace]
 members = [
     "crates/simtest-funnel-python",
+    "python/simtest-funnel-mcp",
 ]
 
 [tool.uv.sources]
 simtest-funnel = { workspace = true, editable = true }
+simtest-funnel-mcp = { workspace = true, editable = true }
 
 [dependency-groups]
 dev = [

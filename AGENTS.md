@@ -23,6 +23,8 @@ simtest-funnel/
 │   └── simtest-funnel-wasm/       # wasm-bindgen bindings
 ├── packages/
 │   └── sdk/                       # TypeScript wrapper → @simtest-js/funnel
+├── python/
+│   └── simtest-funnel-mcp/        # Local MCP server → simtest-funnel-mcp (PyPI)
 ├── tests/
 │   └── python/                    # pytest integration tests
 ├── scripts/                       # Helper scripts (secrets, setup)
@@ -68,13 +70,14 @@ All targets are defined in the `Makefile`:
 | `make build` | Build Rust workspace + maturin develop + pnpm build |
 | `make test` | Run all three language test suites |
 | `make test-rust` | `cargo test --workspace` |
-| `make test-python` | `pytest tests/python/` |
+| `make test-python` | `pytest tests/python/` + the `simtest-funnel-mcp` tests |
 | `make test-js` | vitest (JavaScript/TypeScript) |
 | `make docs-python` | Build the pdoc Python API reference (`target/doc/python`) |
 | `make docs-js` | Build the typedoc TypeScript API reference (`target/doc/js`) |
 | `make lint` | Run all linters |
 | `make lint-rust` | Clippy + `cargo fmt` check |
 | `make lint-js` | Biome check (JavaScript/TypeScript) |
+| `make lint-python` | `mypy --strict` on the `simtest-funnel-mcp` package and its tests |
 | `make fmt` | Auto-format all code |
 | `make fmt-rust` | `cargo fmt --all` |
 | `make fmt-js` | Biome format write |

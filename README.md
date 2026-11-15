@@ -153,7 +153,7 @@ All common tasks are available through `make`:
 | `make build` | Build Rust workspace + maturin develop + pnpm build |
 | `make test` | Run all three language test suites |
 | `make test-rust` | `cargo test --workspace` |
-| `make test-python` | `pytest tests/python/` |
+| `make test-python` | `pytest tests/python/` + `python/simtest-funnel-mcp/tests` |
 | `make test-js` | vitest (JavaScript/TypeScript) |
 | `make docs-python` | Build the pdoc site under `target/doc/python` |
 | `make docs-js` | Build the typedoc site under `target/doc/js` |
@@ -163,11 +163,32 @@ All common tasks are available through `make`:
 | `make lint` | Run all linters |
 | `make lint-rust` | Clippy + `cargo fmt` check |
 | `make lint-js` | Biome check (JavaScript/TypeScript) |
+| `make lint-python` | mypy --strict (`simtest-funnel-mcp`) |
 | `make fmt` | Auto-format all code |
 | `make fmt-rust` | `cargo fmt --all` |
 | `make fmt-js` | Biome format write |
 | `make clean` | Remove all build artifacts |
 | `make check-secrets` | Validate `.env` vars and GitHub Secrets |
+
+---
+
+## MCP server for AI agents
+
+[`python/simtest-funnel-mcp`](python/simtest-funnel-mcp) is a local, read-only
+[MCP](https://modelcontextprotocol.io) server (stdio) with two tools,
+`describe_signals(path)` and `compare_signals(reference_path, test_path, ...)`,
+that let agents such as Claude Code or Claude Desktop run funnel comparisons on
+local CSV files with explicit tolerances, without the samples entering the
+model's context.
+
+```bash
+claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # once published to PyPI
+claude mcp add simtest-funnel -- uv run --directory "$PWD" --quiet simtest-funnel-mcp  # from this checkout
+```
+
+This repository ships a [`.mcp.json`](.mcp.json) that starts the server from
+the workspace with `uv run`. See the [package README](python/simtest-funnel-mcp/README.md)
+for the tools, the tolerance coefficients and Claude Desktop configuration.
 
 ---
 

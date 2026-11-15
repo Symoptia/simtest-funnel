@@ -38,7 +38,7 @@ jobs:
       - run: pip install uv "maturin[patchelf]"
       - run: uv sync
       - run: cd crates/simtest-funnel-python && maturin develop --uv
-      - run: uv run python -m pytest tests/python/ -v
+      - run: uv run python -m pytest tests/python/ python/simtest-funnel-mcp/tests -v
 
   js-test:
     runs-on: ubuntu-latest
@@ -73,5 +73,10 @@ jobs:
       - uses: pnpm/action-setup@v5
         with:
           version: 9
+      # `make lint` includes mypy --strict for python/simtest-funnel-mcp.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install uv
       - run: cd packages/sdk && pnpm install
       - run: make lint

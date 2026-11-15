@@ -1,4 +1,4 @@
-.PHONY: build build-sdk check-secrets clean demo demo-serve docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-rust \
+.PHONY: build build-sdk check-secrets clean demo demo-serve docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-python lint-rust \
         test test-docs test-js test-python test-rust
 
 help:  ## Show this help message (all targets, alphabetical)
@@ -47,11 +47,14 @@ fmt-js:  ## Biome format write (JavaScript/TypeScript)
 fmt-rust:  ## cargo fmt --all
 	cargo fmt --all
 
-lint: lint-rust lint-js  ## Run all linters
+lint: lint-rust lint-js lint-python  ## Run all linters
 
 lint-js:  ## Biome check (JavaScript/TypeScript)
 	cd packages/sdk && pnpm lint
 	cd examples/web && pnpm lint
+
+lint-python:  ## mypy --strict (simtest-funnel-mcp package and its tests)
+	uv run mypy python/simtest-funnel-mcp/src python/simtest-funnel-mcp/tests
 
 lint-rust:  ## Clippy + cargo fmt check
 	cargo clippy --workspace --all-targets --features simtest-funnel-core/json -- -D warnings
@@ -62,9 +65,9 @@ test: test-rust test-python test-js test-docs  ## Run all three language test su
 test-js:  ## vitest (JavaScript/TypeScript)
 	cd packages/sdk && pnpm run build:wasm && pnpm test
 
-test-python:  ## pytest tests/python/
+test-python:  ## pytest tests/python/ + simtest-funnel-mcp tests
 	cd crates/simtest-funnel-python && uv run maturin develop --uv
-	uv run python -m pytest tests/python/ -v
+	uv run python -m pytest tests/python/ python/simtest-funnel-mcp/tests -v
 
 test-docs:  ## cargo doc --no-deps (excludes FFI crates that trigger rustdoc ICE)
 	cargo doc --no-deps --workspace --exclude simtest-funnel-python
