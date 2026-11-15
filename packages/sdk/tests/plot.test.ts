@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   type CompareResult,
-  type PlotlyLike,
   compare,
   createFunnelPlot,
+  type PlotlyLike,
 } from '../src/index.js';
 
 function makeEl(): HTMLElement {

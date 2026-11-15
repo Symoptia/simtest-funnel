@@ -1,9 +1,9 @@
 import {
   type CompareResult,
-  type PlotlyLike,
-  Status,
   compare,
   createFunnelPlot,
+  type PlotlyLike,
+  Status,
 } from '@simtest-js/funnel';
 
 /** A single demo signal: one column of the CSV, reference vs test. */

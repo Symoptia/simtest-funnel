@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Status, compare, defaultOptions, version } from '../src/index.js';
+import { compare, defaultOptions, Status, version } from '../src/index.js';
 
 function readXY(path: string): { x: Float64Array; y: Float64Array } {
   const lines = readFileSync(path, 'utf8').trim().split(/\r?\n/);

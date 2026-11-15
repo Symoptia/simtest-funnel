@@ -13,7 +13,9 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/simtest-funnel-wasm --target bundler --out-dir ../../packages/sdk/src/wasm",
     "build:dist": "tsc && cp -r src/wasm dist/wasm && rm -f dist/wasm/.gitignore dist/wasm/package.json",
@@ -24,11 +26,10 @@
     "docs": "typedoc src/index.ts --out ../../target/doc/js"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.7.0",
-    "typedoc": "^0.28.0",
-    "typescript": "^5.3.0",
-    "vite-plugin-wasm": "^3.3.0",
-    "vite-plugin-top-level-await": "^1.4.0",
-    "vitest": "^1.0.0"
+    "@biomejs/biome": "^2.6.8",
+    "typedoc": "^0.28.20",
+    "typescript": "^6.0.3",
+    "vite-plugin-wasm": "^3.6.0",
+    "vitest": "^5.1.0"
   }
 }

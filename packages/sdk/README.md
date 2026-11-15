@@ -20,7 +20,7 @@ pnpm add @simtest-js/funnel
 ## Quick start
 
 ```ts
-import { compare, Status } from "@simtest-js/funnel";
+import { compare, Status } from '@simtest-js/funnel';
 
 const tRef = Float64Array.from({ length: 101 }, (_, i) => i / 100);
 const yRef = tRef.map((t) => Math.sin(2 * Math.PI * t));
@@ -31,9 +31,9 @@ const result = compare(tRef, yRef, tRef, yTest, {
 });
 
 if (result.status === Status.Pass) {
-  console.log("inside funnel");
+  console.log('inside funnel');
 } else {
-  console.log("status:", result.status, "signed errors:", result.errorsY);
+  console.log('status:', result.status, 'signed errors:', result.errorsY);
 }
 ```
 
@@ -45,17 +45,17 @@ above the upper bound, negative below the lower bound.
 
 Mirror `simtest_funnel_core::Status`:
 
-| Name                | Code |
-|---------------------|-----:|
-| `Pass`              |   0  |
-| `Fail`              |  -1  |
-| `MissingReference`  |   1  |
-| `MissingTest`       |   2  |
-| `NonMonotonic`      |  10  |
-| `LengthMismatch`    |  11  |
-| `EmptyRange`        |  12  |
-| `BufferTooSmall`    |  13  |
-| `InsufficientData`  |  14  |
+| Name               | Code |
+| ------------------ | ---: |
+| `Pass`             |    0 |
+| `Fail`             |   -1 |
+| `MissingReference` |    1 |
+| `MissingTest`      |    2 |
+| `NonMonotonic`     |   10 |
+| `LengthMismatch`   |   11 |
+| `EmptyRange`       |   12 |
+| `BufferTooSmall`   |   13 |
+| `InsufficientData` |   14 |
 
 ## Reference documentation
 
