@@ -46,11 +46,11 @@
 
 ## 7. Delivery + end-to-end verification
 
-- [ ] 7.1 Commit the change with a Conventional Commit (e.g. `feat(demo): add in-browser funnel demo landing page`) and push to `beta`
-- [ ] 7.2 Watch CI to green with `gh run watch` (Release workflow on `beta`), fixing any failures
-- [ ] 7.3 Confirm the `beta` prerelease cut and the `publish-docs` job deployed (`gh run view --log`)
-- [ ] 7.4 `curl -fsI https://beta.simtest-funnel.pages.dev/demo/` returns HTTP 200 (demo page reachable)
-- [ ] 7.5 `curl -fs https://beta.simtest-funnel.pages.dev/demo/` and assert the HTML references the pinned Plotly script and the demo bundle
-- [ ] 7.6 `curl -fsI` the demo's `*.wasm` and `reference.csv`/`test.csv` assets and confirm 200 + `application/wasm` content-type on the wasm
-- [ ] 7.7 Confirm the root hub (`curl -fs https://beta.simtest-funnel.pages.dev/`) links to GitHub, `demo/`, and the API doc trees, and that those trees still resolve
-- [ ] 7.8 Open `/demo` in a browser and confirm e2e: three plots render with x PASS, y PASS, z FAIL
+- [x] 7.1 Commit the change with a Conventional Commit (e.g. `feat(demo): add in-browser funnel demo landing page`) and push to `beta`
+- [x] 7.2 Watch CI to green with `gh run watch` (Release workflow on `beta`), fixing any failures
+- [x] 7.3 Confirm the `beta` prerelease cut and the `publish-docs` job deployed (`gh run view --log`)
+- [x] 7.4 `curl -fsI https://beta.simtest-funnel.pages.dev/demo/` returns HTTP 200 (demo page reachable)
+- [x] 7.5 `curl -fs https://beta.simtest-funnel.pages.dev/demo/` and assert the HTML references the pinned Plotly script and the demo bundle
+- [x] 7.6 `curl -fsI` the demo's `*.wasm` and `reference.csv`/`test.csv` assets and confirm 200 + `application/wasm` content-type on the wasm
+- [x] 7.7 Confirm the root hub (`curl -fs https://beta.simtest-funnel.pages.dev/`) links to GitHub, `demo/`, and the API doc trees, and that those trees still resolve
+- [x] 7.8 Open `/demo` in a browser and confirm e2e: three plots render with x PASS, y PASS, z FAIL
