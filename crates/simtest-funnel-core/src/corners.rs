@@ -236,38 +236,159 @@ fn build_corner_curve(
     (cx, cy)
 }
 
+/// A polyline edited in place as a gap buffer over its `x` / `y` vectors.
+///
+/// `remove_loop` deletes and inserts points close to a cursor that only
+/// moves locally. With plain `Vec::drain` / `insert` / `remove` every
+/// edit shifts the whole tail (`O(n)` per edit, hence `O(n^2)` for noisy
+/// references, which produce `O(n)` loops). The gap buffer keeps an
+/// unused hole at the last edit position, so an edit only moves the
+/// points between the previous and the current edit position. Logical
+/// indices, values and the order of floating-point operations are
+/// unchanged, so results are bit-identical.
+struct GapPolyline<'a> {
+    /// Points `[0, gap_start)` and `[gap_end, x.len())` are live.
+    x: &'a mut Vec<f64>,
+    y: &'a mut Vec<f64>,
+    gap_start: usize,
+    gap_end: usize,
+}
+
+impl<'a> GapPolyline<'a> {
+    /// Start editing; the gap is initially empty, at the end.
+    fn new(x: &'a mut Vec<f64>, y: &'a mut Vec<f64>) -> Self {
+        assert_eq!(x.len(), y.len());
+        let n = x.len();
+        Self {
+            x,
+            y,
+            gap_start: n,
+            gap_end: n,
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.x.len() - (self.gap_end - self.gap_start)
+    }
+
+    /// Physical index of logical point `i`. An out-of-range `i` maps to
+    /// at least `x.len()`, so the subsequent slice access panics just as
+    /// the former `Vec` indexing did (it never lands inside the gap).
+    #[inline]
+    fn phys(&self, i: usize) -> usize {
+        if i < self.gap_start {
+            i
+        } else {
+            i + (self.gap_end - self.gap_start)
+        }
+    }
+
+    #[inline]
+    fn x(&self, i: usize) -> f64 {
+        self.x[self.phys(i)]
+    }
+
+    #[inline]
+    fn y(&self, i: usize) -> f64 {
+        self.y[self.phys(i)]
+    }
+
+    /// Move the gap so it starts at logical position `pos`.
+    fn move_gap_to(&mut self, pos: usize) {
+        if pos < self.gap_start {
+            let n = self.gap_start - pos;
+            let dst = self.gap_end - n;
+            self.x.copy_within(pos..self.gap_start, dst);
+            self.y.copy_within(pos..self.gap_start, dst);
+            self.gap_start = pos;
+            self.gap_end = dst;
+        } else if pos > self.gap_start {
+            let n = pos - self.gap_start;
+            let src = self.gap_end..self.gap_end + n;
+            self.x.copy_within(src.clone(), self.gap_start);
+            self.y.copy_within(src, self.gap_start);
+            self.gap_start += n;
+            self.gap_end += n;
+        }
+    }
+
+    /// Delete logical points `start..end` (like `Vec::drain(start..end)`).
+    fn delete(&mut self, start: usize, end: usize) {
+        assert!(start <= end && end <= self.len(), "delete out of range");
+        self.move_gap_to(start);
+        self.gap_end += end - start;
+    }
+
+    /// Insert a point before logical index `i` (like `Vec::insert`);
+    /// `i == len()` appends.
+    fn insert(&mut self, i: usize, x: f64, y: f64) {
+        assert!(i <= self.len(), "insert out of range");
+        if self.gap_start == self.gap_end {
+            // Gap exhausted: open a new one (amortised O(1) per insert).
+            let extra = (self.x.len() / 8).max(64);
+            let at = self.gap_start;
+            self.x.splice(at..at, std::iter::repeat_n(0.0, extra));
+            self.y.splice(at..at, std::iter::repeat_n(0.0, extra));
+            self.gap_end += extra;
+        }
+        self.move_gap_to(i);
+        self.x[self.gap_start] = x;
+        self.y[self.gap_start] = y;
+        self.gap_start += 1;
+    }
+}
+
+impl Drop for GapPolyline<'_> {
+    /// Close the gap so `x` / `y` hold exactly the live points.
+    fn drop(&mut self) {
+        let n = self.len();
+        self.move_gap_to(n);
+        self.x.truncate(n);
+        self.y.truncate(n);
+    }
+}
+
 /// Remove backward-going segments, inserting intersection points.
-/// Direct port of `removeLoop`.
+/// Direct port of `removeLoop`; edits through a [`GapPolyline`] so each
+/// loop removal costs time proportional to the loop, not to the curve.
 fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
+    let mut p = GapPolyline::new(x, y);
+    remove_loop_gap(&mut p, curve);
+}
+
+fn remove_loop_gap(p: &mut GapPolyline, curve: Curve) {
     let cur_ind: i32 = match curve {
         Curve::Lower => -1,
         Curve::Upper => 1,
     };
     let mut j: usize = 1;
-    while j + 2 < x.len() {
-        if x[j + 1] < x[j] {
+    while j + 2 < p.len() {
+        if p.x(j + 1) < p.x(j) {
             // ===== 1. find i, k =====
             let mut i: usize = j;
             let mut i_previous: usize = i;
 
             // Find i_s such that X[i_s - 1] <= X[j+1] < X[i_s]
-            while i > 0 && x[j + 1] < x[i - 1] {
+            let x_j1 = p.x(j + 1);
+            while i > 0 && x_j1 < p.x(i - 1) {
                 i -= 1;
             }
+            let x_j = p.x(j);
             let mut k_max: usize = j + 1;
-            while k_max < x.len() - 1 && x[k_max] < x[j] {
+            while k_max < p.len() - 1 && p.x(k_max) < x_j {
                 k_max += 1;
             }
 
             let mut k: usize = j + 1;
             // `y_intp` is the interpolated y at X[k] on segment (i-1, i)
-            let mut y_intp: f64 = if i == 0 { y[0] } else { y[i - 1] };
+            let mut y_intp: f64 = if i == 0 { p.y(0) } else { p.y(i - 1) };
 
             loop {
                 let cond = if cur_ind == -1 {
-                    y_intp < y[k]
+                    y_intp < p.y(k)
                 } else {
-                    y[k] < y_intp
+                    p.y(k) < y_intp
                 };
                 if !cond || k >= k_max {
                     break;
@@ -275,16 +396,18 @@ fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
                 i_previous = i;
                 k += 1;
                 // advance i
+                let (xk, yk) = (p.x(k), p.y(k));
                 while i < j {
-                    let advance = x[i] < x[k]
+                    let (xi, yi) = (p.x(i), p.y(i));
+                    let advance = xi < xk
                         || (cur_ind == -1
-                            && equ(x[i], x[k])
-                            && y[i] < y[k]
-                            && !(k + 1 < x.len() && equ(x[k], x[k + 1]) && y[k + 1] < y[k]))
+                            && equ(xi, xk)
+                            && yi < yk
+                            && !(k + 1 < p.len() && equ(xk, p.x(k + 1)) && p.y(k + 1) < yk))
                         || (cur_ind == 1
-                            && equ(x[i], x[k])
-                            && y[i] > y[k]
-                            && !(k + 1 < x.len() && equ(x[k], x[k + 1]) && y[k + 1] > y[k]));
+                            && equ(xi, xk)
+                            && yi > yk
+                            && !(k + 1 < p.len() && equ(xk, p.x(k + 1)) && p.y(k + 1) > yk));
                     if !advance {
                         break;
                     }
@@ -292,11 +415,12 @@ fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
                 }
                 // linear interpolation of y at X[k] on segment (i-1, i)
                 if i == 0 {
-                    y_intp = y[0];
-                } else if !equ(x[i], x[i - 1]) {
-                    y_intp = (y[i] - y[i - 1]) / (x[i] - x[i - 1]) * (x[k] - x[i - 1]) + y[i - 1];
+                    y_intp = p.y(0);
+                } else if !equ(p.x(i), p.x(i - 1)) {
+                    y_intp = (p.y(i) - p.y(i - 1)) / (p.x(i) - p.x(i - 1)) * (xk - p.x(i - 1))
+                        + p.y(i - 1);
                 } else {
-                    y_intp = y[i];
+                    y_intp = p.y(i);
                 }
             }
 
@@ -307,19 +431,20 @@ fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
                 i_previous
             };
             // linear interpolation of y at X[i] on segment (k-1, k)
-            if k >= 1 && !equ(x[k], x[k - 1]) {
-                y_intp = (y[k] - y[k - 1]) / (x[k] - x[k - 1]) * (x[i] - x[k - 1]) + y[k - 1];
+            if k >= 1 && !equ(p.x(k), p.x(k - 1)) {
+                y_intp = (p.y(k) - p.y(k - 1)) / (p.x(k) - p.x(k - 1)) * (p.x(i) - p.x(k - 1))
+                    + p.y(k - 1);
             }
             // Advance i
             loop {
-                let cond = if k >= 1 && !equ(x[k], x[k - 1]) {
+                let cond = if k >= 1 && !equ(p.x(k), p.x(k - 1)) {
                     if cur_ind == -1 {
-                        y[i] < y_intp
+                        p.y(i) < y_intp
                     } else {
-                        y_intp < y[i]
+                        y_intp < p.y(i)
                     }
                 } else if k >= 1 {
-                    x[i] < x[k]
+                    p.x(i) < p.x(k)
                 } else {
                     false
                 };
@@ -327,33 +452,36 @@ fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
                     break;
                 }
                 i += 1;
-                if i >= x.len() {
+                if i >= p.len() {
                     break;
                 }
-                if k >= 1 && !equ(x[k], x[k - 1]) {
-                    y_intp = (y[k] - y[k - 1]) / (x[k] - x[k - 1]) * (x[i] - x[k - 1]) + y[k - 1];
+                if k >= 1 && !equ(p.x(k), p.x(k - 1)) {
+                    y_intp = (p.y(k) - p.y(k - 1)) / (p.x(k) - p.x(k - 1)) * (p.x(i) - p.x(k - 1))
+                        + p.y(k - 1);
                 }
             }
 
             // ===== 2. intersection point =====
             let (mut ix, mut iy, mut add_point) = (0.0, 0.0, true);
-            if k == 0 || i == 0 || (equ(x[i], x[i - 1]) && equ(x[k], x[k - 1])) {
+            if k == 0 || i == 0 || (equ(p.x(i), p.x(i - 1)) && equ(p.x(k), p.x(k - 1))) {
                 add_point = false;
-            } else if equ(x[i], x[i - 1]) {
-                ix = x[i];
-                iy = y[k - 1] + ((x[i] - x[k - 1]) * (y[k] - y[k - 1])) / (x[k] - x[k - 1]);
-            } else if equ(x[k], x[k - 1]) {
-                ix = x[k];
-                iy = y[i - 1] + ((x[k] - x[i - 1]) * (y[i] - y[i - 1])) / (x[i] - x[i - 1]);
+            } else if equ(p.x(i), p.x(i - 1)) {
+                ix = p.x(i);
+                iy = p.y(k - 1)
+                    + ((p.x(i) - p.x(k - 1)) * (p.y(k) - p.y(k - 1))) / (p.x(k) - p.x(k - 1));
+            } else if equ(p.x(k), p.x(k - 1)) {
+                ix = p.x(k);
+                iy = p.y(i - 1)
+                    + ((p.x(k) - p.x(i - 1)) * (p.y(i) - p.y(i - 1))) / (p.x(i) - p.x(i - 1));
             } else {
-                let a1 = (y[i] - y[i - 1]) / (x[i] - x[i - 1]);
-                let a2 = (y[k] - y[k - 1]) / (x[k] - x[k - 1]);
+                let a1 = (p.y(i) - p.y(i - 1)) / (p.x(i) - p.x(i - 1));
+                let a2 = (p.y(k) - p.y(k - 1)) / (p.x(k) - p.x(k - 1));
                 if !equ(a1, a2) {
-                    ix = (a1 * x[i - 1] - a2 * x[k - 1] - y[i - 1] + y[k - 1]) / (a1 - a2);
+                    ix = (a1 * p.x(i - 1) - a2 * p.x(k - 1) - p.y(i - 1) + p.y(k - 1)) / (a1 - a2);
                     if a1.abs() > a2.abs() {
-                        iy = a2 * (ix - x[k - 1]) + y[k - 1];
+                        iy = a2 * (ix - p.x(k - 1)) + p.y(k - 1);
                     } else {
-                        iy = a1 * (ix - x[i - 1]) + y[i - 1];
+                        iy = a1 * (ix - p.x(i - 1)) + p.y(i - 1);
                     }
                 } else {
                     add_point = false;
@@ -362,33 +490,34 @@ fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
 
             // ===== 3. Delete points i..=k-1 =====
             if k > i {
-                x.drain(i..k);
-                y.drain(i..k);
+                p.delete(i, k);
             }
             // ===== 4. Add intersection point =====
-            if add_point && i < x.len() {
-                if !(equ(x[i], ix) && equ(y[i], iy)) {
-                    x.insert(i, ix);
-                    y.insert(i, iy);
+            if add_point && i < p.len() {
+                if !(equ(p.x(i), ix) && equ(p.y(i), iy)) {
+                    p.insert(i, ix, iy);
                 }
             } else if add_point {
-                x.push(ix);
-                y.push(iy);
+                let end = p.len();
+                p.insert(end, ix, iy);
             }
 
             // ===== 5. set j = i =====
             j = i;
 
             // ===== 6. Delete doubled points =====
-            if i >= 1 && i < x.len() && equ(x[i - 1], x[i]) && equ(y[i - 1], y[i]) {
-                x.remove(i);
-                y.remove(i);
+            if i >= 1 && i < p.len() && equ(p.x(i - 1), p.x(i)) && equ(p.y(i - 1), p.y(i)) {
+                p.delete(i, i + 1);
                 j = i.saturating_sub(1);
             }
         }
         j += 1;
     }
 }
+
+#[cfg(test)]
+#[path = "corners_differential.rs"]
+mod differential;
 
 #[cfg(test)]
 mod tests {
