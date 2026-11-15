@@ -332,3 +332,95 @@ def test_text_rendering(demo_reference: Path, demo_test: Path) -> None:
     assert "tolerance set loose: atolx=0.1 atoly=0.1 ltolx=0" in text
     assert "snippet" not in text
     assert "snippet" not in structured(result)
+
+
+def test_longer_test_range_reports_counts_and_overlap_x_range(write_csv: WriteCsv) -> None:
+    # Regression: every row was a bare MISSING_REFERENCE error and the note's
+    # advice to pass x_range did not help (the library ignored it).
+    t_ref = np.linspace(0.0, 1.0, 11)
+    t_tst = np.linspace(0.0, 1.1, 12)
+    ref = write_csv("ref.csv", "time,x\n" + "".join(f"{float(t)!r},{float(t)!r}\n" for t in t_ref))
+    tst = write_csv("tst.csv", "time,x\n" + "".join(f"{float(t)!r},{float(t)!r}\n" for t in t_tst))
+    d = _compare(ref, tst, tolerances=[LOOSE])
+    x = d["rows"][0]
+    assert (x["verdict"], x["status_name"]) == ("error", "MISSING_REFERENCE")
+    assert x["points_compared"] == 11 and x["points_outside"] == 0
+    assert "test covers time [0.0, 1.1]" in x["problem"]
+    assert "reference covers time [0.0, 1.0]" in x["problem"]
+    assert 'x_range {"lo": 0.0, "hi": 1.0} compares the overlap' in x["problem"]
+    assert any('pass x_range {"lo": 0.0, "hi": 1.0}' in n for n in d["notes"])
+    # Following the advice works.
+    fixed = _compare(ref, tst, tolerances=[LOOSE], x_range=XRange(lo=0.0, hi=1.0))
+    assert fixed["rows"][0]["verdict"] == "pass"
+    assert not any("time ranges differ" in n for n in fixed["notes"])
+    text = compare_signals_impl(
+        str(ref), str(tst), [], tolerances=[LOOSE]
+    ).content[0].text  # type: ignore[union-attr]
+    assert "MISSING_REFERENCE (0/11 points outside)" in text
+
+
+def test_longer_reference_range_within_requested_x_range(write_csv: WriteCsv) -> None:
+    ref = write_csv("ref.csv", "time,x\n0,0\n1,1\n2,2\n3,3\n")
+    tst = write_csv("tst.csv", "time,x\n1,1\n2,2\n")
+    d = _compare(ref, tst, x_range=XRange(lo=0.5))
+    x = d["rows"][0]
+    assert x["status_name"] == "MISSING_TEST"
+    assert "within the requested x_range" in x["problem"]
+    assert 'x_range {"lo": 1.0, "hi": 2.0}' in x["problem"]
+
+
+def test_signal_column_named_time_next_to_time_column(write_csv: WriteCsv) -> None:
+    # Regression: the internal key "time" collided with a signal column "time".
+    ref = write_csv("ref.csv", "Time,time,a\n0,5,1\n1,6,2\n2,7,3\n")
+    tst = write_csv("tst.csv", "Time,time,a\n0,5,1\n1,6,2\n2,9,3\n")
+    d = _compare(ref, tst, tolerances=[ToleranceSet(atolx=0.0, atoly=0.1)])
+    rows = _rows(d)
+    assert d["reference"]["time_column"] == "Time"
+    assert rows[("time", "set1")]["verdict"] == "fail"
+    assert rows[("time", "set1")]["worst"]["x"] == 2.0
+    assert rows[("a", "set1")]["verdict"] == "pass"
+
+
+def test_columns_accept_glob_patterns(write_csv: WriteCsv) -> None:
+    ref = write_csv("ref.csv", "time,m.a.y,m.b.y,m.c.u,q\n0,0,0,0,0\n1,1,1,1,1\n")
+    tst = write_csv("tst.csv", "time,m.a.y,m.b.y,m.c.u,r\n0,0,0,0,0\n1,1,1,1,1\n")
+    d = _compare(ref, tst, columns=["m.*.y", "q", "z*"])
+    assert [r["column"] for r in d["rows"] if r["verdict"] == "pass"] == ["m.a.y", "m.b.y"]
+    assert _rows(d)[("q", "default")]["status_name"] == "MISSING_TEST"
+    assert any("pattern 'z*' matched no signal column" in n for n in d["notes"])
+
+
+def test_epoch_times_keep_full_precision(write_csv: WriteCsv) -> None:
+    # Regression: 10-significant-digit rounding turned 1731628800.25 into
+    # 1731628800.0 in structured content and 1.732e+09 in text.
+    t0 = 1731628800.0
+    times = [t0 + 0.25 * k for k in range(8)]
+    ref = write_csv("ref.csv", "time,x\n" + "".join(f"{t!r},0\n" for t in times))
+    vals = [0, 0, 0, 0, 0, 0, 0, 0]
+    vals[1] = vals[2] = vals[3] = 5
+    tst = write_csv(
+        "tst.csv", "time,x\n" + "".join(f"{t!r},{v}\n" for t, v in zip(times, vals, strict=True))
+    )
+    result = compare_signals_impl(
+        str(ref), str(tst), [], tolerances=[ToleranceSet(atolx=0.0, atoly=0.1)],
+        x_range=XRange(lo=t0 + 0.25),
+    )
+    d = structured(result)
+    iv = d["rows"][0]["intervals"][0]
+    assert (iv["start_x"], iv["end_x"]) == (t0 + 0.25, t0 + 0.75)
+    assert d["x_range"]["lo"] == t0 + 0.25
+    assert d["reference"]["time_end"] == t0 + 1.75
+    text = result.content[0].text  # type: ignore[union-attr]
+    assert "t=1731628800.25..1731628800.75" in text
+    assert "x_range 1731628800.25 .. -" in text
+
+
+def test_non_finite_arguments_are_rejected() -> None:
+    from pydantic import ValidationError
+
+    for bad in ({"lo": "-inf"}, {"hi": 1e999}, {"lo": "nan"}):
+        with pytest.raises(ValidationError):
+            XRange.model_validate(bad)
+    for bad_tol in ({"atoly": "inf"}, {"rtolx": float("nan")}):
+        with pytest.raises(ValidationError):
+            ToleranceSet.model_validate(bad_tol)

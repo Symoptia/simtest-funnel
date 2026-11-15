@@ -81,3 +81,50 @@ def test_missing_file(tmp_path: Path) -> None:
 def test_directory_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(SignalFileError, match="not a regular file"):
         load_csv(tmp_path)
+
+
+def test_trailing_comma_on_data_rows_is_an_error(write_csv: WriteCsv) -> None:
+    # Regression: pandas used the first field as index and shifted columns.
+    with pytest.raises(SignalFileError, match=r"data row 1 \(line 2\) has 3 fields, header has 2"):
+        load_csv(write_csv("a.csv", "time,a\n0,1,\n1,2,\n2,3,\n"))
+
+
+def test_extra_field_on_a_later_row_is_an_error(write_csv: WriteCsv) -> None:
+    text = "# comment\ntime,a\n0,1\n\n1,2,7\n"
+    with pytest.raises(SignalFileError, match=r"data row 2 \(line 5\) has 3 fields, header has 2"):
+        load_csv(write_csv("a.csv", text))
+    with pytest.raises(SignalFileError, match=r"data row 2 \(line 3\) has 4 fields, header has 2"):
+        load_csv(write_csv("b.csv", "time,a\n0,1\n1,2,7,8\n"))
+
+
+def test_trailing_comma_on_every_line_is_accepted(write_csv: WriteCsv) -> None:
+    sf = load_csv(write_csv("a.csv", "time,a,\n0,1,\n1,2,\n2,3,\n"))
+    assert sf.signal_columns == ("a",)
+    np.testing.assert_array_equal(sf.values["a"], [1.0, 2.0, 3.0])
+    assert sf.bad_cells == {"time": 0, "a": 0}
+
+
+def test_empty_column_name_is_an_error(write_csv: WriteCsv) -> None:
+    with pytest.raises(SignalFileError, match="header column 2 has no name"):
+        load_csv(write_csv("a.csv", "time,,b\n0,1,2\n"))
+
+
+def test_hash_inside_a_line_is_data(write_csv: WriteCsv) -> None:
+    # Regression: comment="#" truncated the header at 'a#1'.
+    text = "  # leading comment\ntime,a#1,b\n0,1,2\n  # indented comment\n1,1,2\n"
+    sf = load_csv(write_csv("a.csv", text))
+    assert sf.signal_columns == ("a#1", "b")
+    np.testing.assert_array_equal(sf.values["b"], [2.0, 2.0])
+    assert sf.row_count == 2
+
+
+def test_columns_differing_from_time_only_by_case(write_csv: WriteCsv) -> None:
+    sf = load_csv(write_csv("a.csv", "Time,time,a\n0,5,1\n1,6,2\n"))
+    assert sf.time_column == "Time"
+    assert sf.signal_columns == ("time", "a")
+
+
+def test_bom_and_crlf(write_csv: WriteCsv) -> None:
+    sf = load_csv(write_csv("a.csv", "﻿time,a\r\n0,1\r\n1,2\r\n"))
+    assert sf.time_column == "time"
+    np.testing.assert_array_equal(sf.values["a"], [1.0, 2.0])

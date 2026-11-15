@@ -32,3 +32,13 @@
 ## 6. Integration checks
 
 - [x] 6.1 Run `openspec validate add-mcp-server-local --strict`, `make lint`, `make test` and mypy on the package; all pass
+
+## 7. Review follow-up
+
+- [x] 7.1 CSV reader shared verbatim with the snippet: whole-line `#` comments only, no inferred index, surplus fields are an error, trailing delimiter on every line accepted; verify with `tests/test_mcp_csv.py` and `test_snippet_reads_files_like_the_server`
+- [x] 7.2 Private internal time key; `Time,time,a` compares `time` as a signal; verify `test_signal_column_named_time_next_to_time_column`
+- [x] 7.3 MISSING_* rows carry counts and the overlap `x_range`; core judges coverage within `x_range`; verify `test_longer_test_range_reports_counts_and_overlap_x_range`
+- [x] 7.4 Snippet: returned rows only, sent once (structured), 64 kB cap, paths relative to the base and `SIMTEST_FUNNEL_DATA_ROOT`; finite-only tolerances and bounds; verify the snippet tests
+- [x] 7.5 describe_signals `columns` (names and globs) and `max_columns`; glob support in compare `columns`; verify `test_many_columns_are_capped`, `test_columns_accept_glob_patterns`
+- [x] 7.6 Unrounded times in structured content, step-derived precision in text; `url2pathname` roots with local hosts only; tolerance fallback and pass condition in the description; verify the server and compare tests
+- [x] 7.7 Exact `simtest-funnel` pin rewritten on release; release refreshes `Cargo.lock` / `uv.lock` (guarded) and installs uv; verified by simulating `prepareCmd` on a scratch copy (not run in CI)

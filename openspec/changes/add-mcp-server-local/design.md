@@ -73,22 +73,48 @@ behaviour. Relevant current state:
 ### Dependencies
 
 - `mcp>=2.3,<3` (MCPServer API, roots resolver, client used by tests),
-  `simtest-funnel>=1.0.0b11,<2` (first version with `summarize` and nullable
-  tolerances), `pandas>=2`, `numpy>=1.26`. The version of
-  `simtest-funnel-mcp` itself follows the repository version via
-  semantic-release; the dependency on `simtest-funnel` is a lower bound
-  rather than an exact pin to keep the release `sed` minimal.
+  `simtest-funnel==<same version as this package>`, `pandas>=2`,
+  `numpy>=1.26`. The server relies on library behaviour of the same
+  release (`summarize`, `None` tolerances, coverage judged within
+  `x_range`), and both packages are released together, so the dependency
+  is an exact pin. The release `prepareCmd` rewrites the pin with the
+  package version (a second `sed` on `"simtest-funnel==..."`). In the uv
+  workspace the library is a workspace source, which uv resolves without
+  checking the specifier, so `uv lock` / `uv sync` are unaffected; the pin
+  matters for the published wheel metadata (`Requires-Dist:
+  simtest-funnel==X`). (The first draft used a `>=1.0.0b11` lower bound,
+  which was too low and would go stale.)
 
 ### Server structure
 
-- `csvio.py`: load a CSV (`pandas.read_csv(comment="#",
-  skipinitialspace=True)`), choose the time column, coerce every column with
-  `pandas.to_numeric(errors="coerce")` and record per-column counts of
-  non-numeric/empty cells; derive the description.
+- `reader.py`: a self-contained CSV reader (only `csv`, `io`, `warnings`,
+  numpy and pandas) that the generated snippet embeds verbatim
+  (`inspect.getsource`), so server and snippet read files identically.
+  Lines whose first non-blank character is `#` (and blank lines) are
+  dropped before parsing (pandas' `comment="#"` would truncate any line at
+  a `#`, e.g. a header `time,a#1,b`); the header is split with
+  `csv.reader`; the data is parsed by pandas with explicit integer names
+  and `index_col=False`, so pandas never turns surplus fields into an
+  index (a trailing comma on data rows used to shift every column left).
+  pandas drops a single surplus field with a `ParserWarning` and raises
+  for more; either makes the reader locate the first offending row with
+  `csv.reader` and fail with "data row N (line L) has M fields, header has
+  K". A trailing delimiter on every line including the header (which
+  worked before, producing a junk `Unnamed` column) is accepted and the
+  unnamed all-empty trailing column dropped; any other empty header name is
+  an error. Every column is coerced with
+  `pandas.to_numeric(errors="coerce")`.
+- `csvio.py`: file checks, time column choice, per-column counts of
+  non-numeric/empty cells.
+- `selection.py`: column selection by exact name or glob pattern
+  (`fnmatchcase`), shared by both tools. An entry equal to an existing
+  name is exact even if it contains glob characters.
 - `compare.py`: build per-(column, set) work, call
   `simtest.funnel.compare_dataframes` once per effective `Options` group on
-  frames that contain only the time column (first) and the valid columns,
-  then `simtest.funnel.summarize` per row.
+  frames that contain only the time column (first, under the private key
+  `"\0time"`, which no CSV header can contain, so a signal column named
+  `time` next to a time column `Time` cannot collide) and the valid
+  columns, then `simtest.funnel.summarize` per row.
 - `models.py`: pydantic models for inputs (with `extra="forbid"`, so a typo
   such as `rtol_y` is an error instead of silently ignored) and outputs (the
   published output schemas).
@@ -149,9 +175,14 @@ Absent values are omitted from the structured content rather than sent as
 - Different column sets: default selection is the intersection (in
   reference order); the rest is listed, not compared. Disjoint time ranges:
   passed through to the library (which returns `MISSING_REFERENCE` /
-  `MISSING_TEST` / `EMPTY_RANGE`), plus a note giving both spans and
-  suggesting an `x_range`. Partial overlap with a library "missing" status
-  gets the same note.
+  `MISSING_TEST` / `EMPTY_RANGE`), plus a note giving both spans. Partial
+  overlap with a library "missing" status gets a note with the exact
+  `x_range` of the overlap. The core judges coverage on both time extents
+  clipped to `x_range` (fixed in review: it used to ignore `x_range`, so
+  the advice could not work), so that `x_range` turns the rows into
+  `pass`/`fail`. Rows with a library `MISSING_*` status keep verdict
+  `error` but also carry `points_compared` / `points_outside` and a
+  `problem` text naming both time spans and the overlap `x_range`.
 
 ### Size limits
 
@@ -160,10 +191,15 @@ Absent values are omitted from the structured content rather than sent as
 - `max_rows` default 100; rows ordered error, fail, pass (stable within a
   group: column order, then set order), so caps hide passes first. Totals
   always cover all rows; `rows_omitted` states the rest.
-- describe_signals lists every column (one compact entry each, ~60 bytes);
-  no cap, since the column list is what the agent needs to pick columns.
+- describe_signals lists at most `max_columns` (default 100) columns and
+  as many problems, with `columns_total`, `columns_selected`,
+  `columns_omitted` and `problems_omitted`; `columns` filters by exact name
+  or glob pattern. (The first draft had no cap: ~470 kB for 3000 columns.)
 - Measured for 200 columns × 1 set (4 failing): 100 rows ≈ 14.5 kB structured,
-  text ≈ 1.5 kB. Structured floats are rounded to 10 significant digits.
+  text ≈ 1.5 kB. Value fields (min/max/range, deviations, half-widths,
+  fractions) are rounded to 10 significant digits to drop binary noise;
+  time/x fields and tolerances are never rounded (epoch-second times need
+  all digits: rounding turned 1731628800.25 into 1731628800.0).
 
 ### Text rendering
 
@@ -172,13 +208,24 @@ tolerance set with its resolved values, a totals line, one line per error or
 failing row (`FAIL z [loose]: 495/1001 points outside (49.5 % of span), worst
 +1.533 at t=0.875 (half-width 0.2955); 3 intervals, largest: ...`), one line
 per set listing its passing columns, then notes and omissions. Numbers use
-4 significant digits. The snippet, when requested, is appended in a fenced
-block (it must be copyable from text-only clients).
+4 significant digits except times, which use enough significant digits to
+resolve a tenth of the smallest positive time step of the files
+(at least 4), so adjacent samples stay distinguishable.
+
+The snippet, when requested, is sent once, in the structured content field
+`snippet`; the text rendering only says where it is. Rationale: sending it
+in both places doubled the payload (620 kB for 3000 columns). Claude Code,
+the primary client (the repository ships `.mcp.json` for it), was observed
+during review to hand the model only the structured content of this
+server's results, not the text block, so the structured content is the
+place an agent actually sees; clients that show only text still get the
+verdicts and a pointer, and can retrieve the snippet by reading the
+structured result.
 
 ### Snippet format
 
-A self-contained pytest module: absolute file paths, time column names,
-the same `read_csv` dialect and numeric coercion, a `CASES` list of
+A self-contained pytest module: data paths, time column names, the
+server's reader embedded verbatim, a `CASES` list of
 `(column, set label, Tolerances(as given), expected Status)` and one
 parametrized test that calls `simtest.funnel.compare` with
 `Options(tolerances, Range(lo, hi))` and asserts the observed status. Rows
@@ -186,12 +233,30 @@ the library did not decide are listed as comments. It asserts the observed
 status (not `PASS`) so it reproduces the verdict; a comment explains how to
 turn it into a gate.
 
+- Only the rows returned in the result (`max_rows`) become cases; a
+  comment states how many were not returned. A hard cap of 64 kB drops
+  further cases with a comment saying so.
+- Paths: a file under the base directory (first workspace root, else the
+  server's working directory) is written relative to it, as
+  `DATA_ROOT / "rel/path.csv"` with
+  `DATA_ROOT = Path(os.environ.get("SIMTEST_FUNNEL_DATA_ROOT", Path.cwd()))`
+  and a comment explaining it, so the snippet works from the same place in
+  a CI checkout. Files outside the base keep their absolute path with a
+  comment that it will not resolve elsewhere.
+- Tolerance coefficients and `x_range` bounds are validated as finite at
+  the schema level (`allow_inf_nan=False`; pydantic otherwise accepts the
+  strings `"inf"`/`"nan"`), so the snippet never contains a bare `inf`
+  and the structured content never contains `-Infinity`; an omitted bound
+  becomes `float("-inf")` / `float("inf")` in the snippet.
+
 ### Workspace roots
 
 A resolver returns the `ListRoots` marker when the client declared the
-roots capability and an empty result otherwise. `file://` roots are
-converted to resolved paths; a path is accepted when its resolved location
-is inside one of them. With no roots every readable path is accepted.
+roots capability and an empty result otherwise. `file://` roots with an
+empty or `localhost` host are converted with `urllib.request.url2pathname`
+(so `file:///C:/x` becomes `C:\x` on Windows) and resolved; roots with
+another host or scheme are ignored with a note in the result. A path is
+accepted when its resolved location is inside one of the roots. With no roots every readable path is accepted.
 Relative paths resolve against the first root, else the working directory.
 Roots are deprecated in the newest protocol revision (SEP-2577) but still
 supported by the SDK and by current clients; when absent the server simply
@@ -206,8 +271,13 @@ does not restrict.
   and `mypy_path` entries.
 - CI: python job runs the new tests; lint job installs Python and uv
   because `make lint` now includes mypy (run there only, not twice).
-- Release: `.releaserc.json` rewrites the version line of
-  `python/simtest-funnel-mcp/pyproject.toml` and commits it;
+- Release: `.releaserc.json` rewrites the version line and the
+  `simtest-funnel==` pin of `python/simtest-funnel-mcp/pyproject.toml`,
+  then runs `scripts/release-refresh-lockfiles.sh` (`cargo update
+  --workspace` and `uv lock`, which only touch workspace package entries,
+  plus a guard that fails if any lockfile line other than a
+  `version = "..."` line changed) and commits both lockfiles; the
+  `semantic-release` job installs uv with `astral-sh/setup-uv`;
   `publish-pypi` builds the package with `uv build` into `target/wheels/`,
   which the existing `twine upload` already uploads.
 - Docs: package README (tools, tolerances, Claude Code / Claude Desktop

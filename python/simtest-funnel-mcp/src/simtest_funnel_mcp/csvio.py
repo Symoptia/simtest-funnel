@@ -1,19 +1,20 @@
 """CSV loading: dialect, time-column rule and numeric coercion.
 
-Dialect (same as the CLI): comma-separated, one header row, lines starting
-with ``#`` ignored. The time column is the first column named ``time``
-(case-insensitive), otherwise the first column.
+Dialect: see :mod:`simtest_funnel_mcp.reader` (shared verbatim with the
+generated pytest snippets). The time column is the first column named
+``time`` (case-insensitive), otherwise the first column.
 """
 
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+
+from simtest_funnel_mcp.reader import CsvFormatError, read_signal_columns
 
 #: How the time column was chosen.
 RULE_NAMED = "named time"
@@ -72,15 +73,6 @@ def choose_time_column(columns: list[str]) -> tuple[str, str]:
     return columns[0], RULE_FIRST
 
 
-def _raw_header(path: Path) -> list[str]:
-    """Header names as written (pandas renames duplicates to ``name.1``)."""
-    with path.open(newline="", encoding="utf-8", errors="replace") as fh:
-        lines = (line for line in fh if line.strip() and not line.lstrip().startswith("#"))
-        for row in csv.reader(lines):
-            return [c.strip() for c in row]
-    return []
-
-
 def load_csv(path: Path) -> SignalFile:
     """Load ``path``; raise :class:`SignalFileError` if it cannot be used."""
     if not path.exists():
@@ -88,36 +80,18 @@ def load_csv(path: Path) -> SignalFile:
     if not path.is_file():
         raise SignalFileError(f"{path}: not a regular file")
     try:
-        frame = pd.read_csv(
-            path,
-            comment="#",
-            skipinitialspace=True,
-            dtype=str,
-            keep_default_na=False,
-        )
-    except pd.errors.EmptyDataError as exc:
-        raise SignalFileError(f"{path}: no CSV header found") from exc
+        columns, values = read_signal_columns(str(path))
+    except CsvFormatError as exc:
+        raise SignalFileError(f"{path}: {exc}") from exc
     except (pd.errors.ParserError, UnicodeDecodeError, OSError) as exc:
         raise SignalFileError(f"{path}: cannot be read as CSV: {exc}") from exc
-    columns = [str(c).strip() for c in frame.columns]
-    frame.columns = pd.Index(columns)
     if len(columns) < 2:
         raise SignalFileError(
             f"{path}: needs a time column and at least one signal column, "
             f"found columns {columns}"
         )
-    header = _raw_header(path)
-    if len(set(header)) != len(header):
-        raise SignalFileError(f"{path}: duplicate column names in header {header}")
     time_column, rule = choose_time_column(columns)
-    values: dict[str, NDArray[np.float64]] = {}
-    bad_cells: dict[str, int] = {}
-    for name in columns:
-        raw = frame[name]
-        numeric = pd.to_numeric(raw.str.strip(), errors="coerce")
-        arr = np.asarray(numeric.to_numpy(dtype=np.float64, na_value=np.nan))
-        values[name] = arr
-        bad_cells[name] = int(np.count_nonzero(~np.isfinite(arr)))
+    bad_cells = {name: int(np.count_nonzero(~np.isfinite(arr))) for name, arr in values.items()}
     signal_columns = tuple(c for c in columns if c != time_column)
     return SignalFile(
         path=path,

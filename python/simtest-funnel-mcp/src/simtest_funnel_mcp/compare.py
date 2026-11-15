@@ -33,6 +33,7 @@ from simtest_funnel_mcp.models import (
     Worst,
     XRange,
 )
+from simtest_funnel_mcp.selection import expand, is_pattern
 
 #: Default cap on intervals listed per failing row.
 DEFAULT_MAX_INTERVALS = 5
@@ -42,6 +43,10 @@ DEFAULT_MAX_ROWS = 100
 MAX_LISTED_COLUMNS = 50
 #: Label of the single set used when no tolerance set is given.
 DEFAULT_SET_LABEL = "default"
+
+#: Key of the time column in the frames handed to the library; cannot
+#: collide with a CSV column name (those never contain NUL).
+_TIME_KEY = "\0time"
 
 _LIBRARY_MISSING = {int(funnel.Status.MISSING_REFERENCE), int(funnel.Status.MISSING_TEST)}
 _VERDICT_ORDER = {"error": 0, "fail": 1, "pass": 2}
@@ -169,6 +174,56 @@ def _span(sf: SignalFile) -> tuple[float, float] | None:
     return float(np.min(t)), float(np.max(t))
 
 
+def _overlap(
+    ref_span: tuple[float, float],
+    tst_span: tuple[float, float],
+    lo: float | None,
+    hi: float | None,
+) -> tuple[float, float]:
+    """The x_range covered by both files (within the requested bounds)."""
+    o_lo = max(ref_span[0], tst_span[0])
+    o_hi = min(ref_span[1], tst_span[1])
+    if lo is not None:
+        o_lo = max(o_lo, lo)
+    if hi is not None:
+        o_hi = min(o_hi, hi)
+    return o_lo, o_hi
+
+
+def _range_json(window: tuple[float, float]) -> str:
+    return f'{{"lo": {window[0]!r}, "hi": {window[1]!r}}}'
+
+
+def _coverage_problems(
+    ref_span: tuple[float, float] | None,
+    tst_span: tuple[float, float] | None,
+    lo: float | None,
+    hi: float | None,
+) -> dict[int, str]:
+    """Problem texts for the library's MISSING_* statuses, keyed by code.
+
+    The library judges coverage on both time extents clipped to x_range, so
+    the overlap window below makes the status PASS or FAIL.
+    """
+    if ref_span is None or tst_span is None:
+        return {}
+    window = _overlap(ref_span, tst_span, lo, hi)
+    if not window[0] < window[1]:
+        return {}
+    ref_txt = f"reference covers time [{ref_span[0]!r}, {ref_span[1]!r}]"
+    tst_txt = f"test covers time [{tst_span[0]!r}, {tst_span[1]!r}]"
+    within = "" if lo is None and hi is None else " within the requested x_range"
+    fix = f"; x_range {_range_json(window)} compares the overlap"
+    return {
+        int(funnel.Status.MISSING_REFERENCE): (
+            f"test extends beyond the reference{within}: {tst_txt}, {ref_txt}{fix}"
+        ),
+        int(funnel.Status.MISSING_TEST): (
+            f"reference extends beyond the test{within}: {ref_txt}, {tst_txt}{fix}"
+        ),
+    }
+
+
 def _column_problem(name: str, ref: SignalFile, tst: SignalFile) -> tuple[int | None, str] | None:
     """Server-detected problem of a column as ``(status code or None, text)``."""
     if name in (ref.time_column, tst.time_column):
@@ -194,7 +249,7 @@ def _column_problem(name: str, ref: SignalFile, tst: SignalFile) -> tuple[int | 
 
 
 def _frame(sf: SignalFile, columns: list[str]) -> pd.DataFrame:
-    data: dict[str, np.ndarray] = {"time": sf.time}
+    data: dict[str, np.ndarray] = {_TIME_KEY: sf.time}
     for c in columns:
         data[c] = sf.values[c]
     return pd.DataFrame(data)
@@ -208,6 +263,7 @@ def _library_row(
     opts: funnel.Options,
     overridden: bool,
     max_intervals: int,
+    coverage_problem: str | None,
 ) -> Row:
     s = funnel.summarize(res, t_ref, opts)
     code = int(res.status)
@@ -222,6 +278,13 @@ def _library_row(
         tolerances=_coefficients(s.tolerances) if overridden else None,
     )
     if verdict == "error":
+        if code in _LIBRARY_MISSING:
+            # The library judged every point it could; report the counts and
+            # say exactly which x_range compares the overlap.
+            row.points_compared = s.points_compared
+            row.points_outside = s.points_outside
+            if coverage_problem is not None:
+                row.problem = coverage_problem
         return row
     row.points_compared = s.points_compared
     if verdict == "pass":
@@ -287,9 +350,15 @@ def run_compare(
         if not selected:
             notes.append("the files have no signal column in common; nothing was compared")
     else:
-        selected = list(dict.fromkeys(columns))
-        if not selected:
+        if not columns:
             raise CompareArgumentError("columns is empty; omit it to compare all common columns")
+        union = list(ref.signal_columns) + [
+            c for c in tst.signal_columns if c not in ref.signal_columns
+        ]
+        selected, unmatched = expand(columns, union)
+        for entry in unmatched:
+            if is_pattern(entry):
+                notes.append(f"columns pattern {entry!r} matched no signal column")
 
     for name in overrides:
         if name not in selected:
@@ -303,6 +372,8 @@ def run_compare(
     ref_frame = _frame(ref, valid)
     tst_frame = _frame(tst, valid)
     t_ref = ref.time
+    ref_span, tst_span = _span(ref), _span(tst)
+    coverage = _coverage_problems(ref_span, tst_span, lo, hi)
 
     set_out: list[ToleranceSetOut] = []
     records: list[RowRecord] = []
@@ -318,7 +389,7 @@ def run_compare(
             funnel.compare_dataframes(
                 ref_frame,
                 tst_frame,
-                time_column="time",
+                time_column=_TIME_KEY,
                 default_options=default_opts,
                 option_overrides=per_col_opts,
             )
@@ -345,22 +416,25 @@ def run_compare(
                 )
                 continue
             opts = per_col_opts.get(c, default_opts)
+            code = int(results[c].status)
             row = _library_row(
-                c, label, results[c], t_ref, opts, c in overrides, max_intervals
+                c, label, results[c], t_ref, opts, c in overrides, max_intervals,
+                coverage.get(code),
             )
             records.append(RowRecord(row=row, given=per_col_given[c], from_library=True))
 
-    ref_span, tst_span = _span(ref), _span(tst)
     if ref_span is not None and tst_span is not None:
         spans = (
-            f"reference time spans [{ref_span[0]:.6g}, {ref_span[1]:.6g}], "
-            f"test time spans [{tst_span[0]:.6g}, {tst_span[1]:.6g}]"
+            f"reference time spans [{ref_span[0]!r}, {ref_span[1]!r}], "
+            f"test time spans [{tst_span[0]!r}, {tst_span[1]!r}]"
         )
         if ref_span[1] < tst_span[0] or tst_span[1] < ref_span[0]:
             notes.append(f"time ranges do not overlap: {spans}")
         elif any(r.row.status in _LIBRARY_MISSING for r in records if r.from_library):
+            window = _overlap(ref_span, tst_span, lo, hi)
             notes.append(
-                f"time ranges differ ({spans}); pass x_range to compare only the overlap"
+                f"time ranges differ ({spans}); pass x_range {_range_json(window)} "
+                "to compare only the overlap"
             )
 
     totals = Totals(

@@ -25,7 +25,8 @@ _NONNEG = "Must be >= 0. Omit for 'not given'."
 class ToleranceSpec(BaseModel):
     """Any subset of the six tolerance coefficients (omitted = not given)."""
 
-    model_config = ConfigDict(extra="forbid")
+    # allow_inf_nan=False: pydantic would otherwise accept "inf"/"nan" strings.
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     atolx: float | None = Field(
         default=None, ge=0, description=f"Absolute tolerance in x (time units). {_NONNEG}"
@@ -75,10 +76,14 @@ class ToleranceSet(ToleranceSpec):
 class XRange(BaseModel):
     """Time window to compare (inclusive); omitted bound = unbounded."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    lo: float | None = Field(default=None, description="Lower time bound.")
-    hi: float | None = Field(default=None, description="Upper time bound.")
+    lo: float | None = Field(
+        default=None, description="Lower time bound (finite); omit for unbounded."
+    )
+    hi: float | None = Field(
+        default=None, description="Upper time bound (finite); omit for unbounded."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -117,7 +122,18 @@ class DescribeResult(BaseModel):
     row_count: int
     time: TimeInfo
     columns: list[ColumnInfo]
+    columns_total: int = Field(description="Signal columns in the file.")
+    columns_selected: int = Field(
+        description="Signal columns matching the 'columns' filter (all when no filter)."
+    )
+    columns_omitted: int = Field(
+        default=0, description="Selected columns not listed because of max_columns."
+    )
     problems: list[str] = Field(default_factory=list)
+    problems_omitted: int = Field(
+        default=0, description="Problems not listed because of max_columns."
+    )
+    notes: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------

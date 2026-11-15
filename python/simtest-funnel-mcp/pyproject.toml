@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Symoptia contributors" }]
 dependencies = [
     "mcp>=2.3,<3",
-    "simtest-funnel>=1.0.0b11,<2",
+    "simtest-funnel==1.0.0-beta.12",
     "numpy>=1.26",
     "pandas>=2",
 ]

@@ -90,3 +90,48 @@ def test_same_call_twice_is_identical(demo_reference: Path) -> None:
     a = describe_signals_impl(str(demo_reference), [])
     b = describe_signals_impl(str(demo_reference), [])
     assert a.structured_content == b.structured_content
+
+
+def _wide_file(write_csv: WriteCsv, n: int) -> Path:
+    header = "time," + ",".join(f"model.subsystem.component{i}.port.signal" for i in range(n))
+    rows = [",".join(["0"] + ["0"] * n), ",".join(["1"] + ["x"] * n)]
+    return write_csv("wide.csv", header + "\n" + "\n".join(rows) + "\n")
+
+
+def test_many_columns_are_capped(write_csv: WriteCsv) -> None:
+    # Regression: 3000 columns produced ~470 kB.
+    p = _wide_file(write_csv, 3000)
+    result = describe_signals_impl(str(p), [])
+    d = structured(result)
+    assert len(d["columns"]) == 100
+    assert (d["columns_total"], d["columns_selected"], d["columns_omitted"]) == (3000, 3000, 2900)
+    assert len(d["problems"]) == 100 and d["problems_omitted"] == 2900
+    text = result.content[0].text  # type: ignore[union-attr]
+    assert "2900 more column(s) omitted" in text
+    assert len(json.dumps(d)) < 25_000, len(json.dumps(d))
+    assert len(text) < 20_000, len(text)
+
+
+def test_columns_filter_with_names_and_globs(write_csv: WriteCsv) -> None:
+    p = _wide_file(write_csv, 30)
+    d = structured(
+        describe_signals_impl(
+            str(p), [],
+            columns=["model.subsystem.component1?.port.signal",
+                     "model.subsystem.component3.port.signal", "nope*"],
+            max_columns=5,
+        )
+    )
+    assert d["columns_selected"] == 11
+    assert d["columns_omitted"] == 6
+    assert [c["name"] for c in d["columns"]][:2] == [
+        "model.subsystem.component3.port.signal", "model.subsystem.component10.port.signal"
+    ]
+    assert d["problems"][0] == "columns filter: no signal column matches 'nope*'"
+    assert d["problems_omitted"] == 12 - 5  # 1 filter problem + 11 bad columns, 5 listed
+
+
+def test_empty_columns_filter_is_an_error(write_csv: WriteCsv) -> None:
+    p = write_csv("a.csv", "time,y\n0,1\n")
+    with pytest.raises(ToolError, match="columns is empty"):
+        describe_signals_impl(str(p), [], columns=[])

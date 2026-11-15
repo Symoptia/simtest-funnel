@@ -53,6 +53,9 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
         "rtol = 0.002",
     ):
         assert needle in description, needle
+    assert set(tools["describe_signals"].input_schema["properties"]) == {
+        "path", "columns", "max_columns",
+    }
     props = tools["compare_signals"].input_schema["properties"]
     assert set(props) == {
         "reference_path", "test_path", "columns", "tolerances", "column_tolerances",
@@ -112,3 +115,69 @@ def test_roots_accept_inside_paths_and_resolve_relative(demo_reference: Path) ->
 def test_no_roots_capability_accepts_any_path(demo_reference: Path) -> None:
     result = _call("describe_signals", {"path": str(demo_reference)})
     assert not result.is_error
+
+
+def test_root_uris_are_converted_with_url2pathname(monkeypatch: Any) -> None:
+    # Regression: urlparse().path dropped the host and kept '/C:/...'.
+    import nturl2path
+
+    from simtest_funnel_mcp import server
+
+    seen: list[str] = []
+
+    def fake(path: str) -> str:
+        seen.append(path)
+        return "/converted"
+
+    monkeypatch.setattr(server, "url2pathname", fake)
+    notes: list[str] = []
+    roots = ListRootsResult(
+        roots=[
+            Root(uri="file:///C:/Users/me/My%20Proj"),  # type: ignore[arg-type]
+            Root(uri="file://localhost/srv/data"),  # type: ignore[arg-type]
+            Root(uri="file://fileserver/share/proj"),  # type: ignore[arg-type]
+        ]
+    )
+    paths = server.root_paths(roots, notes)
+    assert seen == ["/C:/Users/me/My%20Proj", "/srv/data"]
+    assert paths == [Path("/converted"), Path("/converted")]
+    assert len(notes) == 1 and "fileserver" in notes[0] and "not local" in notes[0]
+    # What the Windows implementation makes of the first one.
+    assert nturl2path.url2pathname(seen[0]) == "C:\\Users\\me\\My Proj"
+
+
+def test_non_local_root_is_ignored_with_a_note(demo_reference: Path) -> None:
+    async def callback(context: object) -> ListRootsResult:
+        return ListRootsResult(
+            roots=[Root(uri="file://fileserver/share")]  # type: ignore[arg-type]
+        )
+
+    async def run() -> Any:
+        async with Client(mcp, list_roots_callback=callback) as client:
+            return await client.call_tool("describe_signals", {"path": str(demo_reference)})
+
+    result = asyncio.run(run())
+    assert not result.is_error, result.content
+    assert any("fileserver" in n for n in result.structured_content["notes"])
+
+
+def test_description_states_constant_reference_fallback() -> None:
+    from simtest_funnel_mcp.server import COMPARE_DESCRIPTION
+
+    assert "falls back\nto rtol * max|reference value|" in COMPARE_DESCRIPTION
+    assert "give atoly explicitly" in COMPARE_DESCRIPTION
+    assert "within\nx_range, both files cover the same time span" in COMPARE_DESCRIPTION
+
+
+def test_non_finite_x_range_is_rejected_over_the_protocol(
+    demo_reference: Path, demo_test: Path
+) -> None:
+    result = _call(
+        "compare_signals",
+        {
+            "reference_path": str(demo_reference),
+            "test_path": str(demo_test),
+            "x_range": {"lo": "-inf"},
+        },
+    )
+    assert result.is_error
