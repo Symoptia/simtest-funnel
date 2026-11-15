@@ -16,7 +16,7 @@ primitive.
 
 - Add a local MCP server, written in Python on top of `simtest.funnel`,
   distributed as its own package and started over stdio (for example
-  `uvx simtest-funnel-mcp`). It is read-only and stateless: files are
+  `uvx simtest-funnel-mcp`). Its two tools are read-only and stateless: files are
   addressed by path on every call; there is no load step and there are
   no handles.
 - Signals are read by the server from local CSV files with a shared time

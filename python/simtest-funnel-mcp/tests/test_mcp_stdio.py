@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -17,10 +18,14 @@ from mcp.client.stdio import StdioServerParameters
 from mcp_types import ListRootsResult, Root
 
 
-def _session(params: StdioServerParameters, roots: Path | None, script: Any) -> Any:
+def _session(
+    params: StdioServerParameters, roots: tuple[Path, ...] | None, script: Any
+) -> Any:
     async def list_roots(context: object) -> ListRootsResult:
         assert roots is not None
-        return ListRootsResult(roots=[Root(uri=roots.resolve().as_uri())])  # type: ignore[arg-type]
+        return ListRootsResult(
+            roots=[Root(uri=r.resolve().as_uri()) for r in roots]  # type: ignore[arg-type]
+        )
 
     async def run() -> Any:
         kwargs: dict[str, Any] = {"read_timeout_seconds": 60}
@@ -60,13 +65,36 @@ def test_stdio_end_to_end(demo_reference: Path, demo_test: Path, tmp_path: Path)
             },
         )
         out["outside"] = await client.call_tool("describe_signals", {"path": "/etc/hostname"})
+        out["plot"] = await client.call_tool(
+            "plot_signals",
+            {
+                "reference_path": str(demo_reference),
+                "test_path": str(demo_test),
+                "column": "z",
+                "tolerance": {"label": "loose", "atolx": 0.1, "atoly": 0.1},
+                "output_path": str(tmp_path / "z.svg"),
+            },
+        )
+        out["plot_outside"] = await client.call_tool(
+            "plot_signals",
+            {
+                "reference_path": str(demo_reference),
+                "test_path": str(demo_test),
+                "column": "z",
+                "output_path": "/tmp/simtest-funnel-should-not-exist.svg",
+            },
+        )
         return out
 
-    out = _session(params, demo_reference.parent, script)
+    out = _session(params, (demo_reference.parent, tmp_path), script)
     assert out["server"].name == "simtest-funnel"
     assert out["protocol"]
     assert "CSV" in out["instructions"]
-    assert {t.name for t in out["tools"].tools} == {"describe_signals", "compare_signals"}
+    tools = {t.name: t for t in out["tools"].tools}
+    assert set(tools) == {"describe_signals", "compare_signals", "plot_signals"}
+    assert tools["compare_signals"].annotations.read_only_hint is True
+    assert tools["plot_signals"].annotations.read_only_hint is False
+    assert "plot_signals" in out["instructions"]
 
     describe = out["describe"]
     assert not describe.is_error, describe.content
@@ -90,6 +118,24 @@ def test_stdio_end_to_end(demo_reference: Path, demo_test: Path, tmp_path: Path)
     assert out["outside"].is_error
     assert "outside the client's workspace roots" in out["outside"].content[0].text
 
+    plot = out["plot"]
+    assert not plot.is_error, plot.content
+    text, image = plot.content
+    assert text.type == "text" and "FAIL z [loose]" in text.text
+    assert image.type == "image" and image.mime_type == "image/png"
+    preview = base64.b64decode(image.data)
+    assert preview[:8] == b"\x89PNG\r\n\x1a\n"
+    assert preview[16:24] == (800).to_bytes(4, "big") + (450).to_bytes(4, "big")
+    p = plot.structured_content
+    assert p["row"]["verdict"] == "fail" and p["preview"]["bytes"] == len(preview)
+    assert p["file"]["path"] == str((tmp_path / "z.svg").resolve())
+    assert (tmp_path / "z.svg").read_bytes().startswith(b"<?xml")
+    assert len(json.dumps(p)) < 4_000
+
+    assert out["plot_outside"].is_error
+    assert "outside the client's workspace roots" in out["plot_outside"].content[0].text
+    assert not Path("/tmp/simtest-funnel-should-not-exist.svg").exists()
+
 
 def test_checked_in_mcp_json_starts_the_server() -> None:
     config = json.loads((REPO_ROOT / ".mcp.json").read_text())
@@ -107,4 +153,6 @@ def test_checked_in_mcp_json_starts_the_server() -> None:
         return await client.list_tools()
 
     tools = _session(params, None, script)
-    assert {t.name for t in tools.tools} == {"describe_signals", "compare_signals"}
+    assert {t.name for t in tools.tools} == {
+        "describe_signals", "compare_signals", "plot_signals"
+    }

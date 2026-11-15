@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import base64
+import io
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from mcp.server.mcpserver import Context, ListRoots, MCPServer, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp_types import CallToolResult, ListRootsResult, TextContent, ToolAnnotations
+from mcp_types import (
+    CallToolResult,
+    ImageContent,
+    ListRootsResult,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import Field
 
 import simtest.funnel as funnel
@@ -25,11 +33,30 @@ from simtest_funnel_mcp.describe import DEFAULT_MAX_COLUMNS, describe
 from simtest_funnel_mcp.models import (
     CompareResult,
     DescribeResult,
+    DrawnPoints,
+    PlotFile,
+    PlotPreview,
+    PlotResult,
+    RangeOut,
     ToleranceSet,
     ToleranceSpec,
     XRange,
 )
-from simtest_funnel_mcp.render import render_compare, render_describe, time_digits
+from simtest_funnel_mcp.plot import (
+    PNG_FILE_DPI,
+    PREVIEW_DPI,
+    PlotArgumentError,
+    PlotData,
+    png_size,
+    prepare_plot,
+    render,
+)
+from simtest_funnel_mcp.render import (
+    render_compare,
+    render_describe,
+    render_plot,
+    time_digits,
+)
 from simtest_funnel_mcp.snippet import make_snippet
 
 SERVER_NAME = "simtest-funnel"
@@ -39,8 +66,11 @@ Funnel (tolerance-tube) comparison of signals stored in local CSV files
 (comma-separated, header row, '#' comment lines, one shared time column).
 The server reads the files itself; never paste sample values into a call.
 Typical flow: describe_signals on the reference to see columns, time span,
-sampling and value ranges; choose tolerances; compare_signals. Use absolute
-paths. Read-only and stateless: pass the paths on every call."""
+sampling and value ranges; choose tolerances; compare_signals; plot_signals
+to look at one column (inline PNG preview) and optionally save the plot as
+an SVG or PNG file for a document. Use absolute paths. Stateless: pass the
+paths on every call. Only plot_signals writes, and only the output_path
+it is given (never an existing file unless overwrite=true)."""
 
 CSV_HELP = (
     "CSV dialect: comma-separated, one header row, lines whose first non-blank character "
@@ -118,6 +148,46 @@ READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
+PLOT_DESCRIPTION = f"""\
+Plot ONE funnel comparison - one signal column, one tolerance set - and return a
+small PNG preview (800x450) inline as image content so you can look at it. The plot
+shows the reference (dashed), the test (solid), the tolerance tube (grey band
+between its lower and upper bound) and every region where the test leaves the tube
+(red shading plus x markers on the violating test points). The title states the
+column, the verdict and the resolved tolerances; axis labels are the time column and
+the signal column. The comparison runs on the full data with exactly the semantics
+of compare_signals (same tolerance resolution, same x_range meaning, same coverage
+rule), so the plot never contradicts compare_signals with the same arguments; only
+the drawing is reduced (min/max per bucket, the worst point of every violation kept).
+The result carries the same summary row as compare_signals, never sample values.
+
+output_path (optional): write the plot to this file - SVG (for documents; white
+background, fonts embedded as paths, byte-identical for identical input) when it
+ends in .svg, PNG (1600x900) when it ends in .png. The directory must already exist;
+it must lie inside the client's workspace roots (without roots: inside the server's
+working directory); an existing file is refused unless overwrite=true. Omit it to
+get only the inline preview (nothing is written). SVG is never returned inline.
+
+x_range restricts the comparison exactly as in compare_signals (rtol bases are
+computed within it) and is also the time window shown, so it doubles as zoom.
+A column that cannot be compared (missing, bad data, time ranges that differ,
+non-monotonic time) is an error and nothing is written; use compare_signals to see
+all problems. Tolerance coefficients: see compare_signals. {CSV_HELP}"""
+
+PLOT = ToolAnnotations(
+    read_only_hint=False,
+    # Replaces an existing file when (and only when) overwrite=true.
+    destructive_hint=True,
+    # Same arguments give the same file (deterministic) or the same refusal.
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+
+#: Allowed output file extensions and their formats.
+_PLOT_FORMATS: dict[str, Literal["svg", "png"]] = {".svg": "svg", ".png": "png"}
+#: Colours kept in the inline preview (visually identical, ~1/3 of the bytes).
+PREVIEW_COLORS = 128
+
 mcp = MCPServer(
     SERVER_NAME,
     instructions=INSTRUCTIONS,
@@ -177,6 +247,75 @@ def resolve_path(raw: str, roots: list[Path]) -> Path:
     return resolved
 
 
+def resolve_output_path(
+    raw: str, roots: list[Path], overwrite: bool
+) -> tuple[Path, Literal["svg", "png"]]:
+    """Check a plot output path (a write) and return ``(resolved path, format)``.
+
+    Stricter than :func:`resolve_path`: the extension must be ``.svg`` or
+    ``.png`` (also after following a symbolic link), the directory must
+    already exist, and without workspace roots the file must lie inside the
+    server's working directory. An existing file is refused unless
+    ``overwrite``; a directory or other non-regular file always is.
+    """
+    if not raw.strip():
+        raise ToolError("output_path is empty")
+    p = Path(raw).expanduser()
+    base = roots[0] if roots else Path.cwd().resolve()
+    if not p.is_absolute():
+        p = base / p
+    fmt = _PLOT_FORMATS.get(p.suffix.lower())
+    if fmt is None:
+        raise ToolError(f"output_path {p} must end in .svg or .png")
+    parent = p.parent
+    if not parent.is_dir():
+        what = "is not a directory" if parent.exists() else "does not exist"
+        raise ToolError(
+            f"directory {parent} {what}; the server does not create directories"
+        )
+    target = (parent.resolve(strict=True) / p.name).resolve()
+    allowed = roots if roots else [Path.cwd().resolve()]
+    if not any(target.is_relative_to(r) for r in allowed):
+        listed = ", ".join(str(r) for r in allowed)
+        scope = "the client's workspace roots" if roots else "the server's working directory"
+        raise ToolError(f"{target} is outside {scope} ({listed}); not written")
+    if _PLOT_FORMATS.get(target.suffix.lower()) != fmt:
+        raise ToolError(f"output_path {p} resolves to {target}, which is not a .{fmt} file")
+    if target.exists():
+        if not target.is_file():
+            raise ToolError(f"{target} exists and is not a regular file; not written")
+        if not overwrite:
+            raise ToolError(f"{target} already exists; pass overwrite=true to replace it")
+    return target, fmt
+
+
+def _write_plot(target: Path, data: bytes, overwrite: bool) -> None:
+    """Write ``data``; without ``overwrite`` the file is created exclusively."""
+    try:
+        with open(target, "wb" if overwrite else "xb") as fh:
+            fh.write(data)
+    except FileExistsError as exc:
+        raise ToolError(f"{target} already exists; pass overwrite=true to replace it") from exc
+    except OSError as exc:
+        raise ToolError(f"cannot write {target}: {exc}") from exc
+
+
+def _preview_png(data: PlotData) -> bytes:
+    """The inline preview: 800x450 PNG reduced to a small palette."""
+    from PIL import Image
+
+    raw = render(data, "png", PREVIEW_DPI)
+    with Image.open(io.BytesIO(raw)) as im:
+        quantized = im.convert("RGB").quantize(
+            colors=PREVIEW_COLORS,
+            method=Image.Quantize.MEDIANCUT,
+            dither=Image.Dither.NONE,
+        )
+    buf = io.BytesIO()
+    quantized.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 def _load(raw: str, roots: list[Path]) -> SignalFile:
     try:
         return load_csv(resolve_path(raw, roots))
@@ -213,7 +352,7 @@ def _trim(value: object, key: str | None = None) -> object:
     return value
 
 
-def _dump(model: DescribeResult | CompareResult) -> dict[str, object]:
+def _dump(model: DescribeResult | CompareResult | PlotResult) -> dict[str, object]:
     dumped = _trim(model.model_dump(mode="json", exclude_none=True))
     assert isinstance(dumped, dict)
     return dumped
@@ -286,6 +425,86 @@ def compare_signals_impl(
     text = render_compare(result, time_digits(ref.time, tst.time))
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
+        structured_content=_dump(result),
+    )
+
+
+def plot_signals_impl(
+    reference_path: str,
+    test_path: str,
+    roots: list[Path],
+    *,
+    column: str,
+    tolerance: ToleranceSet | None = None,
+    x_range: XRange | None = None,
+    output_path: str | None = None,
+    overwrite: bool = False,
+    max_intervals: int = DEFAULT_MAX_INTERVALS,
+    root_notes: list[str] | None = None,
+) -> CallToolResult:
+    """Plot one comparison; see :data:`PLOT_DESCRIPTION`."""
+    if max_intervals < 0:
+        raise ToolError("max_intervals must be >= 0")
+    # Check the output path before any work, write only after rendering.
+    target = (
+        resolve_output_path(output_path, roots, overwrite) if output_path is not None else None
+    )
+    ref = _load(reference_path, roots)
+    tst = _load(test_path, roots)
+    try:
+        outcome = prepare_plot(
+            ref, tst, column=column, tolerance=tolerance, x_range=x_range,
+            max_intervals=max_intervals,
+        )
+    except (PlotArgumentError, CompareArgumentError) as exc:
+        raise ToolError(str(exc)) from exc
+    data = outcome.data
+    preview = _preview_png(data)
+    pw, ph = png_size(preview)
+    file_out: PlotFile | None = None
+    if target is not None:
+        path, fmt = target
+        blob = render(data, fmt) if fmt == "svg" else render(data, fmt, PNG_FILE_DPI)
+        _write_plot(path, blob, overwrite)
+        size = png_size(blob) if fmt == "png" else None
+        file_out = PlotFile(
+            path=str(path),
+            format=fmt,
+            bytes=len(blob),
+            width_px=size[0] if size else None,
+            height_px=size[1] if size else None,
+        )
+    cr = outcome.compare.result
+    result = PlotResult(
+        reference=cr.reference,
+        test=cr.test,
+        x_range=cr.x_range,
+        tolerance_set=cr.tolerance_sets[0],
+        row=outcome.record.row,
+        view=RangeOut(lo=data.view[0], hi=data.view[1]),
+        file=file_out,
+        preview=PlotPreview(width_px=pw, height_px=ph, bytes=len(preview)),
+        drawn=DrawnPoints(
+            reference=int(data.ref_x.shape[0]),
+            test=int(data.test_x.shape[0]),
+            tube_lower=int(data.lower_x.shape[0]),
+            tube_upper=int(data.upper_x.shape[0]),
+            violation_markers=int(data.marker_x.shape[0]),
+            violation_regions=len(data.regions),
+            buckets=data.buckets,
+        ),
+        notes=[*cr.notes, *(root_notes or [])],
+    )
+    text = render_plot(result, time_digits(ref.time, tst.time))
+    return CallToolResult(
+        content=[
+            TextContent(type="text", text=text),
+            ImageContent(
+                type="image",
+                data=base64.b64encode(preview).decode("ascii"),
+                mime_type="image/png",
+            ),
+        ],
         structured_content=_dump(result),
     )
 
@@ -394,6 +613,70 @@ def compare_signals(
         max_intervals=max_intervals,
         max_rows=max_rows,
         include_snippet=include_snippet,
+        root_notes=ignored,
+    )
+
+
+@mcp.tool(
+    name="plot_signals",
+    title="Plot one CSV signal comparison (funnel)",
+    description=PLOT_DESCRIPTION,
+    annotations=PLOT,
+)
+def plot_signals(
+    reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
+    test_path: Annotated[str, Field(description="Path of the test CSV file.")],
+    column: Annotated[
+        str, Field(min_length=1, description="The one signal column to plot (exact name).")
+    ],
+    roots: Roots,
+    tolerance: Annotated[
+        ToleranceSet | None,
+        Field(
+            description=(
+                "One tolerance set: optional 'label' and any of atolx, atoly, ltolx, ltoly, "
+                "rtolx, rtoly (same as one entry of compare_signals 'tolerances'). Omit for "
+                "the library default."
+            )
+        ),
+    ] = None,
+    x_range: Annotated[
+        XRange | None,
+        Field(
+            description=(
+                "Time window {lo, hi} to compare and show; bounds must be finite, omit a "
+                "bound for unbounded."
+            )
+        ),
+    ] = None,
+    output_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "File to write: '.svg' (document) or '.png'. The directory must exist. Omit "
+                "for the inline preview only."
+            )
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool, Field(description="Replace output_path if it already exists.")
+    ] = False,
+    max_intervals: Annotated[
+        int, Field(ge=0, description="Max violation intervals listed in the result row.")
+    ] = DEFAULT_MAX_INTERVALS,
+) -> Annotated[CallToolResult, PlotResult]:
+    ignored: list[str] = []
+    paths = root_paths(roots, ignored)
+    return plot_signals_impl(
+        reference_path,
+        test_path,
+        paths,
+        column=column,
+        tolerance=tolerance,
+        x_range=x_range,
+        output_path=output_path,
+        overwrite=overwrite,
+        max_intervals=max_intervals,
         root_notes=ignored,
     )
 

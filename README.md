@@ -180,12 +180,16 @@ All common tasks are available through `make`:
 
 ## MCP server for AI agents
 
-[`python/simtest-funnel-mcp`](python/simtest-funnel-mcp) is a local, read-only
-[MCP](https://modelcontextprotocol.io) server (stdio) with two tools,
-`describe_signals(path)` and `compare_signals(reference_path, test_path, ...)`,
-that let agents such as Claude Code or Claude Desktop run funnel comparisons on
-local CSV files with explicit tolerances, without the samples entering the
-model's context.
+[`python/simtest-funnel-mcp`](python/simtest-funnel-mcp) is a local
+[MCP](https://modelcontextprotocol.io) server (stdio) with three tools,
+`describe_signals(path)`, `compare_signals(reference_path, test_path, ...)` and
+`plot_signals(reference_path, test_path, column, ...)`, that let agents such as
+Claude Code or Claude Desktop run funnel comparisons on local CSV files with
+explicit tolerances, without the samples entering the model's context.
+`plot_signals` draws one comparison (reference, test, tube, violations), returns
+a small PNG preview the model can look at, and optionally writes an SVG or PNG
+file for documents; it is the only tool that writes, and only the file it is
+asked for.
 
 ```bash
 claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # once published to PyPI

@@ -229,3 +229,52 @@ class CompareResult(BaseModel):
     columns_only_in_test_count: int | None = None
     notes: list[str] = Field(default_factory=list)
     snippet: str | None = None
+
+
+# --------------------------------------------------------------------------
+# plot_signals output
+# --------------------------------------------------------------------------
+
+
+class PlotFile(BaseModel):
+    """The plot file written to ``output_path``."""
+
+    path: str
+    format: Literal["svg", "png"]
+    bytes: int
+    width_px: int | None = Field(default=None, description="PNG only.")
+    height_px: int | None = Field(default=None, description="PNG only.")
+
+
+class PlotPreview(BaseModel):
+    """The inline PNG preview (sent as MCP image content)."""
+
+    format: Literal["png"] = "png"
+    width_px: int
+    height_px: int
+    bytes: int
+
+
+class DrawnPoints(BaseModel):
+    """How many points were drawn per series (the comparison used all samples)."""
+
+    reference: int
+    test: int
+    tube_lower: int
+    tube_upper: int
+    violation_markers: int
+    violation_regions: int
+    buckets: int = Field(description="Min/max buckets used to reduce reference and test.")
+
+
+class PlotResult(BaseModel):
+    reference: FileInfo
+    test: FileInfo
+    x_range: RangeOut
+    tolerance_set: ToleranceSetOut
+    row: Row = Field(description="Same fields as a compare_signals row.")
+    view: RangeOut = Field(description="Time window shown on the x axis.")
+    file: PlotFile | None = Field(default=None, description="Absent when no output_path.")
+    preview: PlotPreview
+    drawn: DrawnPoints
+    notes: list[str] = Field(default_factory=list)

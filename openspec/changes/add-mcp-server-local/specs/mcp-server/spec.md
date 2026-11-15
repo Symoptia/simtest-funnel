@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A local, read-only MCP server that lets AI agents compare signals stored in
+A local MCP server that lets AI agents compare signals stored in
 local CSV files with the funnel (tolerance-tube) algorithm, without raw samples
 ever entering the model's context.
 
@@ -12,20 +12,23 @@ ever entering the model's context.
 
 The server SHALL be distributed as its own Python package, `simtest-funnel-mcp`,
 whose console script of the same name starts an MCP server on the stdio
-transport. The server SHALL expose exactly two tools, `describe_signals` and
+transport. The server SHALL expose the tools `describe_signals` and
 `compare_signals`, both annotated as read-only, idempotent and closed-world.
+Other capabilities MAY add further tools (for example the plot tool of
+`mcp-plots`).
 
 #### Scenario: Client lists the tools
 - **WHEN** an MCP client starts `simtest-funnel-mcp` as a subprocess, initializes
   a session over stdio and lists the tools
-- **THEN** the list contains exactly `describe_signals` and `compare_signals`,
-  each marked read-only
+- **THEN** the list contains `describe_signals` and `compare_signals`, each
+  marked read-only
 
 ### Requirement: Stateless file access
 
 Each tool call SHALL name the files it reads by path; the server MUST keep no
-state between calls, MUST NOT write any file and MUST NOT open network
-connections. A relative path SHALL be resolved against the first workspace root
+state between calls and MUST NOT open network connections. `describe_signals`
+and `compare_signals` MUST NOT write any file; the only file the server ever
+writes on request is the plot file of the `mcp-plots` capability. A relative path SHALL be resolved against the first workspace root
 when the client declares roots, otherwise against the server's working directory.
 
 #### Scenario: Same call twice

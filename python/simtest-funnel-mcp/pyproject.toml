@@ -15,6 +15,7 @@ dependencies = [
     "simtest-funnel==1.0.0-beta.12",
     "numpy>=1.26",
     "pandas>=2",
+    "matplotlib>=3.8",
 ]
 
 [project.scripts]

@@ -36,14 +36,29 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
             return await client.list_tools()
 
     tools = {t.name: t for t in asyncio.run(run()).tools}
-    assert set(tools) == {"describe_signals", "compare_signals"}
+    assert set(tools) == {"describe_signals", "compare_signals", "plot_signals"}
     for tool in tools.values():
         assert tool.annotations is not None
-        assert tool.annotations.read_only_hint is True
-        assert tool.annotations.destructive_hint is False
         assert tool.annotations.open_world_hint is False
         assert tool.output_schema is not None
         assert "roots" not in tool.input_schema["properties"]
+    for name in ("describe_signals", "compare_signals"):
+        annotations = tools[name].annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is True
+        assert annotations.destructive_hint is False
+    plot = tools["plot_signals"].annotations
+    assert plot is not None
+    assert plot.read_only_hint is False
+    assert plot.destructive_hint is True
+    assert plot.idempotent_hint is True
+    assert set(tools["plot_signals"].input_schema["properties"]) == {
+        "reference_path", "test_path", "column", "tolerance", "x_range", "output_path",
+        "overwrite", "max_intervals",
+    }
+    assert set(tools["plot_signals"].input_schema["required"]) == {
+        "reference_path", "test_path", "column",
+    }
     description = tools["compare_signals"].description or ""
     for needle in (
         "atolx", "atoly", "ltolx", "ltoly", "rtolx", "rtoly",

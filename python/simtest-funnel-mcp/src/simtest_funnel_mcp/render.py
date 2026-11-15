@@ -12,6 +12,7 @@ from simtest_funnel_mcp.models import (
     Coefficients,
     CompareResult,
     DescribeResult,
+    PlotResult,
     Row,
 )
 
@@ -180,4 +181,43 @@ def render_compare(c: CompareResult, digits: int = MIN_TIME_DIGITS) -> str:
             f"pytest snippet ({len(c.snippet.splitlines())} lines): in the structured "
             "content field 'snippet'"
         )
+    return "\n".join(lines)
+
+
+def _kb(n: int) -> str:
+    return f"{n / 1000:.1f} kB"
+
+
+def render_plot(p: PlotResult, digits: int = MIN_TIME_DIGITS) -> str:
+    lines = [
+        f"reference {p.reference.path} (time column {p.reference.time_column!r}, "
+        f"{p.reference.row_count} rows)",
+        f"test {p.test.path} (time column {p.test.time_column!r}, {p.test.row_count} rows)",
+    ]
+    if p.x_range.lo is not None or p.x_range.hi is not None:
+        lines.append(f"x_range {tg(p.x_range.lo, digits)} .. {tg(p.x_range.hi, digits)}")
+    s = p.tolerance_set
+    lines.append(f"tolerance set {s.label}: {_coefficients(s.resolved)}")
+    r = p.row
+    if r.verdict == "pass":
+        lines.append(f"PASS {r.column} [{r.tolerance_set}]: {r.points_compared} points compared")
+    else:
+        lines.append(_row_line(r, digits))
+    if p.file is not None:
+        f = p.file
+        dims = f" {f.width_px}x{f.height_px}" if f.width_px is not None else ""
+        lines.append(f"plot written: {f.path} ({f.format.upper()}{dims}, {_kb(f.bytes)})")
+    else:
+        lines.append("no file written (no output_path)")
+    v = p.preview
+    lines.append(f"preview: inline PNG {v.width_px}x{v.height_px} ({_kb(v.bytes)})")
+    d = p.drawn
+    lines.append(
+        f"drawn: reference {d.reference} / test {d.test} points (min/max of {d.buckets} "
+        f"buckets), tube {d.tube_lower}+{d.tube_upper} points, {d.violation_markers} "
+        f"violation marker(s), {d.violation_regions} shaded region(s); "
+        f"time {tg(p.view.lo, digits)} .. {tg(p.view.hi, digits)}"
+    )
+    for n in p.notes:
+        lines.append(f"note: {n}")
     return "\n".join(lines)

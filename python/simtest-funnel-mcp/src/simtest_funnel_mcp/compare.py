@@ -65,6 +65,9 @@ class RowRecord:
     given: dict[str, float]
     #: True when the library decided the status (snippet can reproduce it).
     from_library: bool
+    #: The library's comparison and its full violation summary (only when
+    #: ``from_library``); used by ``plot_signals`` to draw the same result.
+    library: tuple[funnel.CompareResult, funnel.ViolationSummary] | None = None
 
 
 @dataclass
@@ -259,13 +262,11 @@ def _library_row(
     column: str,
     label: str,
     res: funnel.CompareResult,
-    t_ref: np.ndarray,
-    opts: funnel.Options,
+    s: funnel.ViolationSummary,
     overridden: bool,
     max_intervals: int,
     coverage_problem: str | None,
 ) -> Row:
-    s = funnel.summarize(res, t_ref, opts)
     code = int(res.status)
     verdict = _verdict(code)
     row = Row(
@@ -417,11 +418,19 @@ def run_compare(
                 continue
             opts = per_col_opts.get(c, default_opts)
             code = int(results[c].status)
+            summary = funnel.summarize(results[c], t_ref, opts)
             row = _library_row(
-                c, label, results[c], t_ref, opts, c in overrides, max_intervals,
+                c, label, results[c], summary, c in overrides, max_intervals,
                 coverage.get(code),
             )
-            records.append(RowRecord(row=row, given=per_col_given[c], from_library=True))
+            records.append(
+                RowRecord(
+                    row=row,
+                    given=per_col_given[c],
+                    from_library=True,
+                    library=(results[c], summary),
+                )
+            )
 
     if ref_span is not None and tst_span is not None:
         spans = (

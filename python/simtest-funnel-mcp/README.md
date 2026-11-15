@@ -7,9 +7,10 @@ local CSV files with the funnel (tolerance-tube) algorithm of
 [LBNL Funnel](https://github.com/lbl-srg/funnel).
 
 The server reads the files itself, so raw samples never enter the model's
-context. It is read-only and stateless: every call names the files it
-reads; nothing is written and no network connection is opened. Transport:
-stdio.
+context. It is stateless: every call names the files it reads, and no
+network connection is opened. `describe_signals` and `compare_signals` are
+read-only; `plot_signals` writes exactly the plot file it is given (and
+nothing at all without `output_path`). Transport: stdio.
 
 > **Platform note:** `simtest-funnel` is currently published to PyPI only
 > as a Linux x86-64 / CPython 3.12 wheel, so `uvx simtest-funnel-mcp`
@@ -58,6 +59,60 @@ covers more time than the other within `x_range`, the row has verdict
 reference) or `MISSING_TEST` (the reverse), still reports
 `points_compared` / `points_outside`, and its `problem` text names both
 time spans and the exact `x_range` that compares the overlap.
+
+### `plot_signals(reference_path, test_path, column, ...)`
+
+Draws ONE comparison - one signal column, one tolerance set - and returns a
+PNG preview (800 x 450 px) inline as MCP image content, so the model can
+look at it. SVG is never returned inline (it would reach the model as text).
+
+| Argument | Default | Meaning |
+| --- | --- | --- |
+| `column` | required | The one signal column to plot (exact name, no glob patterns) |
+| `tolerance` | library default | One tolerance set: optional `label` plus any of the six coefficients (one entry of `compare_signals` `tolerances`) |
+| `x_range` | unbounded | As in `compare_signals`; also the time window shown (zoom) |
+| `output_path` | none | Write the plot here: `.svg` (document) or `.png` (1600 x 900 px). Omit for the preview only |
+| `overwrite` | false | Replace `output_path` if it exists (refused otherwise) |
+| `max_intervals` | 5 | Violation intervals listed in the result row (all are drawn) |
+
+The plot shows the reference (dark grey, dashed), the test (blue, solid),
+the tolerance tube (grey band between thin lower and upper bound lines) and
+every region where the test leaves the tube (red shading, with `x` markers
+on the violating test points). The title states the column, the verdict,
+the points outside and the non-zero resolved tolerances; the axes are
+labelled with the time column and the signal column; a legend sits below the
+axes. The background is white, so plots stay readable on light and dark
+pages (on a dark page they appear as a light card).
+
+The comparison runs on the full data with exactly the semantics of
+`compare_signals`; the result carries the same summary row (plus the file
+written, the preview size and how many points were drawn), never sample
+values. For drawing, reference and test are reduced to the min/max of 1000
+time buckets, keeping the worst point of every violation interval, so a plot
+never hides a violation: every violation interval is shaded (at least ~3 px
+wide, even for a single sample) and contains a marked test point. Tube
+bounds are drawn with all their points; for tubes above 20 000 points the
+grey band (not the bound lines) is embedded in the SVG as a 200 dpi image to
+keep the file small. A column that cannot be compared (missing, bad data,
+differing time spans, non-monotonic time) is an error and nothing is
+written.
+
+Output files: the directory must already exist (none is created); the file
+must lie inside the client's workspace roots, or, when the client declares
+no roots, inside the server's working directory; a symbolic link must point
+to a file with the same extension; an existing file is refused unless
+`overwrite=true`. The file is written only after rendering succeeded, so a
+failed call writes nothing. Output is deterministic: the same input gives
+byte-identical SVG and PNG files (with the same matplotlib version), so
+plots can be kept in a repository and diffed. SVG text is embedded as
+paths (bundled DejaVu Sans), so files look the same everywhere.
+
+Plots are rendered with [matplotlib](https://matplotlib.org) (headless,
+imported only on the first `plot_signals` call, so server start-up is not
+slowed). It adds about 24 MB of wheels (~77 MB installed). matplotlib
+keeps a font cache in its cache directory (`~/.cache/matplotlib`, or
+`$MPLCONFIGDIR`), created on first use in an environment; that is the only
+other file touched.
 
 ### Pytest snippet
 
