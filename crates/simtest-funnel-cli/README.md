@@ -25,9 +25,23 @@ cargo run -p simtest-funnel-cli -- \
 
 ## Usage
 
-All flags are optional if `--params <file.json>` is given. Resolution
-order per field: (1) explicit CLI flag, (2) `--params` JSON value,
-(3) built-in default.
+All flags are optional if `--params <file.json>` is given. Paths are
+taken from the flag, else from the `--params` JSON. Tolerances are
+resolved in two steps:
+
+1. Each coefficient is taken from its flag (an explicit `0` counts),
+   else from the `--params` JSON if the key is present (an absent key or
+   `null` means "not given").
+2. The given coefficients are resolved **per axis** — x is
+   `atolx`/`ltolx`/`rtolx`, y is `atoly`/`ltoly`/`rtoly`:
+   - an axis with no coefficient given gets the default `rtol = 2e-3`
+     (other coefficients zero);
+   - an axis with at least one coefficient given uses the given values
+     and zero for its other coefficients.
+
+So `--atoly 0.05` compares with `atoly = 0.05`, `rtoly = 0` and the
+x-axis default `rtolx = 2e-3`; add `--atolx 0` for zero x tolerance.
+This is the same rule the Rust, Python and TypeScript APIs use.
 
 ```text
 simtest-funnel --params cases/success1/param.json
@@ -63,7 +77,10 @@ Writes five CSV files into the output directory (default `results`):
   `simtest-funnel` reports range-asymmetry as separate exit codes (3
   and 4) so scripts can distinguish "inside funnel" from "one trajectory
   extends beyond the other".
-- **Default tolerance.** The workspace default `rtolx = rtoly = 2e-3`
-  matches the `csv-compare` project; the LBNL default is `0.0`. Pass
-  the flags explicitly (or a `--params` file) when exact parity is
-  required.
+- **Default tolerance and per-axis resolution.** The workspace default
+  `rtolx = rtoly = 2e-3` matches the `csv-compare` project; the LBNL
+  default is `0.0` for every coefficient. A coefficient that is neither
+  flagged nor in `--params` is zero only if another coefficient of the
+  same axis is given; if none of an axis's coefficients is given, that
+  axis gets `rtol = 2e-3`. For exact LBNL parity give at least one
+  coefficient per axis (e.g. `"atolx": 0, "atoly": 0` in `param.json`).

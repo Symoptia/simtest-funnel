@@ -30,6 +30,12 @@ result = compare(
 print(result.status)  # 0 == Pass, -1 == Fail, 1/2 == MissingReference/Test
 ```
 
+`Tolerances(atoly=0.05)` sets the y axis only: `rtoly` becomes `0` and
+the x axis keeps the default `rtolx = 2e-3`. Tolerances are resolved per
+axis (an axis with no coefficient given gets `rtol = 2e-3`, an axis with
+at least one given uses `0.0` for the rest; explicit `0.0` counts as
+given) — see the package README for details.
+
 For DataFrame-based comparisons and the package-level API reference
 see the package README in
 [`python/simtest/funnel/README.md`](python/simtest/funnel/README.md).

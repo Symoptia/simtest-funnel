@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
 
@@ -31,12 +31,32 @@ class Status(IntEnum):
 
 @dataclass(frozen=True)
 class Tolerances:
-    atolx: float = 0.0
-    atoly: float = 0.0
-    ltolx: float = 0.0
-    ltoly: float = 0.0
-    rtolx: float = 0.0
-    rtoly: float = 0.0
+    """Tolerance coefficients; ``None`` means "not given".
+
+    The x axis is ``atolx``/``ltolx``/``rtolx`` and the y axis is
+    ``atoly``/``ltoly``/``rtoly``. Coefficients are resolved per axis by
+    the Rust core, identically in every simtest-funnel API:
+
+    - an axis with no coefficient given gets the default
+      ``rtol = 2e-3`` (other coefficients ``0.0``);
+    - an axis with at least one coefficient given uses the given values
+      and ``0.0`` for its other coefficients;
+    - an explicit ``0.0`` counts as given.
+
+    So ``Tolerances()`` is the default (``rtolx = rtoly = 2e-3``) and
+    ``Tolerances(atoly=0.05)`` means ``atoly = 0.05`` with ``rtoly = 0``
+    and ``rtolx = 2e-3``; use ``Tolerances(atolx=0.0, atoly=0.05)`` for
+    zero x tolerance. Values returned by the library
+    (:func:`default_options`, :attr:`ViolationSummary.tolerances`) are
+    always the six resolved floats.
+    """
+
+    atolx: float | None = None
+    atoly: float | None = None
+    ltolx: float | None = None
+    ltoly: float | None = None
+    rtolx: float | None = None
+    rtoly: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +67,8 @@ class Range:
 
 @dataclass(frozen=True)
 class Options:
+    """Compare options. ``Options()`` is equivalent to passing no options."""
+
     tolerances: Tolerances = field(default_factory=Tolerances)
     x_range: Range = field(default_factory=Range)
 
@@ -60,6 +82,8 @@ class CompareResult:
 
 
 def default_options() -> Options:
+    """Return the default options with all six tolerances explicit
+    (``rtolx = rtoly = 2e-3``, others ``0.0``)."""
     d = _ext.default_options()
     t = d["tolerances"]
     r = d["x_range"]
@@ -108,7 +132,12 @@ def compare(
     y_test: Sequence[float] | np.ndarray,
     options: Options | None = None,
 ) -> CompareResult:
-    """Compare a test trajectory against a reference trajectory."""
+    """Compare a test trajectory against a reference trajectory.
+
+    ``options=None`` (or ``Options()``) uses the default tolerances;
+    partially specified :class:`Tolerances` are resolved per axis (see
+    :class:`Tolerances`).
+    """
     tref = _as_f64(t_reference)
     yref = _as_f64(y_reference)
     ttst = _as_f64(t_test)
@@ -186,6 +215,134 @@ def compare_dataframes(
     return out
 
 
+@dataclass(frozen=True)
+class ViolationInterval:
+    """A maximal run of consecutive judged test points outside the tube on
+    the same side. ``start_x`` / ``end_x`` are the x of the first / last
+    test point of the run (equal for a single-point violation)."""
+
+    start_x: float
+    end_x: float
+    direction: Literal["above", "below"]
+    point_count: int
+    worst_deviation: float
+    worst_x: float
+
+
+@dataclass(frozen=True)
+class WorstDeviation:
+    """Overall worst signed deviation, its x, and the tube half-width in y
+    at that x (half the distance between upper and lower bound)."""
+
+    x: float
+    deviation: float
+    tube_half_width_y: float
+
+
+@dataclass(frozen=True)
+class ViolationSummary:
+    """How much a comparison violated the tolerances it was run with.
+
+    Only *judged* test points (x inside the requested ``x_range``
+    intersected with the reference x-extent) contribute. ``compared_range``
+    spans the first to the last judged test point. For validation statuses,
+    or when no test point is judged, ``compared_range``, ``worst`` and both
+    fractions are ``None`` and ``intervals`` is empty.
+    """
+
+    status: int
+    tolerances: Tolerances
+    """The six resolved tolerance values used (never ``None``)."""
+    x_range: Range
+    compared_range: Range | None
+    intervals: tuple[ViolationInterval, ...]
+    worst: WorstDeviation | None
+    points_compared: int
+    points_outside: int
+    fraction_of_points_outside: float | None
+    fraction_of_span_outside: float | None
+
+
+def _range_from_dict(d: Mapping[str, Any]) -> Range:
+    return Range(lo=float(d["lo"]), hi=float(d["hi"]))
+
+
+def _opt_float(v: Any) -> float | None:
+    return None if v is None else float(v)
+
+
+def _direction(v: Any) -> Literal["above", "below"]:
+    if v == "above":
+        return "above"
+    if v == "below":
+        return "below"
+    raise ValueError(f"unexpected direction {v!r}")
+
+
+def summarize(
+    result: CompareResult,
+    t_reference: Sequence[float] | np.ndarray,
+    options: Options | None = None,
+) -> ViolationSummary:
+    """Summarize how much ``result`` violated its tolerances.
+
+    ``t_reference`` and ``options`` must be the reference x-values and the
+    options that were passed to :func:`compare` to produce ``result``
+    (``None`` means the same defaults :func:`compare` uses). The summary is
+    computed by the Rust core, so its numbers are identical to the Rust and
+    TypeScript APIs.
+    """
+    d = _ext.summarize(
+        _as_f64(t_reference),
+        int(result.status),
+        _as_f64(result.lower[0]),
+        _as_f64(result.lower[1]),
+        _as_f64(result.upper[0]),
+        _as_f64(result.upper[1]),
+        _as_f64(result.errors[0]),
+        _as_f64(result.errors[1]),
+        _options_to_dict(options),
+    )
+    t = d["tolerances"]
+    cr = d["compared_range"]
+    w = d["worst"]
+    return ViolationSummary(
+        status=int(d["status"]),
+        tolerances=Tolerances(
+            atolx=float(t["atolx"]),
+            atoly=float(t["atoly"]),
+            ltolx=float(t["ltolx"]),
+            ltoly=float(t["ltoly"]),
+            rtolx=float(t["rtolx"]),
+            rtoly=float(t["rtoly"]),
+        ),
+        x_range=_range_from_dict(d["x_range"]),
+        compared_range=None if cr is None else _range_from_dict(cr),
+        intervals=tuple(
+            ViolationInterval(
+                start_x=float(iv["start_x"]),
+                end_x=float(iv["end_x"]),
+                direction=_direction(iv["direction"]),
+                point_count=int(iv["point_count"]),
+                worst_deviation=float(iv["worst_deviation"]),
+                worst_x=float(iv["worst_x"]),
+            )
+            for iv in d["intervals"]
+        ),
+        worst=None
+        if w is None
+        else WorstDeviation(
+            x=float(w["x"]),
+            deviation=float(w["deviation"]),
+            tube_half_width_y=float(w["tube_half_width_y"]),
+        ),
+        points_compared=int(d["points_compared"]),
+        points_outside=int(d["points_outside"]),
+        fraction_of_points_outside=_opt_float(d["fraction_of_points_outside"]),
+        fraction_of_span_outside=_opt_float(d["fraction_of_span_outside"]),
+    )
+
+
 def version() -> str:
     return str(_ext.version())
 
@@ -196,9 +353,13 @@ __all__ = [
     "Range",
     "Status",
     "Tolerances",
+    "ViolationInterval",
+    "ViolationSummary",
+    "WorstDeviation",
     "compare",
     "compare_dataframes",
     "default_options",
     "status_message",
+    "summarize",
     "version",
 ]

@@ -8,8 +8,16 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::options::PartialTolerances;
+
 /// `param.json` schema matching the LBNL Funnel CLI test fixtures
 /// (see `/home/iakovn/projects/funnel/tests/*/param.json`).
+///
+/// Tolerance keys are optional: an absent key (or `null`) is "not given"
+/// and `0` is an explicit zero, so [`ParamFile::tolerances`] can be
+/// resolved with the per-axis rule of [`PartialTolerances`]. (The LBNL
+/// tools treat an absent key as `0`; map `None` to `0.0` for exact LBNL
+/// semantics.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamFile {
     /// Test CSV filename (relative to the param.json directory).
@@ -19,24 +27,39 @@ pub struct ParamFile {
     /// Output directory (defaults to `results`).
     #[serde(default = "default_output")]
     pub output: String,
-    /// Absolute x tolerance.
+    /// Absolute x tolerance; `None` when the key is absent or `null`.
     #[serde(default)]
-    pub atolx: f64,
-    /// Absolute y tolerance.
+    pub atolx: Option<f64>,
+    /// Absolute y tolerance; `None` when the key is absent or `null`.
     #[serde(default)]
-    pub atoly: f64,
-    /// Local x tolerance.
+    pub atoly: Option<f64>,
+    /// Local x tolerance; `None` when the key is absent or `null`.
     #[serde(default)]
-    pub ltolx: f64,
-    /// Local y tolerance.
+    pub ltolx: Option<f64>,
+    /// Local y tolerance; `None` when the key is absent or `null`.
     #[serde(default)]
-    pub ltoly: f64,
-    /// Range-relative x tolerance.
+    pub ltoly: Option<f64>,
+    /// Range-relative x tolerance; `None` when the key is absent or `null`.
     #[serde(default)]
-    pub rtolx: f64,
-    /// Range-relative y tolerance.
+    pub rtolx: Option<f64>,
+    /// Range-relative y tolerance; `None` when the key is absent or `null`.
     #[serde(default)]
-    pub rtoly: f64,
+    pub rtoly: Option<f64>,
+}
+
+impl ParamFile {
+    /// The tolerance coefficients given in the file, as
+    /// [`PartialTolerances`] (resolve with [`PartialTolerances::resolve`]).
+    pub fn tolerances(&self) -> PartialTolerances {
+        PartialTolerances {
+            atolx: self.atolx,
+            atoly: self.atoly,
+            ltolx: self.ltolx,
+            ltoly: self.ltoly,
+            rtolx: self.rtolx,
+            rtoly: self.rtoly,
+        }
+    }
 }
 
 fn default_output() -> String {
@@ -147,6 +170,26 @@ pub fn write_xy_csv(path: &Path, x: &[f64], y: &[f64]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn param_tolerances_distinguish_absent_null_and_zero() {
+        let p: ParamFile = serde_json::from_str(
+            r#"{"test": "t.csv", "reference": "r.csv", "atolx": 0, "atoly": 0.05, "rtoly": null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            p.tolerances(),
+            PartialTolerances {
+                atolx: Some(0.0),
+                atoly: Some(0.05),
+                ..PartialTolerances::default()
+            }
+        );
+        let empty: ParamFile =
+            serde_json::from_str(r#"{"test": "t.csv", "reference": "r.csv"}"#).unwrap();
+        assert_eq!(empty.tolerances(), PartialTolerances::default());
+        assert_eq!(empty.output, "results");
+    }
 
     #[test]
     fn csv_round_trip() {

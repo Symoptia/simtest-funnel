@@ -56,6 +56,7 @@ y_ref = np.sin(2 * np.pi * t_ref)
 t_test = t_ref
 y_test = y_ref + 0.01
 
+# Only a y tolerance: rtoly = 0, x keeps the default rtolx = 2e-3.
 result = compare(
     t_ref, y_ref, t_test, y_test,
     Options(tolerances=Tolerances(atoly=0.05)),
@@ -72,6 +73,7 @@ const tRef = Float64Array.from({ length: 101 }, (_, i) => i / 100);
 const yRef = tRef.map((t) => Math.sin(2 * Math.PI * t));
 const yTest = yRef.map((y) => y + 0.01);
 
+// Only a y tolerance: rtoly = 0, x keeps the default rtolx = 2e-3.
 const result = compare(tRef, yRef, tRef, yTest, {
   tolerances: { atoly: 0.05 },
 });
@@ -81,7 +83,7 @@ console.log(result.status === Status.Pass ? "pass" : "fail");
 ### Rust
 
 ```rust
-use simtest_funnel_core::{compare, Options, Status, Tolerances};
+use simtest_funnel_core::{compare, Options, PartialTolerances, Status};
 
 fn main() {
     let t_ref: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
@@ -91,8 +93,9 @@ fn main() {
         .collect();
     let y_test: Vec<f64> = y_ref.iter().map(|y| y + 0.01).collect();
 
+    // Only a y tolerance: rtoly = ltoly = 0, x keeps the default rtolx = 2e-3.
     let opts = Options {
-        tolerances: Tolerances { atoly: 0.05, ..Default::default() },
+        tolerances: PartialTolerances { atoly: Some(0.05), ..Default::default() }.resolve(),
         ..Default::default()
     };
     let r = compare(&t_ref, &y_ref, &t_ref, &y_test, &opts);
@@ -125,9 +128,16 @@ aware of the following:
   distinct exit codes (`0/1/2/3/4/5`) so shells can distinguish
   "inside the funnel" from "range asymmetry" — see
   [`crates/simtest-funnel-cli/README.md`](crates/simtest-funnel-cli/README.md).
-- **Default tolerance `rtolx = rtoly = 2e-3`.** Matches the
-  `csv-compare` project; LBNL defaults to `0.0`. Pass the flags
-  (or `--params`) explicitly when exact LBNL parity is required.
+- **Default tolerance `rtolx = rtoly = 2e-3`, resolved per axis.**
+  The default matches the `csv-compare` project; LBNL defaults every
+  coefficient to `0.0`. In every simtest-funnel API (Rust, Python,
+  TypeScript, CLI) the coefficients you give are resolved per axis
+  (x: `atolx`/`ltolx`/`rtolx`, y: `atoly`/`ltoly`/`rtoly`): an axis
+  with no coefficient given gets `rtol = 2e-3`; an axis with at least
+  one coefficient given uses zero for its other coefficients; an
+  explicit `0` counts as given. So giving only `atoly` keeps
+  `rtolx = 2e-3` on the x axis. For exact LBNL parity give at least one
+  coefficient per axis (e.g. `atolx = 0`).
 
 The core and CLI READMEs cross-link back to this section.
 

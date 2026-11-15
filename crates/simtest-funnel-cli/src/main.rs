@@ -8,14 +8,19 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 use simtest_funnel_core::io::{read_params, read_xy_csv, write_xy_csv, ParamFile};
-use simtest_funnel_core::{compare, status_message, Options, Range, Status, Tolerances};
+use simtest_funnel_core::{
+    compare, status_message, Options, PartialTolerances, Range, Status, Tolerances,
+};
 
 /// Trajectory comparison CLI.
 ///
-/// Resolution order for each tolerance / path field:
-///   1. explicit CLI flag (including `0.0`)
-///   2. value from `--params` file if provided
-///   3. `Options::default_options()` default
+/// Each path field is taken from its flag, else from the `--params`
+/// file. Each tolerance coefficient is taken from its flag (including an
+/// explicit `0`), else from the `--params` file if the key is present;
+/// the coefficients given that way are then resolved per axis by
+/// `PartialTolerances::resolve` (an axis with no coefficient given gets
+/// the default `rtol = 2e-3`; an axis with at least one given has its
+/// other coefficients set to zero).
 #[derive(Debug, Parser)]
 #[command(
     name = "simtest-funnel",
@@ -25,7 +30,13 @@ use simtest_funnel_core::{compare, status_message, Options, Range, Status, Toler
         Writes five CSV files into --output: reference.csv, test.csv, \
         lowerBound.csv, upperBound.csv, and errors.csv. See the crate \
         README 'Differences from LBNL Funnel' section — in particular \
-        errors.csv contains *signed* deviations, not magnitudes."
+        errors.csv contains *signed* deviations, not magnitudes.\n\n\
+        Tolerances are resolved per axis (x: atolx/ltolx/rtolx, y: \
+        atoly/ltoly/rtoly). Each coefficient comes from its flag, else \
+        from --params. An axis with no coefficient given uses the \
+        default rtol = 2e-3; an axis with at least one coefficient given \
+        uses zero for its other coefficients. An explicit 0 counts as \
+        given."
 )]
 struct Args {
     /// JSON file with compare parameters (same shape as
@@ -95,11 +106,6 @@ fn resolve(args: Args) -> Result<Resolved> {
         }
         None
     };
-    let resolve_f = |cli: Option<f64>, from_params: Option<f64>, default: f64| -> f64 {
-        cli.unwrap_or_else(|| from_params.unwrap_or(default))
-    };
-
-    let def = Options::default_options().tolerances;
     let reference = resolve_path(
         args.reference,
         params.as_ref().map(|p| p.reference.as_str()),
@@ -110,14 +116,19 @@ fn resolve(args: Args) -> Result<Resolved> {
     let output = resolve_path(args.output, params.as_ref().map(|p| p.output.as_str()))
         .unwrap_or_else(|| PathBuf::from("results"));
 
-    let tolerances = Tolerances {
-        atolx: resolve_f(args.atolx, params.as_ref().map(|p| p.atolx), def.atolx),
-        atoly: resolve_f(args.atoly, params.as_ref().map(|p| p.atoly), def.atoly),
-        ltolx: resolve_f(args.ltolx, params.as_ref().map(|p| p.ltolx), def.ltolx),
-        ltoly: resolve_f(args.ltoly, params.as_ref().map(|p| p.ltoly), def.ltoly),
-        rtolx: resolve_f(args.rtolx, params.as_ref().map(|p| p.rtolx), def.rtolx),
-        rtoly: resolve_f(args.rtoly, params.as_ref().map(|p| p.rtoly), def.rtoly),
-    };
+    let from_file = params
+        .as_ref()
+        .map(ParamFile::tolerances)
+        .unwrap_or_default();
+    let tolerances = PartialTolerances {
+        atolx: args.atolx.or(from_file.atolx),
+        atoly: args.atoly.or(from_file.atoly),
+        ltolx: args.ltolx.or(from_file.ltolx),
+        ltoly: args.ltoly.or(from_file.ltoly),
+        rtolx: args.rtolx.or(from_file.rtolx),
+        rtoly: args.rtoly.or(from_file.rtoly),
+    }
+    .resolve();
     Ok(Resolved {
         reference,
         test,
@@ -155,7 +166,10 @@ fn exit_code_for(s: Status) -> u8 {
 }
 
 fn run() -> Result<(Status, PathBuf)> {
-    let args = Args::parse();
+    run_args(Args::parse())
+}
+
+fn run_args(args: Args) -> Result<(Status, PathBuf)> {
     let r = resolve(args)?;
     let (t_ref, y_ref) =
         read_xy_csv(&r.reference).with_context(|| format!("reading {}", r.reference.display()))?;
@@ -208,5 +222,123 @@ fn main() -> ExitCode {
             eprintln!("error: {e:#}");
             ExitCode::from(5)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolved_tolerances(argv: &[&str]) -> Tolerances {
+        let mut full = vec!["simtest-funnel", "--reference", "r.csv", "--test", "t.csv"];
+        full.extend_from_slice(argv);
+        resolve(Args::try_parse_from(full).unwrap())
+            .unwrap()
+            .tolerances
+    }
+
+    fn write_params(name: &str, json: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "simtest_funnel_cli_{}_{name}.json",
+            std::process::id()
+        ));
+        std::fs::write(&p, json).unwrap();
+        p
+    }
+
+    /// Step-edge case shared with the Rust core, Python and TypeScript
+    /// tests: the test step is delayed by 0.001 in x.
+    fn step_edge_status(tolerance_flags: &[&str]) -> Status {
+        let dir = std::env::temp_dir().join(format!(
+            "simtest_funnel_cli_step_{}_{}",
+            std::process::id(),
+            tolerance_flags.join("_")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = |v: f64| v.clamp(0.0, 1.0);
+        let t: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
+        let y_ref: Vec<f64> = t.iter().map(|x| clip((x - 0.49) / 0.01)).collect();
+        let y_test: Vec<f64> = t.iter().map(|x| clip((x - 0.491) / 0.01)).collect();
+        write_xy_csv(&dir.join("r.csv"), &t, &y_ref).unwrap();
+        write_xy_csv(&dir.join("t.csv"), &t, &y_test).unwrap();
+        let (r, t, out) = (dir.join("r.csv"), dir.join("t.csv"), dir.join("out"));
+        let mut argv = vec![
+            "simtest-funnel",
+            "--reference",
+            r.to_str().unwrap(),
+            "--test",
+            t.to_str().unwrap(),
+            "--output",
+            out.to_str().unwrap(),
+        ];
+        argv.extend_from_slice(tolerance_flags);
+        let (status, _) = run_args(Args::try_parse_from(argv).unwrap()).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        status
+    }
+
+    #[test]
+    fn step_edge_verdicts_follow_resolution() {
+        assert_eq!(step_edge_status(&["--atoly", "0.05"]), Status::Pass);
+        assert_eq!(
+            step_edge_status(&["--atoly", "0.05", "--atolx", "0"]),
+            Status::Fail
+        );
+        assert_eq!(step_edge_status(&[]), Status::Pass);
+    }
+
+    #[test]
+    fn no_tolerance_given_uses_default() {
+        assert_eq!(resolved_tolerances(&[]), Tolerances::DEFAULT);
+    }
+
+    #[test]
+    fn flag_only_on_y_keeps_x_default() {
+        assert_eq!(
+            resolved_tolerances(&["--atoly", "0.05"]),
+            Tolerances {
+                atoly: 0.05,
+                rtolx: 2e-3,
+                ..Tolerances::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn explicit_zero_flag_counts_as_given() {
+        assert_eq!(
+            resolved_tolerances(&["--atoly", "0.05", "--atolx", "0"]),
+            Tolerances {
+                atoly: 0.05,
+                ..Tolerances::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn params_without_tolerance_keys_uses_default() {
+        let p = write_params("empty", r#"{"test": "t.csv", "reference": "r.csv"}"#);
+        let t = resolved_tolerances(&["--params", p.to_str().unwrap()]);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(t, Tolerances::DEFAULT);
+    }
+
+    #[test]
+    fn flag_and_params_combined() {
+        let p = write_params(
+            "combined",
+            r#"{"test": "t.csv", "reference": "r.csv", "atolx": 0.1, "atoly": 0.1}"#,
+        );
+        let t = resolved_tolerances(&["--params", p.to_str().unwrap(), "--rtoly", "0.01"]);
+        std::fs::remove_file(&p).ok();
+        assert_eq!(
+            t,
+            Tolerances {
+                atolx: 0.1,
+                atoly: 0.1,
+                rtoly: 0.01,
+                ..Tolerances::ZERO
+            }
+        );
     }
 }

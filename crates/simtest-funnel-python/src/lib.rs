@@ -2,7 +2,7 @@
 //!
 //! Python bindings for the simtest-funnel trajectory comparison library.
 //!
-//! Exposes `compare`, `default_options`, `status_message`, and the
+//! Exposes `compare`, `summarize`, `default_options`, `status_message`, and the
 //! `Status` integer constants through PyO3 as the native extension
 //! module `_simtest_funnel`, re-exported through the namespace package
 //! `simtest.funnel`.
@@ -10,9 +10,10 @@
 use numpy::{IntoPyArray, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 use simtest_funnel_core::{
-    compare as core_compare, status_message, Options, Range, Status, Tolerances,
+    compare as core_compare, status_message, summarize as core_summarize, CompareResult, Options,
+    PartialTolerances, Range, Status, Tolerances,
 };
 
 fn dict_get_f64(d: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
@@ -22,28 +23,19 @@ fn dict_get_f64(d: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
     }
 }
 
-fn parse_tolerances(obj: &Bound<'_, PyAny>) -> PyResult<Tolerances> {
+/// Parse a tolerances dict into partially specified tolerances: a missing
+/// key or `None` is "not given"; any number (including `0.0`) is given.
+/// Resolution (per-axis defaults) happens in the Rust core.
+fn parse_tolerances(obj: &Bound<'_, PyAny>) -> PyResult<PartialTolerances> {
     let d: Bound<'_, PyDict> = obj.extract()?;
-    let mut t = Tolerances::default();
-    if let Some(v) = dict_get_f64(&d, "atolx")? {
-        t.atolx = v;
-    }
-    if let Some(v) = dict_get_f64(&d, "atoly")? {
-        t.atoly = v;
-    }
-    if let Some(v) = dict_get_f64(&d, "ltolx")? {
-        t.ltolx = v;
-    }
-    if let Some(v) = dict_get_f64(&d, "ltoly")? {
-        t.ltoly = v;
-    }
-    if let Some(v) = dict_get_f64(&d, "rtolx")? {
-        t.rtolx = v;
-    }
-    if let Some(v) = dict_get_f64(&d, "rtoly")? {
-        t.rtoly = v;
-    }
-    Ok(t)
+    Ok(PartialTolerances {
+        atolx: dict_get_f64(&d, "atolx")?,
+        atoly: dict_get_f64(&d, "atoly")?,
+        ltolx: dict_get_f64(&d, "ltolx")?,
+        ltoly: dict_get_f64(&d, "ltoly")?,
+        rtolx: dict_get_f64(&d, "rtolx")?,
+        rtoly: dict_get_f64(&d, "rtoly")?,
+    })
 }
 
 fn parse_range(obj: &Bound<'_, PyAny>) -> PyResult<Range> {
@@ -58,6 +50,9 @@ fn parse_range(obj: &Bound<'_, PyAny>) -> PyResult<Range> {
     Ok(r)
 }
 
+/// Parse the options dict. `None`, a missing `tolerances` key or
+/// `tolerances=None` all mean "no coefficient given" and resolve to
+/// `Options::default_options()` tolerances.
 fn parse_options(py_options: Option<&Bound<'_, PyAny>>) -> PyResult<Options> {
     let Some(obj) = py_options else {
         return Ok(Options::default_options());
@@ -71,7 +66,7 @@ fn parse_options(py_options: Option<&Bound<'_, PyAny>>) -> PyResult<Options> {
     let mut opts = Options::default_options();
     if let Some(t) = d.get_item("tolerances")? {
         if !t.is_none() {
-            opts.tolerances = parse_tolerances(&t)?;
+            opts.tolerances = parse_tolerances(&t)?.resolve();
         }
     }
     if let Some(r) = d.get_item("x_range")? {
@@ -130,28 +125,18 @@ fn compare<'py>(
     Ok(out)
 }
 
+/// Default options (resolved: six explicit tolerance values).
 #[pyfunction]
 fn default_options(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
     let o = Options::default_options();
-    let tol = PyDict::new(py);
-    tol.set_item("atolx", o.tolerances.atolx)?;
-    tol.set_item("atoly", o.tolerances.atoly)?;
-    tol.set_item("ltolx", o.tolerances.ltolx)?;
-    tol.set_item("ltoly", o.tolerances.ltoly)?;
-    tol.set_item("rtolx", o.tolerances.rtolx)?;
-    tol.set_item("rtoly", o.tolerances.rtoly)?;
-    let rng = PyDict::new(py);
-    rng.set_item("lo", o.x_range.lo)?;
-    rng.set_item("hi", o.x_range.hi)?;
     let d = PyDict::new(py);
-    d.set_item("tolerances", tol)?;
-    d.set_item("x_range", rng)?;
+    d.set_item("tolerances", tolerances_dict(py, &o.tolerances)?)?;
+    d.set_item("x_range", range_dict(py, &o.x_range)?)?;
     Ok(d)
 }
 
-#[pyfunction]
-fn status_message_py(code: i32) -> PyResult<&'static str> {
-    let s = match code {
+fn status_from_code(code: i32) -> PyResult<Status> {
+    Ok(match code {
         0 => Status::Pass,
         -1 => Status::Fail,
         1 => Status::MissingReference,
@@ -166,8 +151,103 @@ fn status_message_py(code: i32) -> PyResult<&'static str> {
                 "unknown status code: {code}"
             )))
         }
+    })
+}
+
+#[pyfunction]
+fn status_message_py(code: i32) -> PyResult<&'static str> {
+    Ok(status_message(status_from_code(code)?))
+}
+
+fn xy_to_vecs(
+    x: PyReadonlyArray1<'_, f64>,
+    y: PyReadonlyArray1<'_, f64>,
+) -> PyResult<(Vec<f64>, Vec<f64>)> {
+    Ok((x.as_slice()?.to_vec(), y.as_slice()?.to_vec()))
+}
+
+fn range_dict<'py>(py: Python<'py>, r: &Range) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("lo", r.lo)?;
+    d.set_item("hi", r.hi)?;
+    Ok(d)
+}
+
+fn tolerances_dict<'py>(py: Python<'py>, t: &Tolerances) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("atolx", t.atolx)?;
+    d.set_item("atoly", t.atoly)?;
+    d.set_item("ltolx", t.ltolx)?;
+    d.set_item("ltoly", t.ltoly)?;
+    d.set_item("rtolx", t.rtolx)?;
+    d.set_item("rtoly", t.rtoly)?;
+    Ok(d)
+}
+
+/// Violation summary of an existing comparison. Marshals the result
+/// arrays back into a core `CompareResult` and returns the core summary as
+/// a dict (absent values are `None`).
+#[pyfunction]
+#[pyo3(signature = (
+    t_reference, status, lower_x, lower_y, upper_x, upper_y, errors_x, errors_y, options=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn summarize<'py>(
+    py: Python<'py>,
+    t_reference: PyReadonlyArray1<'py, f64>,
+    status: i32,
+    lower_x: PyReadonlyArray1<'py, f64>,
+    lower_y: PyReadonlyArray1<'py, f64>,
+    upper_x: PyReadonlyArray1<'py, f64>,
+    upper_y: PyReadonlyArray1<'py, f64>,
+    errors_x: PyReadonlyArray1<'py, f64>,
+    errors_y: PyReadonlyArray1<'py, f64>,
+    options: Option<&Bound<'py, PyAny>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let opts = parse_options(options)?;
+    let result = CompareResult {
+        status: status_from_code(status)?,
+        lower: xy_to_vecs(lower_x, lower_y)?,
+        upper: xy_to_vecs(upper_x, upper_y)?,
+        errors: xy_to_vecs(errors_x, errors_y)?,
     };
-    Ok(status_message(s))
+    let s = core_summarize(t_reference.as_slice()?, &opts, &result);
+
+    let out = PyDict::new(py);
+    out.set_item("status", s.status as i32)?;
+    out.set_item("tolerances", tolerances_dict(py, &s.tolerances)?)?;
+    out.set_item("x_range", range_dict(py, &s.x_range)?)?;
+    match &s.compared_range {
+        Some(r) => out.set_item("compared_range", range_dict(py, r)?)?,
+        None => out.set_item("compared_range", py.None())?,
+    }
+    let intervals = PyList::empty(py);
+    for iv in &s.intervals {
+        let d = PyDict::new(py);
+        d.set_item("start_x", iv.start_x)?;
+        d.set_item("end_x", iv.end_x)?;
+        d.set_item("direction", iv.direction.as_str())?;
+        d.set_item("point_count", iv.point_count)?;
+        d.set_item("worst_deviation", iv.worst_deviation)?;
+        d.set_item("worst_x", iv.worst_x)?;
+        intervals.append(d)?;
+    }
+    out.set_item("intervals", intervals)?;
+    match &s.worst {
+        Some(w) => {
+            let d = PyDict::new(py);
+            d.set_item("x", w.x)?;
+            d.set_item("deviation", w.deviation)?;
+            d.set_item("tube_half_width_y", w.tube_half_width_y)?;
+            out.set_item("worst", d)?;
+        }
+        None => out.set_item("worst", py.None())?,
+    }
+    out.set_item("points_compared", s.points_compared)?;
+    out.set_item("points_outside", s.points_outside)?;
+    out.set_item("fraction_of_points_outside", s.fraction_of_points_outside)?;
+    out.set_item("fraction_of_span_outside", s.fraction_of_span_outside)?;
+    Ok(out)
 }
 
 #[pyfunction]
@@ -181,6 +261,7 @@ fn init_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compare, m)?)?;
     m.add_function(wrap_pyfunction!(default_options, m)?)?;
     m.add_function(wrap_pyfunction!(status_message_py, m)?)?;
+    m.add_function(wrap_pyfunction!(summarize, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
 
     m.add("STATUS_PASS", 0_i32)?;

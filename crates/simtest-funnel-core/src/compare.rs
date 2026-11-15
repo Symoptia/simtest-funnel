@@ -345,7 +345,7 @@ mod tests {
         let t = [0.0, 1.0, 2.0];
         let y = [0.0, 1.0, 2.0];
         let opts = Options {
-            tolerances: Tolerances::default(),
+            tolerances: Tolerances::ZERO,
             x_range: Range {
                 lo: 100.0,
                 hi: 200.0,

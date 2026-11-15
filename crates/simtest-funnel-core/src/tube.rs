@@ -163,7 +163,7 @@ mod tests {
     fn zero_tol_floor_1e_minus_10() {
         let t = &[0.0, 1.0];
         let y = &[0.0, 1.0];
-        let (hx, hy) = tube_halfwidths(t, y, dc(0.0, 0.0), &Tolerances::default());
+        let (hx, hy) = tube_halfwidths(t, y, dc(0.0, 0.0), &Tolerances::ZERO);
         for v in hx.iter().chain(hy.iter()) {
             assert_eq!(*v, HALFWIDTH_FLOOR);
         }

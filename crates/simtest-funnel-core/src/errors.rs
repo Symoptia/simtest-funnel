@@ -15,7 +15,11 @@
 /// past a shortened buffer (undefined behaviour); the Rust port
 /// clamps to the last bound value instead, which produces the same
 /// in-bounds results without the UB.
-fn interpolate_clamped(source_x: &[f64], source_y: &[f64], target_x: &[f64]) -> Vec<f64> {
+pub(crate) fn interpolate_clamped(
+    source_x: &[f64],
+    source_y: &[f64],
+    target_x: &[f64],
+) -> Vec<f64> {
     debug_assert_eq!(source_x.len(), source_y.len());
     if source_x.is_empty() {
         return Vec::new();

@@ -5,6 +5,7 @@
 /// Unified status returned by [`crate::compare()`] and [`crate::compare_into`].
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize))]
 pub enum Status {
     /// All test points within the common x-range are inside the funnel.
     Pass = 0,

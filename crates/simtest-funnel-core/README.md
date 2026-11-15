@@ -15,20 +15,38 @@ simtest-funnel-core = "1"
 ## Usage
 
 ```rust
-use simtest_funnel_core::{compare, Options, Status, Tolerances};
+use simtest_funnel_core::{compare, Options, PartialTolerances, Status};
 
 let t_ref = [0.0_f64, 1.0, 2.0];
 let y_ref = [0.0_f64, 1.0, 2.0];
 let t_tst = [0.0_f64, 1.0, 2.0];
 let y_tst = [0.0_f64, 1.0, 2.0];
 
+// Only a y tolerance given: y uses atoly = 0.1 (rtoly = ltoly = 0),
+// x keeps the default rtolx = 2e-3.
 let opts = Options {
-    tolerances: Tolerances { atoly: 0.1, ..Default::default() },
+    tolerances: PartialTolerances { atoly: Some(0.1), ..Default::default() }.resolve(),
     ..Default::default()
 };
 let r = compare(&t_ref, &y_ref, &t_tst, &y_tst, &opts);
 assert_eq!(r.status, Status::Pass);
 ```
+
+## Tolerances
+
+`Options::default()` uses `Tolerances::DEFAULT`: `rtolx = rtoly = 2e-3`,
+all other coefficients zero. Partially specified tolerances
+(`PartialTolerances`, each coefficient `Option<f64>`) are resolved per
+axis — the same rule the Python, TypeScript and CLI front ends use:
+
+- An axis with **no** coefficient given (`atol*`, `ltol*`, `rtol*` all
+  `None`) gets the default for that axis.
+- An axis with **at least one** coefficient given uses the given values
+  and zero for the rest of that axis.
+- An explicit `Some(0.0)` counts as given.
+
+A plain `Tolerances` value is fully explicit and used verbatim. It has
+no `Default` impl; spell explicit all-zero as `Tolerances::ZERO`.
 
 ## `Status` codes
 

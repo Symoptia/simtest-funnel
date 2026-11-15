@@ -39,6 +39,52 @@ result = compare(
 print(result.status)  # 0 == Pass, -1 == Fail
 ```
 
+## Tolerances
+
+`Tolerances` fields default to `None` ("not given"). The coefficients
+you give are resolved **per axis** by the Rust core — the same rule as
+the Rust, TypeScript and CLI front ends, so identical inputs give
+identical verdicts everywhere:
+
+- x axis: `atolx`, `ltolx`, `rtolx`; y axis: `atoly`, `ltoly`, `rtoly`.
+- An axis with **no** coefficient given gets the default `rtol = 2e-3`
+  (other coefficients `0.0`).
+- An axis with **at least one** coefficient given uses the given values
+  and `0.0` for the rest of that axis.
+- An explicit `0.0` counts as given.
+
+| You pass | Effective tolerances |
+| --- | --- |
+| `options=None`, `Options()`, `Tolerances()` | `rtolx = rtoly = 2e-3`, rest `0` |
+| `Tolerances(atoly=0.05)` | `atoly = 0.05`, `rtolx = 2e-3`, rest `0` |
+| `Tolerances(atolx=0.0, atoly=0.05)` | `atoly = 0.05`, rest `0` |
+
+`default_options()` and `ViolationSummary.tolerances` always report the
+six resolved floats.
+
+## Violation summary
+
+`summarize` condenses an existing comparison into a small description of
+how much the given tolerances were violated: violation intervals, the
+worst deviation with the tube half-width at that x, and the share of
+test points and of the compared x-span outside the tube.
+
+```python
+from simtest.funnel import summarize
+
+opts = Options(tolerances=Tolerances(atoly=0.005))
+result = compare(t_ref, y_ref, t_test, y_test, opts)
+s = summarize(result, t_ref, opts)  # pass the same reference x and options
+for iv in s.intervals:
+    print(iv.start_x, iv.end_x, iv.direction, iv.worst_deviation)
+print(s.worst, s.fraction_of_points_outside, s.fraction_of_span_outside)
+```
+
+Only test points inside the compared range (requested `x_range`
+intersected with the reference x-extent) count. For validation statuses
+(e.g. `NON_MONOTONIC`) the summary carries only the status and the echoed
+settings; `worst`, `compared_range` and both fractions are `None`.
+
 ## DataFrame API
 
 ```python
@@ -62,8 +108,9 @@ matched case-insensitively against `time_column` (default `"time"`).
 ## API
 
 - `compare(t_ref, y_ref, t_test, y_test, options=None) -> CompareResult`
+- `summarize(result, t_reference, options=None) -> ViolationSummary` (with `ViolationInterval`, `WorstDeviation`)
 - `compare_dataframes(reference, test, *, time_column="time", default_options=None, option_overrides=None) -> dict[str, CompareResult]`
-- `default_options() -> Options`
+- `default_options() -> Options` (all six tolerances explicit)
 - `status_message(code: int) -> str`
 - `Status` — `IntEnum` with `PASS=0`, `FAIL=-1`, `MISSING_REFERENCE=1`, `MISSING_TEST=2`, and validation codes `10..14`.
 

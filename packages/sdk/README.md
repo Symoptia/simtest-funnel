@@ -41,6 +41,54 @@ if (result.status === Status.Pass) {
 returns a `CompareResult` whose `errorsY` array is **signed** — positive
 above the upper bound, negative below the lower bound.
 
+## Tolerances
+
+A tolerance field that is omitted, `undefined` or `null` is "not
+given". The given coefficients are resolved **per axis** by the Rust
+core — the same rule as the Rust, Python and CLI front ends, so
+identical inputs give identical verdicts everywhere:
+
+- x axis: `atolx`, `ltolx`, `rtolx`; y axis: `atoly`, `ltoly`, `rtoly`.
+- An axis with **no** coefficient given gets the default `rtol = 2e-3`
+  (other coefficients `0`).
+- An axis with **at least one** coefficient given uses the given values
+  and `0` for the rest of that axis.
+- An explicit `0` counts as given.
+
+| You pass                                    | Effective tolerances                     |
+| ------------------------------------------- | ---------------------------------------- |
+| no `options`, `{}`, `{ tolerances: {} }`    | `rtolx = rtoly = 2e-3`, rest `0`         |
+| `{ tolerances: { atoly: 0.05 } }`           | `atoly = 0.05`, `rtolx = 2e-3`, rest `0` |
+| `{ tolerances: { atolx: 0, atoly: 0.05 } }` | `atoly = 0.05`, rest `0`                 |
+
+`defaultOptions()` returns the six default values explicitly (passing
+them is identical to omitting `options`), and `summarize()` echoes the
+six resolved values (`ResolvedTolerances`).
+
+## Violation summary
+
+`summarize()` condenses an existing comparison into how much the given
+tolerances were violated: violation intervals, the worst deviation with
+the tube half-width at that x, and the share of test points and of the
+compared x-span outside the tube. It is computed by the Rust core, so
+the numbers match the Rust and Python APIs exactly.
+
+```ts
+import { compare, summarize } from '@simtest-js/funnel';
+
+const options = { tolerances: { atoly: 0.005 } };
+const result = compare(tRef, yRef, tRef, yTest, options);
+const s = summarize(result, tRef, options); // same reference x and options
+for (const iv of s.intervals) {
+  console.log(iv.startX, iv.endX, iv.direction, iv.worstDeviation);
+}
+console.log(s.worst, s.fractionOfPointsOutside, s.fractionOfSpanOutside);
+```
+
+Only test points inside the compared range (`xRange` intersected with
+the reference x-extent) count. For validation statuses (e.g.
+`NonMonotonic`) `worst`, `comparedRange` and both fractions are `null`.
+
 ## Status codes
 
 Mirror `simtest_funnel_core::Status`:

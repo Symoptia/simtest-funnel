@@ -210,14 +210,17 @@ fn run_case(case: &str) -> Result<(), String> {
     let (t_test, y_test) =
         read_xy_csv(&dir.join(&params.test)).map_err(|e| format!("{case}: read test: {e}"))?;
 
+    // LBNL semantics: a tolerance key absent from param.json is zero
+    // (success7, success9 and success10 omit keys). Make those zeros
+    // explicit instead of applying simtest-funnel's per-axis defaults.
     let opts = Options {
         tolerances: Tolerances {
-            atolx: params.atolx,
-            atoly: params.atoly,
-            ltolx: params.ltolx,
-            ltoly: params.ltoly,
-            rtolx: params.rtolx,
-            rtoly: params.rtoly,
+            atolx: params.atolx.unwrap_or(0.0),
+            atoly: params.atoly.unwrap_or(0.0),
+            ltolx: params.ltolx.unwrap_or(0.0),
+            ltoly: params.ltoly.unwrap_or(0.0),
+            rtolx: params.rtolx.unwrap_or(0.0),
+            rtoly: params.rtoly.unwrap_or(0.0),
         },
         x_range: Range::default(),
     };
