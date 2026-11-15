@@ -27,6 +27,10 @@ jobs:
       - uses: pnpm/action-setup@v5
         with:
           version: 9
+      # prepareCmd (.releaserc.json) refreshes uv.lock with `uv lock`
+      # (scripts/release-refresh-lockfiles.sh); Cargo.lock uses the Rust
+      # toolchain above.
+      - uses: astral-sh/setup-uv@v6
       # Build the publishable, self-contained SDK bundle (wasm glue + dist)
       # before semantic-release so @semantic-release/npm packs real artifacts.
       - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
