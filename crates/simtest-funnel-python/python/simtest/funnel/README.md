@@ -85,6 +85,32 @@ intersected with the reference x-extent) count. For validation statuses
 (e.g. `NON_MONOTONIC`) the summary carries only the status and the echoed
 settings; `worst`, `compared_range` and both fractions are `None`.
 
+## Downsampling for plots
+
+`downsample_min_max` reduces a long signal for plotting or reporting. It
+is post-processing only: `compare` and `summarize` always use the full
+signal.
+
+```python
+from simtest.funnel import downsample_min_max
+
+s = summarize(result, t_ref, opts)
+pins = [iv.worst_x for iv in s.intervals]  # keep every violation visible
+d = downsample_min_max(t_test, y_test, buckets=500, pinned_x=pins)
+plot(d.x, d.y)
+errors_kept = result.errors[1][d.indices]  # same samples of a parallel array
+```
+
+The x-extent is split into `buckets` buckets of equal x-width; the
+lowest and highest sample of each bucket are kept (first occurrence on
+ties, NaN y never selected), plus the first and last sample. Each finite
+pin keeps the sample with the nearest x (ties go to the lower x) and
+every sample sharing that x; NaN pins are ignored. At most
+`min(n, 2 * buckets + 2 + M)` samples are returned (`M` = samples
+selected by pins); signals with `n <= 2 * buckets` are returned
+unchanged. `ValueError` is raised for a length mismatch, a non-finite or
+decreasing x, or `buckets < 1`.
+
 ## DataFrame API
 
 ```python
@@ -109,6 +135,7 @@ matched case-insensitively against `time_column` (default `"time"`).
 
 - `compare(t_ref, y_ref, t_test, y_test, options=None) -> CompareResult`
 - `summarize(result, t_reference, options=None) -> ViolationSummary` (with `ViolationInterval`, `WorstDeviation`)
+- `downsample_min_max(x, y, buckets, pinned_x=None) -> Downsampled` (`indices`, `x`, `y` arrays)
 - `compare_dataframes(reference, test, *, time_column="time", default_options=None, option_overrides=None) -> dict[str, CompareResult]`
 - `default_options() -> Options` (all six tolerances explicit)
 - `status_message(code: int) -> str`

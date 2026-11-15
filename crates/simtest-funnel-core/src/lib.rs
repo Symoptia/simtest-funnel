@@ -12,12 +12,16 @@
 //! with [`PartialTolerances`] and resolved per axis by
 //! [`PartialTolerances::resolve`]; every front end uses that rule.
 //!
+//! Output downsampling for plots and reports (never applied to comparison
+//! inputs) is provided by [`downsample_min_max`].
+//!
 //! See `scratch/02-base-algorithm.md` for the design plan.
 
 #![warn(missing_docs)]
 
 pub mod compare;
 pub(crate) mod corners;
+pub mod downsample;
 pub(crate) mod errors;
 #[cfg(feature = "json")]
 pub mod io;
@@ -27,6 +31,7 @@ pub mod summary;
 pub(crate) mod tube;
 
 pub use compare::{compare, compare_into, estimate_capacities, Capacities, CompareResult, Outputs};
+pub use downsample::{downsample_min_max, DownsampleError, Downsampled};
 pub use options::{Options, PartialTolerances, Range, Tolerances};
 pub use status::{message as status_message, Status};
 pub use summary::{summarize, Direction, ViolationInterval, ViolationSummary, WorstDeviation};

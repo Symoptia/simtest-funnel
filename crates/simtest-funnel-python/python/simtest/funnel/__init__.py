@@ -6,11 +6,13 @@ typed dataclass-based interface. See the project README for usage.
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Literal, Mapping, Sequence
 
 import numpy as np
+from numpy.typing import NDArray
 
 from simtest.funnel import _simtest_funnel as _ext
 
@@ -343,12 +345,67 @@ def summarize(
     )
 
 
+_I64_MAX = 2**63 - 1
+
+
+@dataclass(frozen=True)
+class Downsampled:
+    """Samples kept by :func:`downsample_min_max`, in input order.
+
+    ``x[k] == input_x[indices[k]]`` and ``y[k] == input_y[indices[k]]``;
+    use ``indices`` to select the same samples from further arrays on the
+    same x-grid (e.g. ``result.errors[1]`` of a comparison).
+    """
+
+    indices: NDArray[np.intp]
+    x: NDArray[np.float64]
+    y: NDArray[np.float64]
+
+
+def downsample_min_max(
+    x: Sequence[float] | np.ndarray,
+    y: Sequence[float] | np.ndarray,
+    buckets: int,
+    pinned_x: Sequence[float] | np.ndarray | None = None,
+) -> Downsampled:
+    """Reduce a signal to the extremes of ``buckets`` equal-width x-buckets.
+
+    For output only (plots, reports); never feed the result back into
+    :func:`compare`. The x-extent is split into ``buckets`` buckets of
+    equal width; the lowest and highest sample of each bucket are kept
+    (first occurrence on ties, NaN y never selected), plus the first and
+    last sample. Each finite value of ``pinned_x`` keeps the sample with
+    the nearest x (ties go to the lower x) and every sample sharing that
+    x; NaN pins are ignored. Pin the ``worst_x`` of every interval of
+    :func:`summarize` so a plot never hides a violation.
+
+    At most ``min(n, 2 * buckets + 2 + M)`` samples are returned, ``M``
+    being the samples selected by pins; if ``n <= 2 * buckets`` every
+    sample is returned. Computed by the Rust core, so results are
+    identical to the Rust and TypeScript APIs.
+
+    Raises ``ValueError`` for a length mismatch, a non-finite or
+    decreasing x, or ``buckets < 1``.
+    """
+    pins = np.empty(0, dtype=np.float64) if pinned_x is None else _as_f64(pinned_x)
+    # Clamp to the native i64 range: negatives get the "at least 1 bucket"
+    # error, huge counts mean "no reduction" instead of an OverflowError.
+    n_buckets = max(-1, min(operator.index(buckets), _I64_MAX))
+    idx, xs, ys = _ext.downsample_min_max(_as_f64(x), _as_f64(y), n_buckets, pins)
+    return Downsampled(
+        indices=np.asarray(idx, dtype=np.intp),
+        x=np.asarray(xs, dtype=np.float64),
+        y=np.asarray(ys, dtype=np.float64),
+    )
+
+
 def version() -> str:
     return str(_ext.version())
 
 
 __all__ = [
     "CompareResult",
+    "Downsampled",
     "Options",
     "Range",
     "Status",
@@ -359,6 +416,7 @@ __all__ = [
     "compare",
     "compare_dataframes",
     "default_options",
+    "downsample_min_max",
     "status_message",
     "summarize",
     "version",

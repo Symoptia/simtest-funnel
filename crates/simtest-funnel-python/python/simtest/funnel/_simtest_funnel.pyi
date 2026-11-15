@@ -102,3 +102,19 @@ def summarize(
     (float or ``None``). Raises ``ValueError`` for unknown status codes.
     """
     ...
+
+
+def downsample_min_max(
+    x: NDArray[np.float64],
+    y: NDArray[np.float64],
+    buckets: int,
+    pinned_x: NDArray[np.float64],
+) -> tuple[NDArray[np.uintp], NDArray[np.float64], NDArray[np.float64]]:
+    """Min/max-per-bucket downsampling of a signal (computed by the core).
+
+    Takes contiguous ``float64`` 1-D arrays ``x``, ``y`` and ``pinned_x``
+    (empty for no pins) and the bucket count. Returns ``(indices, x, y)``
+    of the kept samples in input order. Raises ``ValueError`` for a length
+    mismatch, a non-finite or decreasing x, or ``buckets < 1``.
+    """
+    ...

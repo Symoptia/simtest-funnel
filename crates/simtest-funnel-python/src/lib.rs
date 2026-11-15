@@ -2,18 +2,19 @@
 //!
 //! Python bindings for the simtest-funnel trajectory comparison library.
 //!
-//! Exposes `compare`, `summarize`, `default_options`, `status_message`, and the
-//! `Status` integer constants through PyO3 as the native extension
-//! module `_simtest_funnel`, re-exported through the namespace package
-//! `simtest.funnel`.
+//! Exposes `compare`, `summarize`, `downsample_min_max`, `default_options`,
+//! `status_message`, and the `Status` integer constants through PyO3 as the
+//! native extension module `_simtest_funnel`, re-exported through the
+//! namespace package `simtest.funnel`.
 
-use numpy::{IntoPyArray, PyReadonlyArray1};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use simtest_funnel_core::{
-    compare as core_compare, status_message, summarize as core_summarize, CompareResult, Options,
-    PartialTolerances, Range, Status, Tolerances,
+    compare as core_compare, downsample_min_max as core_downsample_min_max, status_message,
+    summarize as core_summarize, CompareResult, Options, PartialTolerances, Range, Status,
+    Tolerances,
 };
 
 fn dict_get_f64(d: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
@@ -250,6 +251,36 @@ fn summarize<'py>(
     Ok(out)
 }
 
+/// `(indices, x, y)` arrays returned by [`downsample_min_max`].
+type DownsampledArrays<'py> = (
+    Bound<'py, PyArray1<usize>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+);
+
+/// Min/max-per-bucket downsampling of a signal, computed by the core.
+/// Returns `(indices, x, y)` as numpy arrays. Invalid input (including
+/// `buckets < 1`) raises `ValueError` with the core's error message.
+#[pyfunction]
+#[pyo3(signature = (x, y, buckets, pinned_x))]
+fn downsample_min_max<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray1<'py, f64>,
+    y: PyReadonlyArray1<'py, f64>,
+    buckets: i64,
+    pinned_x: PyReadonlyArray1<'py, f64>,
+) -> PyResult<DownsampledArrays<'py>> {
+    // Negative counts must not wrap; they get the core's zero-bucket error.
+    let buckets = usize::try_from(buckets).unwrap_or(0);
+    let d = core_downsample_min_max(x.as_slice()?, y.as_slice()?, buckets, pinned_x.as_slice()?)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((
+        d.indices.into_pyarray(py),
+        d.x.into_pyarray(py),
+        d.y.into_pyarray(py),
+    ))
+}
+
 #[pyfunction]
 fn version() -> &'static str {
     simtest_funnel_core::version()
@@ -260,6 +291,7 @@ fn version() -> &'static str {
 fn init_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compare, m)?)?;
     m.add_function(wrap_pyfunction!(default_options, m)?)?;
+    m.add_function(wrap_pyfunction!(downsample_min_max, m)?)?;
     m.add_function(wrap_pyfunction!(status_message_py, m)?)?;
     m.add_function(wrap_pyfunction!(summarize, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;

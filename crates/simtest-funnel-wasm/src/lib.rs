@@ -1,12 +1,55 @@
 //! WebAssembly bindings for simtest-funnel.
 
-use js_sys::Float64Array;
+use js_sys::{Float64Array, Object, Reflect, Uint32Array};
 use serde::{Deserialize, Serialize};
 use simtest_funnel_core::{
-    compare as core_compare, summarize as core_summarize, version as core_version, CompareResult,
-    Options, PartialTolerances, Range, Status, Tolerances,
+    compare as core_compare, downsample_min_max as core_downsample_min_max,
+    summarize as core_summarize, version as core_version, CompareResult, Options,
+    PartialTolerances, Range, Status, Tolerances,
 };
 use wasm_bindgen::prelude::*;
+
+/// Convert a JS bucket count: values below 1 map to 0 (the core then
+/// reports "buckets must be at least 1"), `Infinity` and huge integers
+/// saturate; NaN and non-integers are rejected.
+fn buckets_from_js(b: f64) -> Result<usize, JsValue> {
+    if b.is_nan() || (b.is_finite() && b.fract() != 0.0) {
+        return Err(JsValue::from_str("buckets must be an integer"));
+    }
+    if b < 1.0 {
+        Ok(0)
+    } else {
+        // Saturating float-to-int cast.
+        Ok(b as usize)
+    }
+}
+
+/// Min/max-per-bucket downsampling of a signal, computed by the core.
+/// Returns `{ indices: Uint32Array, x: Float64Array, y: Float64Array }`;
+/// invalid input throws with the core's error message.
+#[wasm_bindgen(js_name = downsampleMinMax)]
+pub fn downsample_min_max(
+    x: &Float64Array,
+    y: &Float64Array,
+    buckets: f64,
+    pinned_x: &Float64Array,
+) -> Result<JsValue, JsValue> {
+    let buckets = buckets_from_js(buckets)?;
+    let d = core_downsample_min_max(
+        &typed_array_to_vec(x),
+        &typed_array_to_vec(y),
+        buckets,
+        &typed_array_to_vec(pinned_x),
+    )
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    // wasm32 `usize` is 32 bits, so indices fit in a `Uint32Array`.
+    let indices: Vec<u32> = d.indices.iter().map(|&i| i as u32).collect();
+    let out = Object::new();
+    Reflect::set(&out, &"indices".into(), &Uint32Array::from(&indices[..]))?;
+    Reflect::set(&out, &"x".into(), &Float64Array::from(&d.x[..]))?;
+    Reflect::set(&out, &"y".into(), &Float64Array::from(&d.y[..]))?;
+    Ok(out.into())
+}
 
 /// Tolerances as given by the caller: a missing, `undefined` or `null`
 /// field is "not given"; any number (including `0`) is given.

@@ -48,6 +48,39 @@ axis — the same rule the Python, TypeScript and CLI front ends use:
 A plain `Tolerances` value is fully explicit and used verbatim. It has
 no `Default` impl; spell explicit all-zero as `Tolerances::ZERO`.
 
+## Downsampling for output
+
+`downsample_min_max(x, y, buckets, pinned_x)` reduces a signal for plots
+and reports. It is post-processing only and never used by `compare` or
+`summarize`.
+
+- The x-extent is split into `buckets` buckets of **equal x-width**; the
+  lowest and highest sample of each bucket are kept (first occurrence on
+  ties, NaN y never selected), plus the first and last sample.
+- Each finite pin keeps the sample with the **nearest x** (ties go to the
+  lower x) and every sample sharing that x; NaN pins are ignored. Pin the
+  `worst_x` of every violation interval so a plot never hides a violation.
+- At most `min(n, 2·buckets + 2 + M)` samples are returned (`M` = samples
+  selected by pins); signals with `n <= 2·buckets` are returned unchanged.
+- Returns `Downsampled { indices, x, y }` in input order, or a
+  `DownsampleError` for a length mismatch, a non-finite or decreasing x,
+  or zero buckets.
+
+```rust
+use simtest_funnel_core::{compare, downsample_min_max, summarize, Options};
+
+let t: Vec<f64> = (0..1000).map(f64::from).collect();
+let y_ref: Vec<f64> = t.iter().map(|v| v * 0.01).collect();
+let mut y_tst = y_ref.clone();
+y_tst[500] += 1.0; // a one-sample spike
+let opts = Options::default();
+let r = compare(&t, &y_ref, &t, &y_tst, &opts);
+let s = summarize(&t, &opts, &r);
+let pins: Vec<f64> = s.intervals.iter().map(|iv| iv.worst_x).collect();
+let d = downsample_min_max(&t, &y_tst, 20, &pins).unwrap();
+assert!(d.x.contains(&500.0));
+```
+
 ## `Status` codes
 
 | Variant             | Code | Meaning                                             |

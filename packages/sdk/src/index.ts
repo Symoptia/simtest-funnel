@@ -201,6 +201,57 @@ export function summarize(
 }
 
 /**
+ * Samples kept by {@link downsampleMinMax}, in input order:
+ * `x[k] === inputX[indices[k]]` and `y[k] === inputY[indices[k]]`. Use
+ * `indices` to select the same samples from further arrays on the same
+ * x-grid (e.g. `result.errorsY` of a comparison).
+ */
+export interface Downsampled {
+  indices: Uint32Array;
+  x: Float64Array;
+  y: Float64Array;
+}
+
+/**
+ * Reduce a signal to the extremes of `buckets` equal-width x-buckets, for
+ * output only (plots, reports); never feed the result back into
+ * {@link compare}.
+ *
+ * The lowest and highest sample of each bucket are kept (first occurrence
+ * on ties, `NaN` y never selected), plus the first and last sample. Each
+ * finite value of `pinnedX` keeps the sample with the nearest x (ties go to
+ * the lower x) and every sample sharing that x; `NaN` pins are ignored. Pin
+ * the `worstX` of every interval of {@link summarize} so a plot never hides
+ * a violation.
+ *
+ * At most `min(n, 2 * buckets + 2 + M)` samples are returned (`M` = samples
+ * selected by pins); if `n <= 2 * buckets` every sample is returned.
+ * Computed by the Rust core, so results are identical to the Rust and
+ * Python APIs.
+ *
+ * @throws Error for a length mismatch, a non-finite or decreasing x, a
+ * non-integer `buckets` or `buckets < 1`.
+ */
+export function downsampleMinMax(
+  x: ArrayLike<number> | Float64Array,
+  y: ArrayLike<number> | Float64Array,
+  buckets: number,
+  pinnedX?: ArrayLike<number> | Float64Array,
+): Downsampled {
+  try {
+    return wasm.downsampleMinMax(
+      toF64(x),
+      toF64(y),
+      buckets,
+      toF64(pinnedX ?? []),
+    ) as Downsampled;
+  } catch (e) {
+    // The WASM glue throws the core's message as a plain string.
+    throw e instanceof Error ? e : new Error(String(e));
+  }
+}
+
+/**
  * Returns the default options with all six tolerances explicit
  * (`rtolx = rtoly = 2e-3`, others `0`). Passing them to {@link compare}
  * is identical to omitting `options`.

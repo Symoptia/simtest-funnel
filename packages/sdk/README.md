@@ -89,6 +89,34 @@ Only test points inside the compared range (`xRange` intersected with
 the reference x-extent) count. For validation statuses (e.g.
 `NonMonotonic`) `worst`, `comparedRange` and both fractions are `null`.
 
+## Downsampling for plots
+
+`downsampleMinMax(x, y, buckets, pinnedX?)` reduces a long signal for
+plotting or reporting. It is post-processing only: `compare()` and
+`summarize()` always use the full signal. `createFunnelPlot()` does not
+downsample; pass downsampled traces yourself if needed.
+
+```ts
+import { downsampleMinMax } from '@simtest-js/funnel';
+
+const s = summarize(result, tRef, options);
+const pins = s.intervals.map((iv) => iv.worstX); // keep every violation visible
+const d = downsampleMinMax(tTest, yTest, 500, pins);
+// d.x, d.y: Float64Array; d.indices: Uint32Array into the input
+const errorsKept = Array.from(d.indices, (i) => result.errorsY[i]);
+```
+
+The x-extent is split into `buckets` buckets of equal x-width; the
+lowest and highest sample of each bucket are kept (first occurrence on
+ties, `NaN` y never selected), plus the first and last sample. Each
+finite pin keeps the sample with the nearest x (ties go to the lower x)
+and every sample sharing that x; `NaN` pins are ignored. At most
+`min(n, 2 * buckets + 2 + M)` samples are returned (`M` = samples
+selected by pins); signals with `n <= 2 * buckets` are returned
+unchanged. An `Error` is thrown for a length mismatch, a non-finite or
+decreasing x, a non-integer `buckets` or `buckets < 1`. Results are
+identical to the Rust and Python APIs.
+
 ## Status codes
 
 Mirror `simtest_funnel_core::Status`:
