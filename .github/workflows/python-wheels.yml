@@ -1,0 +1,208 @@
+name: Python wheels
+
+# Builds every simtest-funnel distribution (abi3 wheels for Linux, macOS and
+# Windows plus the sdist) and the simtest-funnel-mcp wheel and sdist, then
+# smoke-tests each wheel on its own platform in a clean environment. Uploads
+# only workflow artifacts (named dist-*); publishing to PyPI is done by
+# release.yml, which calls this workflow and uploads the artifacts only when
+# every job here has passed.
+#
+# Run it by hand (Actions -> Python wheels -> Run workflow) to exercise the
+# builds without publishing anything.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref (tag, branch or SHA) to build
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref (tag, branch or SHA) to build; empty = the selected branch
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    branches: [main, beta, develop]
+    paths:
+      - crates/simtest-funnel-python/Cargo.toml
+      - crates/simtest-funnel-python/pyproject.toml
+      - python/simtest-funnel-mcp/pyproject.toml
+      - scripts/wheel_smoke.py
+      - .github/workflows/python-wheels.yml
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same maturin as uv.lock (dev group), so local and release builds agree.
+  MATURIN_VERSION: v1.16.0
+  # Lowest and newest supported Python: every wheel is smoke-tested with both.
+  SMOKE_PYTHONS: "3.11 3.14"
+
+jobs:
+  sdist:
+    name: sdist and MCP server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Build the simtest-funnel sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: sdist
+          working-directory: crates/simtest-funnel-python
+          args: --out ../../dist
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
+      - name: Build the simtest-funnel-mcp wheel and sdist
+        run: uv build --package simtest-funnel-mcp --out-dir mcp-dist
+      # The sdist must build on its own: install it into a clean environment
+      # (compiling the vendored Rust sources with the runner's toolchain),
+      # then run the smoke test with the lowest and newest Python.
+      - name: Install the sdist and smoke-test it
+        working-directory: ${{ runner.temp }}
+        run: |
+          for py in $SMOKE_PYTHONS; do
+            uv venv --python "$py" "sdist-$py"
+            uv pip install --no-cache --python "sdist-$py" \
+              "$GITHUB_WORKSPACE"/dist/simtest_funnel-*.tar.gz
+            "sdist-$py/bin/python" "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mcp-dist
+          path: mcp-dist/*
+          if-no-files-found: error
+
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: manylinux-x86_64, runner: ubuntu-24.04, target: x86_64, manylinux: "2014" }
+          - { name: manylinux-aarch64, runner: ubuntu-24.04-arm, target: aarch64, manylinux: "2014" }
+          - { name: musllinux-x86_64, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, manylinux: musllinux_1_2 }
+          - { name: musllinux-aarch64, runner: ubuntu-24.04, target: aarch64-unknown-linux-musl, manylinux: musllinux_1_2 }
+          - { name: macos-x86_64, runner: macos-15, target: x86_64-apple-darwin }
+          - { name: macos-arm64, runner: macos-15, target: aarch64-apple-darwin }
+          - { name: windows-x64, runner: windows-2025, target: x86_64-pc-windows-msvc }
+          - { name: windows-arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      # Linux builds run in maturin-action's manylinux/musllinux containers,
+      # which bring their own Rust; macOS and Windows build on the host.
+      - if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          working-directory: crates/simtest-funnel-python
+          # Relative to working-directory: the same path on the host and in
+          # maturin-action's Linux containers.
+          args: --release --out ../../dist
+      - name: Check the wheel is a single abi3 wheel
+        shell: bash
+        run: |
+          ls -l dist
+          test "$(find dist -name '*.whl' | wc -l)" -eq 1
+          ls dist/*-cp311-abi3-*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  # Each wheel is installed on a fresh runner of its own platform (no Rust,
+  # no build tree), with the lowest and newest supported Python. Where the
+  # MCP server's dependencies have wheels, the freshly built MCP wheel is
+  # installed against it and the server is started over stdio.
+  smoke:
+    name: smoke ${{ matrix.name }}
+    needs: [sdist, build]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: manylinux-x86_64, runner: ubuntu-24.04, mcp: true }
+          - { name: manylinux-aarch64, runner: ubuntu-24.04-arm, mcp: true }
+          - { name: musllinux-x86_64, runner: ubuntu-24.04, musl: true }
+          - { name: musllinux-aarch64, runner: ubuntu-24.04-arm, musl: true }
+          - { name: macos-x86_64, runner: macos-15-intel, mcp: true }
+          - { name: macos-arm64, runner: macos-15, mcp: true }
+          - { name: windows-x64, runner: windows-2025, mcp: true }
+          - { name: windows-arm64, runner: windows-11-arm, mcp: true }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          sparse-checkout: scripts/wheel_smoke.py
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: mcp-dist
+          path: mcp-dist
+      # musllinux: no musl Python on the runner; use the official Alpine
+      # images (library only: matplotlib has no musllinux wheels for every
+      # platform, so the MCP server is not installed here).
+      - if: matrix.musl
+        name: Smoke-test in Alpine containers
+        run: |
+          for py in $SMOKE_PYTHONS; do
+            docker run --rm -v "$PWD:/w:ro" "python:$py-alpine" sh -euc '
+              python -m venv /tmp/venv
+              /tmp/venv/bin/pip install --quiet /w/dist/*.whl
+              cd /tmp && /tmp/venv/bin/python /w/scripts/wheel_smoke.py'
+          done
+      - if: ${{ !matrix.musl }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
+      - if: ${{ !matrix.musl }}
+        name: Smoke-test in clean virtual environments
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        env:
+          WITH_MCP: ${{ matrix.mcp && 'true' || 'false' }}
+        run: |
+          for py in $SMOKE_PYTHONS; do
+            uv venv --python "$py" "smoke-$py"
+            pkgs=("$GITHUB_WORKSPACE"/dist/*.whl)
+            args=()
+            if [ "$WITH_MCP" = true ]; then
+              pkgs+=("$GITHUB_WORKSPACE"/mcp-dist/*.whl)
+              args+=(--mcp)
+            fi
+            uv pip install --python "smoke-$py" "${pkgs[@]}"
+            if [ "$RUNNER_OS" = Windows ]; then
+              python="smoke-$py/Scripts/python.exe"
+            else
+              python="smoke-$py/bin/python"
+            fi
+            "$python" "$GITHUB_WORKSPACE/scripts/wheel_smoke.py" "${args[@]}"
+          done

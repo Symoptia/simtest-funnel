@@ -26,6 +26,11 @@ API references (published to Cloudflare Pages on each release):
 pip install simtest-funnel
 ```
 
+Wheels are published for CPython 3.11 and later (one stable-ABI wheel per
+platform) on Linux x86-64 and ARM64 (glibc 2.17+ or musl 1.2+), macOS
+x86-64 and Apple silicon, and Windows x64 and ARM64. Elsewhere pip builds
+the source distribution, which needs a Rust toolchain.
+
 ### JavaScript / TypeScript
 
 ```bash
@@ -237,7 +242,7 @@ may start with a preamble (`header_line`), and time columns may be ISO 8601
 date-times (read as seconds since the epoch, x tolerances in seconds).
 
 ```bash
-claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # once published to PyPI
+claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # from PyPI
 claude mcp add simtest-funnel -- uv run --directory "$PWD" --quiet simtest-funnel-mcp  # from this checkout
 ```
 

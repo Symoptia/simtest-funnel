@@ -30,17 +30,26 @@ jobs:
 
   python-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest and newest supported Python (requires-python, abi3 floor).
+        python: ["3.11", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: pip install uv "maturin[patchelf]"
       - run: uv sync
       - run: cd crates/simtest-funnel-python && maturin develop --uv
       - run: uv run python -m pytest tests/python/ python/simtest-funnel-mcp/tests -v
+      # mypy --strict against this Python version and its dependency stubs.
+      - run: make lint-python
 
   js-test:
     runs-on: ubuntu-latest

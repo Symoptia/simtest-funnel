@@ -55,29 +55,62 @@ jobs:
             echo "new_release_version=$(cat .release-version)" >> "$GITHUB_OUTPUT"
           fi
 
-  publish-pypi:
+  # All Python distributions (abi3 wheels for every platform, the
+  # simtest-funnel sdist, the MCP server's wheel and sdist), built from the
+  # release tag and smoke-tested on their own platforms. Uploads workflow
+  # artifacts only; publish-pypi uploads them to PyPI.
+  python-wheels:
     needs: semantic-release
-    runs-on: ubuntu-latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/python-wheels.yml
+    with:
+      ref: v${{ needs.semantic-release.outputs.new_release_version }}
+
+  # The single PyPI upload. It runs only when every build and smoke job has
+  # passed, so a failing platform never leaves a partial release on PyPI.
+  # Recovery from any failure here or in python-wheels: re-run the failed
+  # jobs of this workflow run (everything builds from the tag;
+  # --skip-existing completes an interrupted upload).
+  publish-pypi:
+    needs: [semantic-release, python-wheels]
+    runs-on: ubuntu-24.04
     if: needs.semantic-release.outputs.new_release_published == 'true'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
-          ref: v${{ needs.semantic-release.outputs.new_release_version }}
-      - uses: actions/setup-python@v6
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@v8
         with:
-          python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@stable
-      - run: pip install "maturin[patchelf]"
-      - run: |
-          cd crates/simtest-funnel-python
-          maturin build --release
-      # Pure-Python MCP server (python/simtest-funnel-mcp): wheel + sdist
-      # into the same directory, uploaded by the twine step below.
-      - run: pip install uv &&
-              uv build --package simtest-funnel-mcp --out-dir target/wheels
-      - run: pip install twine &&
-              twine upload --non-interactive
-              target/wheels/*
+          name: mcp-dist
+          path: mcp-dist
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
+      - name: Check the distribution set
+        env:
+          RELEASE_VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
+        run: |
+          ls -l dist mcp-dist
+          # 1.0.0-beta.18 -> 1.0.0b18 (PEP 440, as in the file names)
+          version=$(echo "$RELEASE_VERSION" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/')
+          count() { find "$1" -type f -name "$2" | wc -l; }
+          test "$(count dist "simtest_funnel-$version-cp311-abi3-*.whl")" -eq 8
+          test -f "dist/simtest_funnel-$version.tar.gz"
+          test "$(count dist '*')" -eq 9
+          test -f "mcp-dist/simtest_funnel_mcp-$version-py3-none-any.whl"
+          test -f "mcp-dist/simtest_funnel_mcp-$version.tar.gz"
+          test "$(count mcp-dist '*')" -eq 2
+          uvx twine check --strict dist/* mcp-dist/*
+      # simtest-funnel first: simtest-funnel-mcp pins it exactly, so the
+      # server never appears on PyPI before the library it needs.
+      - name: Upload to PyPI
+        run: |
+          uvx twine upload --non-interactive --skip-existing dist/*
+          uvx twine upload --non-interactive --skip-existing mcp-dist/*
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}

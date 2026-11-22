@@ -19,10 +19,12 @@ declared by the client or an output directory configured at start-up (see
 [Where plot files may be written](#where-plot-files-may-be-written)).
 Transport: stdio.
 
-> **Platform note:** `simtest-funnel` is currently published to PyPI only
-> as a Linux x86-64 / CPython 3.12 wheel, so `uvx simtest-funnel-mcp`
-> works only there until cross-platform wheels are published. From a
-> checkout of this repository it works wherever the Rust extension builds.
+**Platforms:** Python 3.11 or later on Linux (x86-64 and ARM64, glibc
+2.17+), macOS (Intel and Apple silicon) and Windows (x64 and ARM64):
+`uvx simtest-funnel-mcp` installs prebuilt wheels there. Elsewhere the
+`simtest-funnel` library is built from source, which needs a Rust
+toolchain (on musl-based Linux such as Alpine the library has wheels, but
+some of the server's dependencies may not).
 
 ## Tools
 

@@ -21,6 +21,10 @@ works without further configuration.
 pip install simtest-funnel
 ```
 
+Python 3.11 or later; prebuilt wheels for Linux (x86-64, ARM64), macOS
+(Intel, Apple silicon) and Windows (x64, ARM64), otherwise built from the
+source distribution (needs a Rust toolchain).
+
 ## Quick start
 
 ```python

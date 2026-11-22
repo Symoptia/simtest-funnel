@@ -83,7 +83,9 @@ def parse_iso(cells: "pd.Series[str]") -> tuple[NDArray[np.float64], NDArray[np.
     length = (c != 0).sum(axis=1)
 
     def num(a: int, b: int) -> NDArray[np.int64]:  # digits at fixed positions a..b-1
-        return ((c[:, a:b] - 48) * 10 ** np.arange(b - a - 1, -1, -1)).sum(axis=1)
+        # Annotated variable: numpy < 2.5 stubs (Python 3.11) type the sum as Any.
+        digits: NDArray[np.int64] = ((c[:, a:b] - 48) * 10 ** np.arange(b - a - 1, -1, -1)).sum(axis=1)
+        return digits
 
     has_time = length > 10
     has_sec = has_time & (c[:, 16] == ord(":"))
