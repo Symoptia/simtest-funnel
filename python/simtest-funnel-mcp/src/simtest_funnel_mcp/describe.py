@@ -9,11 +9,17 @@ import numpy as np
 from simtest_funnel_mcp.csvio import SignalFile
 from simtest_funnel_mcp.models import ColumnInfo, DescribeResult, Sampling, TimeInfo
 from simtest_funnel_mcp.selection import expand
+from simtest_funnel_mcp.timeaxis import format_duration, format_iso
 
 #: Default cap on columns (and problems) listed by describe_signals.
 DEFAULT_MAX_COLUMNS = 100
 #: Relative step spread below which sampling counts as uniform.
 UNIFORM_RTOL = 1e-6
+#: Float64 spacings of the largest |t| always allowed as step spread
+#: (rounding jitter of large times such as epoch seconds).
+UNIFORM_SPACINGS = 4.0
+#: Fraction digits beyond which a date-time time cell loses resolution.
+MAX_FRACTION_DIGITS = 6
 
 
 def finite_or_none(value: float | None) -> float | None:
@@ -33,7 +39,11 @@ def _sampling(t: np.ndarray) -> Sampling:
     med = float(np.median(steps))
     hi = float(np.max(steps))
     scale = abs(med) if med != 0 else 1.0
-    uniform = lo >= 0 and (hi - lo) <= UNIFORM_RTOL * scale
+    # Steps of large times (e.g. epoch seconds) jitter by a few float64
+    # spacings; that jitter never makes sampling non-uniform. For small times
+    # the relative test dominates, exactly as before.
+    jitter = UNIFORM_SPACINGS * float(np.spacing(float(np.max(np.abs(finite)))))
+    uniform = lo >= 0 and (hi - lo) <= max(UNIFORM_RTOL * scale, jitter)
     return Sampling(uniform=uniform, min_step=lo, median_step=med, max_step=hi)
 
 
@@ -59,7 +69,24 @@ def describe(
         time = TimeInfo(start=start, end=end, span=end - start, sampling=_sampling(t))
     else:
         time = TimeInfo(sampling=Sampling(uniform=False))
-    problems = sf.time_problems()
+    time.kind = sf.time_kind
+    notes: list[str] = []
+    problems = list(sf.hints) + sf.time_problems()
+    if sf.is_datetime:
+        zone = sf.time_zone
+        time.time_zone = zone
+        time.start_iso = format_iso(time.start, zone)
+        time.end_iso = format_iso(time.end, zone)
+        time.span_duration = format_duration(time.span)
+        time.sampling.median_step_duration = format_duration(time.sampling.median_step)
+        if zone == "none":
+            problems.append(f"time column {sf.time_column!r} has no time zone; read as UTC")
+        if sf.fraction_digits > MAX_FRACTION_DIGITS:
+            notes.append(
+                f"time column {sf.time_column!r} has up to {sf.fraction_digits} fraction "
+                "digits; times are float64 seconds since 1970, so resolution below about "
+                "0.25 microseconds is lost"
+            )
     if sf.row_count == 0:
         problems.append("file has a header but no data rows")
     if columns is None:
@@ -89,6 +116,7 @@ def describe(
         infos.append(info)
     return DescribeResult(
         path=str(sf.path),
+        header_line=sf.header_line,
         time_column=sf.time_column,
         time_column_rule="named time" if sf.time_column_rule == "named time" else "first column",
         row_count=sf.row_count,
@@ -99,4 +127,5 @@ def describe(
         columns_omitted=max(0, len(infos) - max_columns),
         problems=problems[:max_columns],
         problems_omitted=max(0, len(problems) - max_columns),
+        notes=notes,
     )

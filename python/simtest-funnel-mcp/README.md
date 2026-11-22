@@ -22,25 +22,32 @@ Transport: stdio.
 
 ## Tools
 
-### `describe_signals(path, columns=None, max_columns=100)`
+### `describe_signals(path, columns=None, max_columns=100, header_line=1)`
 
-Time column (and how it was chosen), row count, time start/end/span,
-sampling (uniform or not; min/median/max step), per-column min/max/range
-and data problems (non-numeric or empty cells, time not non-decreasing).
+Header line used, time column (how it was chosen and its kind: `numeric`
+or `datetime`, with or without time zone), row count, time start/end/span
+(on a date-time axis also as ISO 8601 strings and durations), sampling
+(uniform or not; min/median/max step), per-column min/max/range and data
+problems (non-numeric or empty cells, time not non-decreasing, time column
+without time zone, a preamble hint with the `header_line` to pass).
 Use it to choose columns and tolerances. At most `max_columns` columns and
 as many problems are listed; `columns_total`, `columns_selected`,
 `columns_omitted` and `problems_omitted` state the rest. `columns` filters
 by exact name or glob pattern (`*`, `?`, `[...]`), e.g.
 `["*.port.signal"]`.
 
-### `compare_signals(reference_path, test_path, ...)`
+### `compare_signals(reference_path, test_path=None, ...)`
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
+| `test_path` | the reference file (with `pairs` only) | Test CSV file; required unless `pairs` are given |
 | `columns` | all common columns | Signal columns to compare: exact names or glob patterns (`*`, `?`, `[...]`, matched against the columns of both files) |
+| `pairs` | none | `[{"reference": .., "test": .., "label": ..}]`: compare a reference column with a differently named test column (exact names; not together with `columns`) |
+| `header_line` | 1 | Header line of the reference file (see [CSV dialect](#csv-dialect)) |
+| `test_header_line` | `header_line` | Header line of the test file |
 | `tolerances` | one set, library default | List of sets: optional unique `label` plus any of the six coefficients |
-| `column_tolerances` | none | `{column: coefficients}` overrides, applied per axis |
-| `x_range` | unbounded | `{"lo": .., "hi": ..}` time window; finite bounds, omit one for unbounded |
+| `column_tolerances` | none | `{row key: coefficients}` overrides, applied per axis (the key is the column name, or a pair's label, else its test column) |
+| `x_range` | unbounded | `{"lo": .., "hi": ..}` time window; finite bounds (on a date-time axis numbers are epoch seconds, or ISO 8601 strings), omit one for unbounded |
 | `max_intervals` | 5 | Violation intervals listed per failing row (largest deviation first) |
 | `max_rows` | 100 | Rows returned (errors, then failures, then passes); totals always cover all rows |
 | `include_snippet` | false | Add a pytest file reproducing the returned rows (for CI), in the structured field `snippet` |
@@ -55,6 +62,18 @@ the call. Both structured content and a short text rendering are returned.
 Time values are never rounded in the structured content; the text prints
 them with enough digits to tell adjacent samples apart.
 
+**Column pairs.** Without `columns` or `pairs`, every signal column present
+in both files is compared with the column of the same name. `pairs`
+compares differently named columns, from two files or from one (omit
+`test_path`; the file is then read once). One reference column may appear
+in several pairs. Names are exact and case-sensitive, units in names such as
+`(°C)` are part of the name; a name that is not found gives a row error
+suggesting close names (e.g. `temperature_2m` -> `temperature_2m (°C)`). A
+pair's row is keyed (`column`) by its label, else its test column; keys must
+be unique, and pair rows also carry `reference_column` and `test_column`.
+Without `pairs` a `test_path` is required (a file compared with itself
+would pass trivially).
+
 A column passes when every test point inside the compared time range
 (`x_range` intersected with the reference time span) lies inside the tube
 and, within `x_range`, both files cover the same time span. If one file
@@ -64,15 +83,19 @@ reference) or `MISSING_TEST` (the reverse), still reports
 `points_compared` / `points_outside`, and its `problem` text names both
 time spans and the exact `x_range` that compares the overlap.
 
-### `plot_signals(reference_path, test_path, column, ...)`
+### `plot_signals(reference_path, column, test_path=None, test_column=None, ...)`
 
-Draws ONE comparison - one signal column, one tolerance set - and returns a
+Draws ONE comparison - one signal column (or one reference column against
+a differently named test column), one tolerance set - and returns a
 PNG preview (800 x 450 px) inline as MCP image content, so the model can
 look at it. SVG is never returned inline (it would reach the model as text).
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
-| `column` | required | The one signal column to plot (exact name, no glob patterns) |
+| `column` | required | The one signal column to plot (exact name, no glob patterns); the reference column |
+| `test_path` | the reference file | Test CSV file |
+| `test_column` | `column` | Test column plotted against `column`, like one `compare_signals` pair (legend and title then name both) |
+| `header_line`, `test_header_line` | 1, `header_line` | As in `compare_signals` |
 | `tolerance` | library default | One tolerance set: optional `label` plus any of the six coefficients (one entry of `compare_signals` `tolerances`) |
 | `x_range` | unbounded | As in `compare_signals`; also the time window shown (zoom) |
 | `output_path` | none | Write the plot here: `.svg` (document) or `.png` (1600 x 900 px), inside a workspace root or a configured output directory. Omit for the preview only |
@@ -128,6 +151,13 @@ byte-identical SVG and PNG files (with the same matplotlib version), so
 plots can be kept in a repository and diffed. SVG text is embedded as
 paths (bundled DejaVu Sans), so files look the same everywhere.
 
+On a date-time time axis the x data stay epoch seconds (so the drawing
+agrees with the comparison exactly), the ticks are UTC-aligned dates and
+times (`MM-DD hh:mm`, the year on the first tick and at year changes), the
+x label ends in `(UTC)` or `(no time zone)`, the subtitle shows the time
+tolerance as a duration (`x ±PT3H`) and the result's `view` carries
+`lo_iso` / `hi_iso`.
+
 Plots are rendered with [matplotlib](https://matplotlib.org) (headless,
 imported only on the first `plot_signals` call, so server start-up is not
 slowed). It adds about 24 MB of wheels (~77 MB installed). matplotlib
@@ -180,6 +210,12 @@ relative to it and resolved at run time against
 `$SIMTEST_FUNNEL_DATA_ROOT`, defaulting to the current directory, so run
 pytest from the same place in a CI checkout. Files outside that base keep
 their absolute path, with a comment that they will not resolve elsewhere.
+The snippet reads each file with the header line the server used
+(`REFERENCE_HEADER_LINE` / `TEST_HEADER_LINE`, `TEST = REFERENCE` for one
+file), converts date-time time columns exactly as the server does, and
+each case `(key, reference column, test column, tolerance set, tolerances,
+expected status)` compares its own reference and test column; ISO x-range
+bounds are written as epoch seconds with the ISO form in a comment.
 
 ## CSV dialect
 
@@ -193,6 +229,64 @@ Short rows count as empty cells. The time column is the first column named
 echoed back. Other columns whose name differs from `time` only by case are
 ordinary signal columns.
 
+**Header line.** `header_line` (1-based physical file line, default 1)
+skips the lines before it unread; the header is the first non-blank,
+non-comment line at or after it, so the default is the first non-comment
+line, as always. Data row line numbers in errors stay physical file lines.
+The header line is never detected automatically. When a read fails, or
+succeeds but looks wrong (the header has a different field count than a
+later header-like line, or the time column has bad cells), and the top of
+the file looks like a preamble (a blank line followed by a line without
+numbers whose next line looks like data with the same field count), the
+error or a problem says so and suggests that line, e.g. `pass
+header_line=4`. The hint never changes what is read.
+
+**Date-time time column.** A time column whose non-empty cells are all ISO
+8601 date-times (`YYYY-MM-DD`, optionally `T` or a space and `hh:mm`,
+optional seconds and fraction, optional `Z` or an offset `+hh:mm`, `+hhmm`
+or `+hh`) is read as seconds since 1970-01-01 UTC, so a file and its copy
+with epoch-second times give identical results. Date-only cells are
+midnight. Hours run 00-23, invalid dates are not date-times, and only upper
+case `T` and `Z` are accepted. Other formats (`01/02/2026`, Excel serial
+dates) are not recognised; such a column is non-numeric. A cell without
+offset is read as UTC and `describe_signals` reports that the column has no
+time zone; offsets are converted to UTC. Reference and test time columns
+must be of the same kind: both numeric, both without time zone, or both
+with offsets (otherwise the call fails explaining how to fix it); a column
+mixing cells with and without offset is a time-column problem. Only the
+time column is converted; date-times in signal columns are non-numeric.
+
+On a date-time axis x tolerances and numeric `x_range` bounds are seconds
+(`atolx = 10800` is ±3 h), `x_range` bounds may also be ISO strings (with a
+time zone exactly when the time columns have one), a non-zero `ltolx` is
+refused (it would scale with ~1.8e9 s), every tolerance set with a non-zero
+time half-width echoes it as `time_tolerance: {"seconds": 10800,
+"duration": "PT3H"}` (also from `rtolx`), and every time in the results
+keeps its number and gains an ISO 8601 sibling (`time_start_iso`,
+`lo_iso`, `x_iso`, `start_x_iso`, ...; UTC with `Z` for offset axes,
+without suffix for zone-less ones). The text rendering prints ISO times and
+durations.
+
+Example: an Open-Meteo Previous Runs CSV starts with a metadata line, a
+values line and a blank line, then the header
+`time,temperature_2m (°C),temperature_2m_previous_day1 (°C),...` with times
+such as `2026-11-20T00:00`. "Was the forecast made 1, 3 and 5 days ahead
+within 2 °C and 3 hours?":
+
+```json
+{
+  "reference_path": "/data/stockholm.csv",
+  "header_line": 4,
+  "pairs": [
+    {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day1 (°C)", "label": "day1"},
+    {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day3 (°C)", "label": "day3"},
+    {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day5 (°C)", "label": "day5"}
+  ],
+  "tolerances": [{"label": "2C_3h", "atoly": 2, "atolx": 10800}],
+  "x_range": {"lo": "2026-11-06T00:00"}
+}
+```
+
 ## Tolerances
 
 Six coefficients, x = time axis, y = signal value. At each reference sample
@@ -203,7 +297,7 @@ half_x = max(atolx, rtolx * time_span_ref, ltolx * |t|)
 half_y = max(atoly, rtoly * value_range_ref, ltoly * |y_ref|)
 ```
 
-- `atol*`: absolute (time units / signal units)
+- `atol*`: absolute (time units / signal units; seconds on a date-time axis)
 - `rtol*`: fraction of the reference time span / value range
 - `ltol*`: fraction of the local `|t|` / `|y_ref|`
 

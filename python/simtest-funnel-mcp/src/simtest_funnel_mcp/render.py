@@ -14,6 +14,7 @@ from simtest_funnel_mcp.models import (
     DescribeResult,
     PlotResult,
     Row,
+    TimeTolerance,
 )
 
 
@@ -52,11 +53,21 @@ def time_digits(*times: NDArray[np.float64]) -> int:
     return max(MIN_TIME_DIGITS, min(17, digits))
 
 
-def tg(value: float | None, digits: int) -> str:
-    """Format a time value with ``digits`` significant digits."""
+def tg(value: float | None, digits: int, iso: str | None = None) -> str:
+    """Format a time value with ``digits`` significant digits, or as its ISO
+    8601 form when given (date-time axes)."""
+    if iso is not None:
+        return iso
     if value is None:
         return "-"
     return f"{value:.{digits}g}"
+
+
+def _tol_line(label: str, c: Coefficients, tt: TimeTolerance | None) -> str:
+    line = f"tolerance set {label}: {_coefficients(c)}"
+    if tt is not None:
+        line += f"; time tolerance {tt.seconds:g} s ({tt.duration})"
+    return line
 
 
 def _coefficients(c: Coefficients) -> str:
@@ -64,20 +75,39 @@ def _coefficients(c: Coefficients) -> str:
 
 
 def render_describe(d: DescribeResult, digits: int = MIN_TIME_DIGITS) -> str:
-    lines = [
-        f"{d.path}: {d.row_count} rows, time column {d.time_column!r} ({d.time_column_rule})",
-    ]
     t = d.time
     s = t.sampling
-    if t.start is not None:
-        sampling = (
-            f"uniform, step {g(s.median_step)}"
-            if s.uniform
-            else f"non-uniform, step min {g(s.min_step)} / median {g(s.median_step)} "
-            f"/ max {g(s.max_step)}"
+    header = f", header line {d.header_line}" if d.header_line != 1 else ""
+    kind = ""
+    if t.kind == "datetime":
+        zone = {"offset": "UTC (offsets)", "none": "no time zone, read as UTC"}.get(
+            t.time_zone or "", "mixed time zones"
         )
+        kind = f", ISO 8601 date-times ({zone})"
+    lines = [
+        f"{d.path}: {d.row_count} rows, time column {d.time_column!r} ({d.time_column_rule})"
+        f"{kind}{header}",
+    ]
+    if t.start is not None:
+        if t.kind == "datetime":
+            sampling = (
+                f"uniform, step {s.median_step_duration}"
+                if s.uniform
+                else f"non-uniform, step min {g(s.min_step)} s / median "
+                f"{s.median_step_duration} / max {g(s.max_step)} s"
+            )
+            span = t.span_duration
+        else:
+            sampling = (
+                f"uniform, step {g(s.median_step)}"
+                if s.uniform
+                else f"non-uniform, step min {g(s.min_step)} / median {g(s.median_step)} "
+                f"/ max {g(s.max_step)}"
+            )
+            span = g(t.span)
         lines.append(
-            f"time {tg(t.start, digits)} .. {tg(t.end, digits)} (span {g(t.span)}), {sampling}"
+            f"time {tg(t.start, digits, t.start_iso)} .. {tg(t.end, digits, t.end_iso)} "
+            f"(span {span}), {sampling}"
         )
     selected = (
         f", {d.columns_selected} selected" if d.columns_selected != d.columns_total else ""
@@ -106,8 +136,16 @@ def _pct(f: float | None) -> str:
     return "-" if f is None else f"{100 * f:.3g}%"
 
 
+def _row_name(r: Row) -> str:
+    """The row key, plus ``(reference -> test)`` for a pair of different names."""
+    if r.reference_column is not None and r.reference_column != r.test_column:
+        return f"{r.column} ({r.reference_column} -> {r.test_column})"
+    return r.column
+
+
 def _row_line(r: Row, digits: int) -> str:
-    head = f"{r.verdict.upper()} {r.column} [{r.tolerance_set}]"
+    name = _row_name(r)
+    head = f"{r.verdict.upper()} {name} [{r.tolerance_set}]"
     if r.verdict == "error":
         status = f" status {r.status} {r.status_name}" if r.status is not None else ""
         counts = (
@@ -122,18 +160,22 @@ def _row_line(r: Row, digits: int) -> str:
     ]
     if r.worst is not None:
         parts.append(
-            f"worst {r.worst.deviation:+.4g} at t={tg(r.worst.x, digits)} "
+            f"worst {r.worst.deviation:+.4g} at t={tg(r.worst.x, digits, r.worst.x_iso)} "
             f"(tube half-width {g(r.worst.tube_half_width_y)})"
         )
     parts.append(f"{r.interval_count} interval(s)")
     line = f"{head}: " + ", ".join(parts)
     if r.tolerances is not None:
         line += f"\n    tolerances (column override): {_coefficients(r.tolerances)}"
+        if r.time_tolerance is not None:
+            tt = r.time_tolerance
+            line += f"; time tolerance {tt.seconds:g} s ({tt.duration})"
     for iv in r.intervals or []:
         line += (
-            f"\n    {iv.direction} t={tg(iv.start_x, digits)}..{tg(iv.end_x, digits)} "
+            f"\n    {iv.direction} t={tg(iv.start_x, digits, iv.start_x_iso)}.."
+            f"{tg(iv.end_x, digits, iv.end_x_iso)} "
             f"({iv.point_count} pts, worst {iv.worst_deviation:+.4g} "
-            f"at t={tg(iv.worst_x, digits)})"
+            f"at t={tg(iv.worst_x, digits, iv.worst_x_iso)})"
         )
     if r.intervals is not None and r.interval_count and r.interval_count > len(r.intervals):
         line += f"\n    ... {r.interval_count - len(r.intervals)} more interval(s)"
@@ -147,9 +189,10 @@ def render_compare(c: CompareResult, digits: int = MIN_TIME_DIGITS) -> str:
         f"test {c.test.path} (time column {c.test.time_column!r}, {c.test.row_count} rows)",
     ]
     if c.x_range.lo is not None or c.x_range.hi is not None:
-        lines.append(f"x_range {tg(c.x_range.lo, digits)} .. {tg(c.x_range.hi, digits)}")
+        x = c.x_range
+        lines.append(f"x_range {tg(x.lo, digits, x.lo_iso)} .. {tg(x.hi, digits, x.hi_iso)}")
     for s in c.tolerance_sets:
-        lines.append(f"tolerance set {s.label}: {_coefficients(s.resolved)}")
+        lines.append(_tol_line(s.label, s.resolved, s.time_tolerance))
     t = c.totals
     pending = f", {t.not_completed} not completed (time limit)" if t.not_completed else ""
     lines.append(
@@ -159,7 +202,7 @@ def render_compare(c: CompareResult, digits: int = MIN_TIME_DIGITS) -> str:
     for r in c.rows:
         if r.verdict == "pass":
             passing.setdefault(r.tolerance_set, []).append(
-                r.column + (" (override)" if r.tolerances is not None else "")
+                _row_name(r) + (" (override)" if r.tolerances is not None else "")
             )
         else:
             lines.append(_row_line(r, digits))
@@ -205,12 +248,14 @@ def render_plot(p: PlotResult, digits: int = MIN_TIME_DIGITS) -> str:
         f"test {p.test.path} (time column {p.test.time_column!r}, {p.test.row_count} rows)",
     ]
     if p.x_range.lo is not None or p.x_range.hi is not None:
-        lines.append(f"x_range {tg(p.x_range.lo, digits)} .. {tg(p.x_range.hi, digits)}")
+        x = p.x_range
+        lines.append(f"x_range {tg(x.lo, digits, x.lo_iso)} .. {tg(x.hi, digits, x.hi_iso)}")
     s = p.tolerance_set
-    lines.append(f"tolerance set {s.label}: {_coefficients(s.resolved)}")
+    lines.append(_tol_line(s.label, s.resolved, s.time_tolerance))
     r = p.row
     if r.verdict == "pass":
-        lines.append(f"PASS {r.column} [{r.tolerance_set}]: {r.points_compared} points compared")
+        name = _row_name(r)
+        lines.append(f"PASS {name} [{r.tolerance_set}]: {r.points_compared} points compared")
     else:
         lines.append(_row_line(r, digits))
     if p.file is not None:
@@ -226,7 +271,7 @@ def render_plot(p: PlotResult, digits: int = MIN_TIME_DIGITS) -> str:
         f"drawn: reference {d.reference} / test {d.test} / tube {d.tube_lower}+{d.tube_upper} "
         f"points (min/max of {d.buckets} buckets), {d.violation_markers} "
         f"violation marker(s), {d.violation_regions} shaded region(s); "
-        f"time {tg(p.view.lo, digits)} .. {tg(p.view.hi, digits)}"
+        f"time {tg(p.view.lo, digits, p.view.lo_iso)} .. {tg(p.view.hi, digits, p.view.hi_iso)}"
     )
     for n in p.notes:
         lines.append(f"note: {n}")

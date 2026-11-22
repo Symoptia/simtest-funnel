@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import REPO_ROOT
+from conftest import OPEN_METEO_REF, REPO_ROOT, open_meteo_column
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp_types import ListRootsResult, Root
@@ -113,8 +113,8 @@ def test_stdio_end_to_end(demo_reference: Path, demo_test: Path, tmp_path: Path)
     assert all(len(r["intervals"]) <= 2 for r in fails)
     assert d["snippet"].startswith('"""Funnel comparison reproduced')
     assert "PASS [loose]: x, y" in compare.content[0].text
-    # Raw samples never cross the wire (the snippet embeds the ~4 kB CSV reader).
-    assert len(json.dumps(d)) < 12_000
+    # Raw samples never cross the wire (the snippet embeds the ~11 kB CSV reader).
+    assert len(json.dumps(d)) < 18_000
 
     assert out["outside"].is_error
     assert "outside the client's workspace roots" in out["outside"].content[0].text
@@ -136,6 +136,78 @@ def test_stdio_end_to_end(demo_reference: Path, demo_test: Path, tmp_path: Path)
     assert out["plot_outside"].is_error
     assert "outside the client's workspace roots" in out["plot_outside"].content[0].text
     assert not Path("/tmp/simtest-funnel-should-not-exist.svg").exists()
+
+
+def test_stdio_pairs_and_date_axis_plot(open_meteo: Path, tmp_path: Path) -> None:
+    """One-file pair comparison and a date-axis plot of an Open-Meteo-shaped file."""
+    params = StdioServerParameters(
+        command=sys.executable, args=["-m", "simtest_funnel_mcp"], cwd=str(tmp_path)
+    )
+    pairs = [
+        {"reference": OPEN_METEO_REF, "test": open_meteo_column(d), "label": f"day{d}"}
+        for d in (1, 3, 5)
+    ]
+
+    async def script(client: Client) -> dict[str, Any]:
+        return {
+            "describe": await client.call_tool(
+                "describe_signals", {"path": str(open_meteo)}
+            ),
+            "compare": await client.call_tool(
+                "compare_signals",
+                {
+                    "reference_path": str(open_meteo),
+                    "header_line": 4,
+                    "pairs": pairs,
+                    "tolerances": [{"label": "2C_3h", "atoly": 2, "atolx": 10800}],
+                    "include_snippet": True,
+                },
+            ),
+            "plot": await client.call_tool(
+                "plot_signals",
+                {
+                    "reference_path": str(open_meteo),
+                    "header_line": 4,
+                    "column": OPEN_METEO_REF,
+                    "test_column": open_meteo_column(3),
+                    "tolerance": {"label": "2C_3h", "atoly": 2, "atolx": 10800},
+                    "x_range": {"lo": "2026-11-10T00:00", "hi": "2026-11-12T00:00"},
+                    "output_path": str(tmp_path / "day3.svg"),
+                },
+            ),
+        }
+
+    out = _session(params, (open_meteo.parent,), script)
+    describe = out["describe"]
+    assert not describe.is_error, describe.content
+    assert "pass header_line=4" in describe.structured_content["problems"][0]
+
+    compare = out["compare"]
+    assert not compare.is_error, compare.content
+    d = compare.structured_content
+    assert d["totals"]["rows"] == 3
+    assert {r["column"] for r in d["rows"]} == {"day1", "day3", "day5"}
+    assert d["tolerance_sets"][0]["time_tolerance"] == {"seconds": 10800.0, "duration": "PT3H"}
+    assert "TEST = REFERENCE" in d["snippet"]
+    assert "day5 (temperature_2m (°C) -> temperature_2m_previous_day5 (°C))" in (
+        compare.content[0].text
+    )
+
+    plot = out["plot"]
+    assert not plot.is_error, plot.content
+    text, image = plot.content
+    p = plot.structured_content
+    assert p["view"]["lo_iso"] == "2026-11-10T00:00:00"
+    assert p["view"]["hi_iso"] == "2026-11-12T00:00:00"
+    assert p["row"]["test_column"] == open_meteo_column(3)
+    assert "time 2026-11-10T00:00:00 .. 2026-11-12T00:00:00" in text.text
+    preview = base64.b64decode(image.data)
+    assert preview[:8] == b"\x89PNG\r\n\x1a\n"
+    svg = (tmp_path / "day3.svg").read_text()
+    assert "<!-- 2026-11-10 00:00 -->" in svg and "<!-- time (no time zone) -->" in svg
+    keep = os.environ.get("SIMTEST_FUNNEL_KEEP_PREVIEW")
+    if keep:  # for looking at the preview by hand
+        Path(keep).write_bytes(preview)
 
 
 def test_stdio_output_dir_without_roots(demo_reference: Path, demo_test: Path,

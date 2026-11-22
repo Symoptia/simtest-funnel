@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 import pytest
-from conftest import WriteCsv, structured
+from conftest import OPEN_METEO_REF, WriteCsv, open_meteo_column, structured
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import TextContent
 from numpy.typing import NDArray
@@ -30,6 +30,8 @@ from simtest_funnel_mcp.plot import (
     PlotData,
     PlotOutcome,
     bound_at,
+    date_labels,
+    date_ticks,
     png_size,
     prepare_plot,
     render,
@@ -781,3 +783,147 @@ def test_write_without_hard_links_still_creates_exclusively(
     with pytest.raises(ToolError, match="already exists"):
         _plot(demo_reference, demo_test, [tmp_path, demo_reference.parent], column="z",
               output_path=str(target))
+
+
+# --------------------------------------------------------------------------
+# Column pairs and date-time axes
+# --------------------------------------------------------------------------
+
+DAY1 = open_meteo_column(1)
+TOL_2C_3H = ToleranceSet(label="2C_3h", atoly=2, atolx=10800)
+
+
+def _svg_texts(svg: bytes) -> list[str]:
+    """Texts of the SVG (drawn as paths; matplotlib keeps them as comments)."""
+    import re
+
+    return re.findall(r"<!-- (.*?) -->", svg.decode("utf-8"))
+
+
+def test_day1_pair_plot_equals_the_compare_pair_row(open_meteo: Path) -> None:
+    from simtest_funnel_mcp.models import ColumnPair
+
+    p = structured(plot_signals_impl(
+        str(open_meteo), None, [], column=OPEN_METEO_REF, test_column=DAY1, header_line=4,
+        tolerance=ToleranceSet(label="2C", atoly=2), max_intervals=50,
+    ))
+    c = structured(compare_signals_impl(
+        str(open_meteo), None, [], header_line=4, max_intervals=50,
+        pairs=[ColumnPair(reference=OPEN_METEO_REF, test=DAY1)],
+        tolerances=[ToleranceSet(label="2C", atoly=2)],
+    ))
+    assert p["row"] == c["rows"][0]
+    assert p["row"]["reference_column"] == OPEN_METEO_REF and p["row"]["test_column"] == DAY1
+    assert p["test"]["path"] == p["reference"]["path"] == str(open_meteo)
+    outcome = prepare_plot(
+        load_csv(open_meteo, 4), load_csv(open_meteo, 4), column=OPEN_METEO_REF,
+        test_column=DAY1, tolerance=TOL_2C_3H, x_range=None, max_intervals=5,
+    )
+    data = outcome.data
+    assert data.title.startswith(f"{DAY1} vs {OPEN_METEO_REF}\n")
+    assert (data.legend_reference, data.legend_test) == (
+        f"reference: {OPEN_METEO_REF}", f"test: {DAY1}"
+    )
+    assert data.y_label == OPEN_METEO_REF
+    texts = _svg_texts(render(data, "svg"))
+    assert f"reference: {OPEN_METEO_REF}" in texts and f"test: {DAY1}" in texts
+
+
+def test_test_column_omitted_or_equal_behaves_as_before(
+    demo_reference: Path, demo_test: Path
+) -> None:
+    a = _prepare(demo_reference, demo_test, "z", LOOSE)
+    b = prepare_plot(load_csv(demo_reference), load_csv(demo_test), column="z",
+                     test_column="z", tolerance=LOOSE, x_range=None, max_intervals=5)
+    assert (a.data.title, a.data.subtitle, a.data.x_label) == (
+        b.data.title, b.data.subtitle, b.data.x_label)
+    np.testing.assert_array_equal(a.data.test_y, b.data.test_y)
+    assert a.record.row == b.record.row
+    assert (a.data.legend_reference, a.data.legend_test) == ("reference", "test")
+    assert a.data.title.startswith("z: FAIL") and not a.data.date_axis
+
+
+def test_glob_test_column_is_refused(open_meteo: Path) -> None:
+    with pytest.raises(ToolError, match="one exact column name"):
+        plot_signals_impl(str(open_meteo), None, [], column=OPEN_METEO_REF,
+                          test_column="temperature_2m_previous_day*", header_line=4)
+
+
+def test_plot_of_hourly_open_meteo_data(open_meteo: Path) -> None:
+    result = plot_signals_impl(str(open_meteo), None, [], column=OPEN_METEO_REF,
+                               test_column=DAY1, header_line=4, tolerance=TOL_2C_3H)
+    p = structured(result)
+    assert p["view"] == {
+        "lo": 1793836800.0, "lo_iso": "2026-11-05T00:00:00",
+        "hi": 1795129200.0, "hi_iso": "2026-11-19T23:00:00",
+    }
+    assert p["tolerance_set"]["time_tolerance"] == {"seconds": 10800.0, "duration": "PT3H"}
+    text = result.content[0].text  # type: ignore[union-attr]
+    assert "time 2026-11-05T00:00:00 .. 2026-11-19T23:00:00" in text
+    outcome = prepare_plot(load_csv(open_meteo, 4), load_csv(open_meteo, 4),
+                           column=OPEN_METEO_REF, test_column=DAY1, tolerance=TOL_2C_3H,
+                           x_range=None, max_intervals=5)
+    data = outcome.data
+    assert data.date_axis and data.x_label == "time (no time zone)"
+    assert data.subtitle == "tolerances [2C_3h]: x \u00b1PT3H  |  y atoly=2"
+    texts = _svg_texts(render(data, "svg"))
+    assert texts[:8] == ["2026-11-05", "11-07", "11-09", "11-11", "11-13", "11-15",
+                         "11-17", "11-19"]
+    assert "time (no time zone)" in texts
+    # Deterministic, and the drawn tube agrees with the comparison.
+    assert render(data, "svg") == render(data, "svg")
+    assert render(data, "png") == render(data, "png")
+    _assert_drawn_tube_agrees(outcome)
+
+
+def test_failing_date_axis_plot_marks_every_interval(open_meteo: Path) -> None:
+    outcome = prepare_plot(load_csv(open_meteo, 4), load_csv(open_meteo, 4),
+                           column=OPEN_METEO_REF, test_column=open_meteo_column(5),
+                           tolerance=TOL_2C_3H, x_range=None, max_intervals=5)
+    assert outcome.record.row.verdict == "fail"
+    _assert_every_interval_marked(outcome)
+    _assert_drawn_tube_agrees(outcome)
+
+
+def test_zoom_with_iso_bounds(open_meteo: Path) -> None:
+    x_range = XRange(lo="2026-11-10T00:00", hi="2026-11-12T00:00")
+    p = structured(plot_signals_impl(str(open_meteo), None, [], column=OPEN_METEO_REF,
+                                     test_column=DAY1, header_line=4, x_range=x_range))
+    assert p["view"]["lo_iso"] == "2026-11-10T00:00:00"
+    assert p["view"]["hi_iso"] == "2026-11-12T00:00:00"
+    assert p["x_range"]["lo_iso"] == "2026-11-10T00:00:00"
+    assert p["row"]["points_compared"] == 49
+    outcome = prepare_plot(load_csv(open_meteo, 4), load_csv(open_meteo, 4),
+                           column=OPEN_METEO_REF, test_column=DAY1, tolerance=None,
+                           x_range=x_range, max_intervals=5)
+    texts = _svg_texts(render(outcome.data, "svg"))
+    assert texts[:5] == ["2026-11-10 00:00", "11-10 12:00", "11-11 00:00", "11-11 12:00",
+                         "11-12 00:00"]
+
+
+def test_offset_axis_is_labelled_utc(write_csv: WriteCsv) -> None:
+    rows = "".join(f"2026-11-20T{h:02d}:00Z,{h % 3}\n" for h in range(24))
+    p = write_csv("a.csv", "time,y\n" + rows)
+    outcome = prepare_plot(load_csv(p), load_csv(p), column="y", tolerance=None,
+                           x_range=None, max_intervals=5)
+    assert outcome.data.x_label == "time (UTC)"
+    assert outcome.data.subtitle.startswith("tolerances [default]: x 0  |")
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "labels"),
+    [
+        (0.0, 3600.0, ["1970-01-01 00:00", "01-01 00:10", "01-01 00:20", "01-01 00:30",
+                       "01-01 00:40", "01-01 00:50", "01-01 01:00"]),
+        (0.0, 30.0, ["1970-01-01 00:00:00", "00:00:05", "00:00:10", "00:00:15", "00:00:20",
+                     "00:00:25", "00:00:30"]),
+        (0.0, 1.0, ["1970-01-01 00:00:00.0", "00:00:00.2", "00:00:00.4", "00:00:00.6",
+                    "00:00:00.8", "00:00:01.0"]),
+        (1798761600.0 - 2 * 86400, 1798761600.0 + 2 * 86400,  # around 2027-01-01
+         ["2026-12-30", "12-31", "2027-01-01", "01-02", "01-03"]),
+    ],
+)
+def test_date_ticks_and_labels(lo: float, hi: float, labels: list[str]) -> None:
+    ticks, step = date_ticks(lo, hi)
+    assert date_labels(ticks, step) == labels
+    assert all(lo <= t <= hi for t in ticks)

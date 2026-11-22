@@ -15,7 +15,9 @@ slow down server start-up.
 
 from __future__ import annotations
 
+import datetime as _dt
 import io
+import math
 import struct
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -26,7 +28,14 @@ from numpy.typing import NDArray
 import simtest.funnel as funnel
 from simtest_funnel_mcp.compare import CompareOutcome, RowRecord, TimeLimit, run_compare
 from simtest_funnel_mcp.csvio import SignalFile
-from simtest_funnel_mcp.models import COEFFICIENTS, Coefficients, ToleranceSet, XRange
+from simtest_funnel_mcp.models import (
+    COEFFICIENTS,
+    ColumnPair,
+    Coefficients,
+    TimeTolerance,
+    ToleranceSet,
+    XRange,
+)
 from simtest_funnel_mcp.selection import is_pattern
 
 #: Min/max buckets for reference, test and tube bounds: at most ~2 points
@@ -117,6 +126,10 @@ class PlotData:
     #: Shaded x-intervals (widened and merged violation intervals).
     regions: tuple[tuple[float, float], ...]
     buckets: int
+    #: x data are epoch seconds: draw date-time tick labels (design §11).
+    date_axis: bool = False
+    legend_reference: str = "reference"
+    legend_test: str = "test"
 
 
 @dataclass
@@ -130,15 +143,76 @@ def _fmt(v: float) -> str:
     return f"{v:.4g}"
 
 
-def tolerance_text(label: str, c: Coefficients) -> str:
-    """``tolerances [label]: x atolx=0.1 | y rtoly=0.01`` (zero coefficients omitted)."""
+def tolerance_text(
+    label: str, c: Coefficients, time_tolerance: TimeTolerance | None = None,
+    date_axis: bool = False,
+) -> str:
+    """``tolerances [label]: x atolx=0.1 | y rtoly=0.01`` (zero coefficients
+    omitted); on a date-time axis the x part is the half-width as a duration
+    (``x ±PT3H``)."""
 
     def axis(suffix: str) -> str:
         values = {k: float(getattr(c, k)) for k in COEFFICIENTS if k.endswith(suffix)}
         nonzero = [f"{k}={_fmt(v)}" for k, v in values.items() if v != 0]
         return " ".join(nonzero) if nonzero else "0"
 
-    return f"tolerances [{label}]: x {axis('x')}  |  y {axis('y')}"
+    x = axis("x")
+    if date_axis:
+        x = f"\u00b1{time_tolerance.duration}" if time_tolerance is not None else "0"
+    return f"tolerances [{label}]: x {x}  |  y {axis('y')}"
+
+
+#: Date-axis tick steps in seconds (UTC-aligned multiples).
+DATE_TICK_STEPS = (
+    0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+    1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800,
+    3600, 7200, 10800, 21600, 43200, 86400, 172800, 604800,
+    1209600, 2419200, 7776000, 15552000, 31536000,
+)
+#: At most this many date ticks with time-of-day labels (they are wide) ...
+MAX_DATE_TICKS = 6
+#: ... and with day labels (``MM-DD``).
+MAX_DAY_TICKS = 10
+
+
+def date_ticks(lo: float, hi: float) -> tuple[list[float], float]:
+    """UTC-aligned tick positions in ``[lo, hi]`` and the step used."""
+    span = hi - lo
+
+    def fits(step: float) -> bool:
+        return span / step <= (MAX_DAY_TICKS if step >= 86400 else MAX_DATE_TICKS)
+
+    step = next((s for s in DATE_TICK_STEPS if fits(s)), DATE_TICK_STEPS[-1])
+    while not fits(step):
+        step *= 2
+    first = math.ceil(lo / step)
+    last = math.floor(hi / step)
+    return [k * step for k in range(first, last + 1)], step
+
+
+def date_labels(ticks: list[float], step: float) -> list[str]:
+    """Tick labels: ``MM-DD hh:mm`` (``MM-DD`` for day steps, ``hh:mm:ss[.f]``
+    below a minute); the first tick and year changes show the year."""
+    out: list[str] = []
+    prev_year: int | None = None
+    for t in ticks:
+        sec = math.floor(t)
+        frac = t - sec
+        d = _dt.datetime(1970, 1, 1) + _dt.timedelta(seconds=sec)
+        full = prev_year is None or d.year != prev_year
+        prev_year = d.year
+        date = d.strftime("%Y-%m-%d" if full else "%m-%d")
+        if step >= 86400:
+            out.append(date)
+        elif step >= 60:
+            out.append(f"{date} {d:%H:%M}")
+        else:
+            clock = f"{d:%H:%M:%S}"
+            if step < 1:
+                digits = max(0, -math.floor(math.log10(step) + 1e-9))
+                clock += f"{frac:.{digits}f}"[1:]
+            out.append(f"{date} {clock}" if full else clock)
+    return out
 
 
 def _index_window(x: NDArray[np.float64], lo: float, hi: float) -> tuple[int, int]:
@@ -321,33 +395,42 @@ def prepare_plot(
     max_intervals: int,
     buckets: int = DEFAULT_BUCKETS,
     limit: TimeLimit | None = None,
+    test_column: str | None = None,
 ) -> PlotOutcome:
-    """Compare one column on the full data and reduce it for drawing.
+    """Compare one column (or the reference ``column`` against the test
+    ``test_column``) on the full data and reduce it for drawing.
 
     A comparison stopped by ``limit`` raises :class:`PlotArgumentError`.
     """
     if not column.strip():
         raise PlotArgumentError("column is empty")
     known = set(ref.signal_columns) | set(tst.signal_columns)
-    if column not in known and is_pattern(column):
-        raise PlotArgumentError(
-            f"column {column!r} is not a column name; plot_signals takes one exact column "
-            "name (no glob patterns)"
-        )
+    for arg, name in (("column", column), ("test_column", test_column)):
+        if name is not None and name not in known and is_pattern(name):
+            raise PlotArgumentError(
+                f"{arg} {name!r} is not a column name; plot_signals takes one exact column "
+                "name (no glob patterns)"
+            )
+    if test_column is not None and not test_column.strip():
+        raise PlotArgumentError("test_column is empty")
+    pair = test_column is not None and test_column != column
+    tcol = test_column if test_column is not None else column
     outcome = run_compare(
         ref,
         tst,
-        columns=[column],
+        columns=None if pair else [column],
+        pairs=[ColumnPair(reference=column, test=tcol)] if pair else None,
         tolerances=[tolerance if tolerance is not None else ToleranceSet(label="default")],
         x_range=x_range,
         max_intervals=max_intervals,
         max_rows=1,
         limit=limit,
     )
+    what = f"{tcol} vs {column}" if pair else column
     if outcome.not_completed:
         assert limit is not None
         raise PlotArgumentError(
-            f"cannot plot column {column!r}: the comparison did not finish within the "
+            f"cannot plot column {what!r}: the comparison did not finish within the "
             f"time limit of {limit.describe()}. No file was written. Pass a larger "
             "time_limit or a narrower x_range."
         )
@@ -357,7 +440,7 @@ def prepare_plot(
         status = f" ({row.status_name})" if row.status_name else ""
         notes = "".join(f"; note: {n}" for n in outcome.result.notes)
         raise PlotArgumentError(
-            f"cannot plot column {column!r}: verdict error{status}: {row.problem}{notes}. "
+            f"cannot plot column {what!r}: verdict error{status}: {row.problem}{notes}. "
             "No file was written."
         )
     res, summary = record.library
@@ -372,7 +455,7 @@ def prepare_plot(
     v_hi = data_hi if hi_req is None else min(hi_req, data_hi)
 
     y_ref = ref.values[column]
-    y_tst = tst.values[column]
+    y_tst = tst.values[tcol]
     r0, r1 = _index_window(t_ref, v_lo, v_hi)
     ref_ds = funnel.downsample_min_max(t_ref[r0:r1], y_ref[r0:r1], buckets)
     pins = np.array([iv.worst_x for iv in summary.intervals], dtype=np.float64)
@@ -406,18 +489,25 @@ def prepare_plot(
     )
 
     label = row.tolerance_set
-    resolved = outcome.result.tolerance_sets[0].resolved
+    set_out = outcome.result.tolerance_sets[0]
+    resolved = set_out.resolved
+    # A pair names both columns on a line of their own (long names).
+    lead = f"{what}\n" if pair else f"{what}: "
     if row.verdict == "fail":
         headline = (
-            f"{column}: FAIL, {summary.points_outside} of {summary.points_compared} points "
+            f"{lead}FAIL, {summary.points_outside} of {summary.points_compared} points "
             f"outside the tube, {len(summary.intervals)} violation interval(s)"
         )
     else:
-        headline = f"{column}: PASS, all {summary.points_compared} points inside the tube"
+        headline = f"{lead}PASS, all {summary.points_compared} points inside the tube"
+    date_axis = outcome.datetime_axis
+    x_label = ref.time_column
+    if date_axis:
+        x_label += " (no time zone)" if outcome.time_zone == "none" else " (UTC)"
     data = PlotData(
         title=headline,
-        subtitle=tolerance_text(label, resolved),
-        x_label=ref.time_column,
+        subtitle=tolerance_text(label, resolved, set_out.time_tolerance, date_axis),
+        x_label=x_label,
         y_label=column,
         view=(v_lo, v_hi),
         ref_x=ref_ds.x,
@@ -432,6 +522,9 @@ def prepare_plot(
         marker_y=tst_ds.y[drawn_violating],
         regions=regions,
         buckets=buckets,
+        date_axis=date_axis,
+        legend_reference=f"reference: {column}" if pair else "reference",
+        legend_test=f"test: {tcol}" if pair else "test",
     )
     return PlotOutcome(compare=outcome, record=record, data=data)
 
@@ -502,6 +595,12 @@ def render(data: PlotData, fmt: Literal["svg", "png"], dpi: float = PREVIEW_DPI)
         lo, hi = data.view
         if hi > lo:
             ax.set_xlim(lo, hi)
+        if data.date_axis and hi > lo:
+            from matplotlib.ticker import FixedFormatter, FixedLocator
+
+            ticks, step = date_ticks(lo, hi)
+            ax.xaxis.set_major_locator(FixedLocator(ticks))
+            ax.xaxis.set_major_formatter(FixedFormatter(date_labels(ticks, step)))
         ax.set_xlabel(data.x_label)
         ax.set_ylabel(data.y_label)
         ax.set_title(f"{data.title}\n{data.subtitle}", loc="left", fontsize=9.5)
@@ -511,7 +610,7 @@ def render(data: PlotData, fmt: Literal["svg", "png"], dpi: float = PREVIEW_DPI)
             Line2D([], [], color=_TEST, linewidth=1.3),
             Patch(facecolor=_TUBE, alpha=0.35, edgecolor=_TUBE, linewidth=0.8),
         ]
-        labels = ["reference", "test", "tolerance tube"]
+        labels = [data.legend_reference, data.legend_test, "tolerance tube"]
         if data.regions or data.marker_x.shape[0]:
             handles.append(
                 (
@@ -521,8 +620,11 @@ def render(data: PlotData, fmt: Literal["svg", "png"], dpi: float = PREVIEW_DPI)
                 )
             )
             labels.append("outside the tube")
+        # Pair legends name both columns: two per row so long names fit.
+        pair_legend = data.legend_reference != "reference"
         ax.legend(
-            handles, labels, loc="upper center", bbox_to_anchor=(0.5, -0.13), ncol=len(labels),
+            handles, labels, loc="upper center", bbox_to_anchor=(0.5, -0.13),
+            ncol=2 if pair_legend else len(labels),
             frameon=False, handler_map={tuple: HandlerTuple(ndivide=None, pad=0.0)},
             handlelength=2.6,
         )

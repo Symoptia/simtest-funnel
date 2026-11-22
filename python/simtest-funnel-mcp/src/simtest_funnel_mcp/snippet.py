@@ -9,6 +9,7 @@ from pathlib import Path
 from simtest_funnel_mcp import reader
 from simtest_funnel_mcp.compare import CompareOutcome
 from simtest_funnel_mcp.models import COEFFICIENTS
+from simtest_funnel_mcp.timeaxis import format_iso
 
 #: Hard cap on the snippet size (characters). Cases that do not fit are
 #: replaced by a comment stating how many were left out.
@@ -37,14 +38,17 @@ import simtest.funnel as funnel
 DATA_ROOT = Path(os.environ.get("SIMTEST_FUNNEL_DATA_ROOT", Path.cwd()))
 {reference_line}
 {test_line}
+REFERENCE_HEADER_LINE = {reference_header_line!r}
+TEST_HEADER_LINE = {test_header_line!r}
 REFERENCE_TIME = {reference_time!r}
 TEST_TIME = {test_time!r}
-X_RANGE = funnel.Range(lo={lo}, hi={hi})
+{x_range_comment}X_RANGE = funnel.Range(lo={lo}, hi={hi})
 
 '''
 
 _CASES_HEAD = '''
-# (column, tolerance set, tolerances as given, expected status)
+# (row key, reference column, test column, tolerance set, tolerances as given,
+#  expected status)
 CASES = [
 '''
 
@@ -53,23 +57,30 @@ _FOOTER = '''\
 
 
 @functools.lru_cache(maxsize=None)
-def _columns(path: Path) -> dict:
-    return read_signal_columns(str(path))[1]
+def _columns(path: Path, header_line: int) -> dict:
+    return read_signal_columns(str(path), header_line).values
 
 
 @pytest.mark.parametrize(
-    ("column", "label", "tolerances", "expected"),
+    ("key", "reference_column", "test_column", "label", "tolerances", "expected"),
     CASES,
-    ids=[f"{c[0]}-{c[1]}" for c in CASES],
+    ids=[f"{c[0]}-{c[3]}" for c in CASES],
 )
-def test_funnel(column: str, label: str, tolerances: funnel.Tolerances, expected: int) -> None:
-    ref = _columns(REFERENCE)
-    tst = _columns(TEST)
+def test_funnel(
+    key: str,
+    reference_column: str,
+    test_column: str,
+    label: str,
+    tolerances: funnel.Tolerances,
+    expected: int,
+) -> None:
+    ref = _columns(REFERENCE, REFERENCE_HEADER_LINE)
+    tst = _columns(TEST, TEST_HEADER_LINE)
     result = funnel.compare(
         ref[REFERENCE_TIME],
-        ref[column],
+        ref[reference_column],
         tst[TEST_TIME],
-        tst[column],
+        tst[test_column],
         funnel.Options(tolerances=tolerances, x_range=X_RANGE),
     )
     assert result.status == expected, funnel.status_message(result.status)
@@ -117,14 +128,24 @@ def make_snippet(
     """
     res = outcome.result
     lo, hi = outcome.x_range
+    same_path = res.reference.path == res.test.path
+    comment = ""
+    if outcome.datetime_axis and (lo is not None or hi is not None):
+        iso = [format_iso(v, outcome.time_zone) or "unbounded" for v in (lo, hi)]
+        comment = f"# x_range in seconds since 1970-01-01 UTC: lo = {iso[0]}, hi = {iso[1]}\n"
     out = _HEADER.format(
         version=version,
         funnel_version=funnel_version,
         base=str(base),
         reference_line=_path_line("REFERENCE", Path(res.reference.path), base),
-        test_line=_path_line("TEST", Path(res.test.path), base),
+        test_line=(
+            "TEST = REFERENCE" if same_path else _path_line("TEST", Path(res.test.path), base)
+        ),
+        reference_header_line=res.reference.header_line or 1,
+        test_header_line=res.test.header_line or 1,
         reference_time=res.reference.time_column,
         test_time=res.test.time_column,
+        x_range_comment=comment,
         lo=_bound(lo, 'float("-inf")'),
         hi=_bound(hi, 'float("inf")'),
     )
@@ -140,8 +161,9 @@ def make_snippet(
             line = f"    #   {row.column} [{row.tolerance_set}]: {row.problem}\n"
             target = skipped
         else:
+            ref_col, test_col = rec.columns
             line = (
-                f"    ({row.column!r}, {row.tolerance_set!r}, "
+                f"    ({row.column!r}, {ref_col!r}, {test_col!r}, {row.tolerance_set!r}, "
                 f"funnel.Tolerances({_tolerance_args(rec.given)}), "
                 f"funnel.Status.{row.status_name}),\n"
             )

@@ -130,7 +130,17 @@ within the first 100 physical lines, such that:
 The hint is given when a candidate exists **and** either reading the
 file failed (too many fields, duplicate or empty header names, no data),
 or the read succeeded but the header used has a different field count
-than L, or the time column is unusable (no numeric or date-time cell).
+than L, or the time column has a problem cell (a non-numeric, empty or
+non-finite cell, or mixed time zones).
+
+*Changed during implementation:* the last condition originally read "the
+time column is unusable (no numeric or date-time cell)". An Open-Meteo
+file whose header row has exactly six fields reads with the metadata line
+as header, so the time column (`latitude`) holds one number (the metadata
+value) and 360 ISO cells: it has a numeric cell, so the original condition
+would not fire, and the field counts are equal. Any bad time cell is
+enough of a signal together with a preamble candidate; a plain file never
+has a candidate (its later lines contain numbers).
 Where it appears:
 
 - read failure: appended to the error of the failing call (all three
@@ -167,25 +177,33 @@ non-empty** cell matches
 YYYY-MM-DD[(T| )hh:mm[:ss[.f+]][Z|±hh[:mm]|±hhmm]]
 ```
 
-- Date-only cells (`2026-11-20`, midnight) are accepted: Open-Meteo
-  daily data uses them. **Flag:** the owner's list did not mention
-  date-only; drop it if unwanted.
+- Date-only cells (`2026-11-20`, midnight, zone-less) are accepted:
+  Open-Meteo daily data uses them. Confirmed by the owner, also in a
+  column that mixes dates and date-times. (One switch in `reader.py`,
+  `ACCEPT_DATE_ONLY`, makes the time part mandatory.)
 - Upper-case `T` and `Z` only; `.` as decimal mark; hour 00-23 (no
   `24:00`), no leap second `:60`; invalid dates (`2026-02-30`) make the
   column not a date-time column.
 - Empty cells do not prevent detection; they are counted as bad cells
   as today (the time column then has a problem).
 - A column where some non-empty cells match and others do not stays
-  numeric (non-numeric problem as today), and the problem text adds
-  "N of M cells are ISO 8601 date-times; first other value at line L"
-  without quoting sample values.
+  numeric (non-numeric problem as today, so its non-numeric count includes
+  the ISO cells), and the problem text adds "N of M non-empty cells are
+  ISO 8601 date-times (first other value at line L)" without quoting
+  sample values.
 - A column that mixes cells with and without offset is a time problem
   ("mixes timestamps with and without a time zone"); rows of such a file
   are errors, like a non-monotonic time column.
 
-Conversion is vectorised (regex groups via pandas `str.extract`,
-dates via `numpy.datetime64[D]`, integer arithmetic for seconds and
-offsets). To make an ISO file and its `unixtime` twin bit-identical, the
+Conversion is vectorised: validity via pandas `str.fullmatch`, the
+fixed-position fields (date, hour, minute, second) read from a NumPy
+code-point view of the cells, a regex only for the variable tail
+(fraction, zone) of the cells that have one, days from the civil date by
+integer arithmetic (Hinnant's `days_from_civil`, which also validates the
+day of the month), integer seconds and offsets. *Changed during
+implementation:* the planned `str.extract` over all groups plus
+`datetime64[D]` took 4x the numeric read on 1M rows (`str.extract` alone
+3 s); this form takes about 1.6-1.8x. To make an ISO file and its `unixtime` twin bit-identical, the
 float is produced by parsing the decimal string
 `"<integer epoch seconds>.<fraction digits>"` with the same numeric
 parser the numeric path uses, so `2026-11-20T00:00:00.25Z` and
@@ -205,11 +223,13 @@ At |t| ≈ 1.7e9 s an f64 has a spacing of 2^-22 s ≈ 0.24 µs.
   than a numeric epoch-seconds file today.
 - Step jitter: consecutive steps of sub-second data differ by up to
   ~0.5 µs, so the uniform-sampling test (`UNIFORM_RTOL = 1e-6` of the
-  median step) would call 0.1 s data non-uniform. For date-time axes
-  the tolerance becomes `max(1e-6 * median step, 4 * spacing(max|t|))`
-  (design choice, not yet confirmed by the owner; numeric axes keep
-  today's test so existing describe results do not change; the same fix
-  could later apply to numeric epoch files).
+  median step) would call 0.1 s data non-uniform. The tolerance becomes
+  `max(1e-6 * median step, 4 * spacing(max|t|))` on **every** time axis,
+  numeric and date-time (decided by the owner): a numeric epoch-seconds
+  file and its ISO twin are described identically. For small times (e.g.
+  simulation time from 0) `4 * spacing` is far below `1e-6 * median step`,
+  so they are reported exactly as before; only large numeric times (e.g.
+  sub-second epoch data, previously non-uniform) change.
 - The 1e-10 tube floor: with zero x tolerance the library floors the
   half-width to 1e-10 s, below the f64 spacing at 1.7e9, so
   `t ± half_x == t` exactly: the x tube has zero width and the
@@ -354,17 +374,27 @@ results.
 - **Plot**: `run_compare` is called with one pair; legend entries
   "reference: <ref column>" / "test: <test column>", title starts with
   both columns when they differ
-  (`temperature_2m_previous_day1 (°C) vs temperature_2m (°C): FAIL, ...`;
-  one name as today when they are equal), y label the reference column. A glob in `test_column` gets the same
-  "one exact column name" error as `column`.
+  (`temperature_2m_previous_day1 (°C) vs temperature_2m (°C)`, then the
+  verdict line; one name as today when they are equal), y label the
+  reference column. A glob in `test_column` gets the same
+  "one exact column name" error as `column`. *Changed during
+  implementation (after looking at the rendered preview):* with Open-Meteo
+  names the one-line title ran off the figure and the four-column legend
+  squeezed the axes, so for pairs the column names get a title line of
+  their own and the legend has two columns. Same-name plots are unchanged.
 
 ### 11. Plot date axis (design choice, not yet confirmed by the owner)
 
 x data stay epoch seconds (so the "drawn tube agrees with the
 comparison" checks are unchanged); a tick locator picks nice UTC-aligned
-steps (1, 2, 5, 10, 15, 30 min; 1, 2, 3, 6, 12 h; 1, 2, 7 days) and a
-formatter prints `MM-DD hh:mm` (`YYYY-MM-DD` on the first tick and at
-year changes). The x label is `<time column> (UTC)` for offset axes and
+steps (1, 2, 5, 10, 15, 30 min; 1, 2, 3, 6, 12 h; 1, 2, 7 days; also
+sub-second and second steps for short windows and 14 days to a year for
+long ones) and a formatter prints `MM-DD hh:mm` (`YYYY-MM-DD hh:mm` on the
+first tick and at year changes; `MM-DD` alone for day steps; `hh:mm:ss[.f]`
+for steps under a minute). At most 6 ticks with time-of-day labels and 10
+with day labels, so 15 days of hourly data get a tick every 2 days
+(implementation detail found by looking at the preview: a single limit of
+6 gave only 3 ticks, one per week). The x label is `<time column> (UTC)` for offset axes and
 `<time column> (no time zone)` for zone-less axes. No matplotlib date
 units (they convert to float days and would change the drawn values).
 Output stays deterministic.
@@ -375,10 +405,31 @@ Output stays deterministic.
 date-time conversion, and takes over the time-column rule from
 `csvio.choose_time_column` so the snippet converts the same column. Its
 main function returns a small named tuple (header, values, time column,
-time kind, zone kind, header line used) instead of a 2-tuple; `csvio`
-keeps the server-side concerns (hint text, `SignalFile`). The preamble
-hint lives in `csvio`, not in the embedded reader, to keep snippets
-small. Snippet growth is about 60 lines.
+time column rule, time kind, zone kind, header line used, plus the
+counts behind the partly-ISO problem and the most fraction digits)
+instead of a 2-tuple; `csvio` keeps the server-side concerns (hint text,
+`SignalFile`). The preamble hint lives in `csvio`, not in the embedded
+reader, to keep snippets small. The reader grew from about 4.8 kB to
+11.5 kB (about 125 lines), so every snippet is about 7 kB larger than
+before; the snippet constants `REFERENCE_HEADER_LINE` / `TEST_HEADER_LINE`
+hold the physical line of the header the server used (equivalent to the
+argument, and also right when the argument pointed at blank or comment
+lines before the header).
+
+### 13. Smaller implementation choices
+
+- Numeric strings in `x_range` (`"0.5"`) are still read as numbers, as
+  before the bounds accepted strings; a string that is neither a finite
+  number nor an ISO 8601 date-time is a validation error (so `"-inf"`
+  still fails).
+- A preamble hint for the test file names `test_header_line`; the
+  time-axis mismatch error (which a test file read without its header line
+  usually causes) carries the hints of both files.
+- The "no x tolerance" note says "seconds on this date-time axis, e.g.
+  atolx = 10800 for 3 h" instead of "time units" on date-time axes.
+- Duplicate header names are listed in the error (`duplicated: [...]`).
+- The `describe_signals` text shows the header line only when it is not 1,
+  so numeric files render exactly as before.
 
 ## Risks / Trade-offs
 

@@ -93,7 +93,8 @@ def test_run_compare_returns_finished_rows_on_timeout(
     assert any("time limit of 0.5 s reached: 1 of 2 comparisons" in n for n in res.notes)
     # The snippet covers the completed row only and says so.
     snippet = make_snippet(outcome, "test", funnel.version(), Path.cwd())
-    assert "('a', 'wide'" in snippet
+    # Case tuples: (row key, reference column, test column, tolerance set, ...).
+    assert "('a', 'a', 'a', 'wide'" in snippet
     assert "('b'" not in snippet
     assert "1 comparison(s) not completed" in snippet
 

@@ -43,9 +43,10 @@ ISO 8601 date-time column, contains empty cells or is not non-decreasing.
 
 #### Scenario: Partly date-time time column
 - **WHEN** 98 cells of the time column are ISO 8601 date-times and 2 are not
-- **THEN** the time column is reported as having 2 non-numeric values, the
-  problem text says that 98 of 100 cells are ISO 8601 date-times and gives the
-  line of the first other value, and no sample value is quoted
+- **THEN** the time column is reported as non-numeric, as before date-time
+  columns existed, the problem text says that 98 of 100 non-empty cells are ISO
+  8601 date-times and gives the line of the first other value, and no sample
+  value is quoted
 
 ### Requirement: Column selection
 
@@ -108,8 +109,9 @@ file's line count. The header line SHALL NOT be detected automatically.
 ### Requirement: Preamble hint
 
 When reading a file fails, or its header has a different field count than a
-later line that looks like a header, or its time column holds no usable time,
-and the top of the file looks like a preamble (a blank line followed by a
+later line that looks like a header, or its time column has non-numeric, empty
+or non-finite cells or mixed time zones, and the top of the file looks like a
+preamble (a blank line followed by a
 non-data line whose next line looks like data with the same field count), the
 error or a problem text SHALL say so and suggest that line as the header line.
 The hint SHALL NOT change what is read.
@@ -124,6 +126,12 @@ The hint SHALL NOT change what is read.
 - **WHEN** a plain CSV file has its header on line 1, a blank line and then
   numeric data
 - **THEN** no preamble hint is given
+
+#### Scenario: Read fails on the metadata header
+- **WHEN** an Open-Meteo file whose header row has more fields than the
+  metadata line is read without a header line
+- **THEN** the call fails with the error naming the too-wide data row, followed
+  by the preamble hint suggesting `header_line=4`
 
 ### Requirement: describe_signals reports the header line and time axis
 
@@ -166,10 +174,45 @@ its copy with epoch-second times SHALL give identical results.
 - **THEN** each is read as a date-time column, the last two as
   `1795132800.25` and `1795132800`
 
+#### Scenario: Date-only cells
+- **WHEN** a time column contains `2026-11-20` and `2026-11-21`
+- **THEN** it is read as a date-time column without time zone, with the cells
+  at midnight (`1795132800` and `1795219200`)
+
+#### Scenario: Dates mixed with date-times
+- **WHEN** a time column contains `2026-11-20`, `2026-11-20T12:00` and
+  `2026-11-21`
+- **THEN** it is read as one date-time column without time zone
+
+#### Scenario: Not ISO 8601
+- **WHEN** a time column contains `2026-02-30T00:00` or `2026-11-20T24:00`
+  next to valid date-times
+- **THEN** it is not read as a date-time column and the time column problem is
+  reported
+
 #### Scenario: Three hours in x
 - **WHEN** an agent compares two date-time files with `atolx = 10800` and
   `atoly = 2`
 - **THEN** a test curve shifted by up to three hours stays inside the tube in x
+
+### Requirement: Uniform sampling allows for float rounding of large times
+
+`describe_signals` SHALL call the sampling uniform when no step is negative
+and the spread between the largest and smallest step is at most the larger of
+`1e-6` times the median step and four float64 spacings of the largest absolute
+time, for numeric and date-time time columns alike.
+
+#### Scenario: Sub-second epoch seconds
+- **WHEN** a numeric time column holds epoch seconds `1795132800.0`,
+  `1795132800.1`, ... in steps of 0.1 s
+- **THEN** the sampling is reported uniform with median step 0.1, and its ISO
+  twin with times `2026-11-20T00:00:00.0`, ... is described with the same
+  numbers
+
+#### Scenario: Small time values unchanged
+- **WHEN** a time column runs from 0 in steps that alternate between
+  `1 + 2e-6` and `1 - 2e-6`
+- **THEN** the sampling is reported non-uniform, as before
 
 ### Requirement: Time zones of date-time columns
 
@@ -194,6 +237,11 @@ reported as a time column problem.
 - **WHEN** the reference time column is numeric and the test time column is a
   date-time column
 - **THEN** the call fails with an error naming both kinds
+
+#### Scenario: Mixed offsets in one column
+- **WHEN** a time column holds `2026-11-20T00:00` and `2026-11-20T01:00Z`
+- **THEN** describe reports that it mixes timestamps with and without a time
+  zone, and its compare rows have verdict `error`
 
 ### Requirement: Relative-to-time x tolerance refused on date-time axes
 

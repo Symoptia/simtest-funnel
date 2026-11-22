@@ -7,6 +7,7 @@ results, and bounds the output size.
 
 from __future__ import annotations
 
+import difflib
 import math
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from simtest_funnel_mcp.models import (
     X_COEFFICIENTS,
     Y_COEFFICIENTS,
     Coefficients,
+    ColumnPair,
     CompareResult,
     FileInfo,
     Interval,
@@ -30,12 +32,14 @@ from simtest_funnel_mcp.models import (
     Row,
     ToleranceSet,
     ToleranceSetOut,
+    TimeTolerance,
     ToleranceSpec,
     Totals,
     Worst,
     XRange,
 )
 from simtest_funnel_mcp.selection import expand, is_pattern
+from simtest_funnel_mcp.timeaxis import format_duration, format_iso, parse_iso_bound
 
 #: Default cap on intervals listed per failing row.
 DEFAULT_MAX_INTERVALS = 5
@@ -107,6 +111,26 @@ class RowRecord:
     #: The library's comparison and its full violation summary (only when
     #: ``from_library``); used by ``plot_signals`` to draw the same result.
     library: tuple[funnel.CompareResult, funnel.ViolationSummary] | None = None
+    #: Columns compared (``None``: the row key on both sides).
+    reference_column: str | None = None
+    test_column: str | None = None
+
+    @property
+    def columns(self) -> tuple[str, str]:
+        """``(reference column, test column)`` of the row."""
+        key = self.row.column
+        return (self.reference_column or key, self.test_column or key)
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One compared column: row key, reference column, test column."""
+
+    key: str
+    reference: str
+    test: str
+    #: True for an explicit pair (rows then carry both column names).
+    pair: bool = False
 
 
 @dataclass
@@ -115,8 +139,11 @@ class CompareOutcome:
     #: Completed comparisons only (rows), in result order.
     records: list[RowRecord] = field(default_factory=list)
     x_range: tuple[float | None, float | None] = (None, None)
-    #: (column, tolerance set) pairs stopped by the time limit, in order.
+    #: (row key, tolerance set) pairs stopped by the time limit, in order.
     not_completed: list[tuple[str, str]] = field(default_factory=list)
+    #: Whether the time axis is a date-time axis, and its zone kind.
+    datetime_axis: bool = False
+    time_zone: str | None = None
 
 
 def _status_name(code: int) -> str:
@@ -190,7 +217,7 @@ def compose_override(base: dict[str, float], override: ToleranceSpec | None) -> 
     return out
 
 
-def no_x_tolerance_hint(records: list[RowRecord]) -> str | None:
+def no_x_tolerance_hint(records: list[RowRecord], datetime_axis: bool = False) -> str | None:
     """A note for failed rows compared without any x (time) tolerance.
 
     Only rows the library judged FAIL and for which no x coefficient was
@@ -210,7 +237,8 @@ def no_x_tolerance_hint(records: list[RowRecord]) -> str | None:
         f"{count} failing row(s) had no x (time) tolerance: none was given and the "
         "default is 0. If the test may be shifted or delayed in time against the "
         "reference (e.g. at steep edges), consider an x tolerance such as atolx "
-        "(time units)"
+        + ("(seconds on this date-time axis, e.g. atolx = 10800 for 3 h)" if datetime_axis
+           else "(time units)")
     )
 
 
@@ -226,14 +254,142 @@ def _labels(sets: list[ToleranceSet]) -> list[str]:
 
 def _file_info(sf: SignalFile) -> FileInfo:
     t = sf.time[np.isfinite(sf.time)]
-    return FileInfo(
+    info = FileInfo(
         path=str(sf.path),
+        header_line=sf.header_line,
         time_column=sf.time_column,
         time_column_rule="named time" if sf.time_column_rule == "named time" else "first column",
+        time_kind=sf.time_kind,
         row_count=sf.row_count,
         time_start=float(t[0]) if t.shape[0] else None,
         time_end=float(t[-1]) if t.shape[0] else None,
     )
+    if sf.is_datetime:
+        info.time_zone = sf.time_zone
+        info.time_start_iso = format_iso(info.time_start, sf.time_zone)
+        info.time_end_iso = format_iso(info.time_end, sf.time_zone)
+    return info
+
+
+def _axis_kind(sf: SignalFile) -> str:
+    if not sf.is_datetime:
+        return "numeric"
+    if sf.time_zone == "offset":
+        return "ISO 8601 date-times with time zone offsets"
+    if sf.time_zone == "none":
+        return "ISO 8601 date-times without time zone (read as UTC)"
+    return "ISO 8601 date-times, some with and some without time zone"
+
+
+def check_time_axes(ref: SignalFile, tst: SignalFile) -> None:
+    """Fail the call when the two time axes cannot be compared."""
+    zones = {ref.time_zone, tst.time_zone}
+    if ref.time_kind == tst.time_kind and not (ref.is_datetime and zones == {"offset", "none"}):
+        return
+    if ref.time_kind != tst.time_kind:
+        fix = (
+            "write both time columns the same way: both as numbers (e.g. seconds since "
+            "1970-01-01 UTC) or both as ISO 8601 date-times"
+        )
+    else:
+        fix = (
+            "one time column has a time zone and the other has none; write both with "
+            "offsets (e.g. 'Z' for UTC), or both without"
+        )
+    hints = "".join(f" {h}" for sf in (ref, tst) for h in sf.hints)
+    raise CompareArgumentError(
+        f"the time axes do not match: reference {ref.path} time column "
+        f"{ref.time_column!r} is {_axis_kind(ref)}, test {tst.path} time column "
+        f"{tst.time_column!r} is {_axis_kind(tst)}; {fix}.{hints}"
+    )
+
+
+def resolve_bounds(
+    x_range: XRange | None, ref: SignalFile
+) -> tuple[float | None, float | None]:
+    """x-range bounds as numbers; ISO strings only on a date-time axis, with
+    a time zone exactly when the axis has one."""
+    if x_range is None:
+        return None, None
+    out: list[float | None] = []
+    for name, v in (("lo", x_range.lo), ("hi", x_range.hi)):
+        if not isinstance(v, str):
+            out.append(None if v is None else float(v))
+            continue
+        if not ref.is_datetime:
+            raise CompareArgumentError(
+                f"x_range {name} {v!r} is a date-time, but the time columns are numeric; "
+                "give a number"
+            )
+        try:
+            value, zoned = parse_iso_bound(v)
+        except ValueError as exc:
+            raise CompareArgumentError(f"x_range {name}: {exc}") from exc
+        if ref.time_zone == "offset" and not zoned:
+            raise CompareArgumentError(
+                f"x_range {name} {v!r} has no time zone, but the time columns have offsets; "
+                "add 'Z' or an offset, e.g. '2026-11-05T00:00Z'"
+            )
+        if ref.time_zone == "none" and zoned:
+            raise CompareArgumentError(
+                f"x_range {name} {v!r} has a time zone, but the time columns have none "
+                "(read as UTC); drop the 'Z' or offset"
+            )
+        out.append(value)
+    return out[0], out[1]
+
+
+def check_ltolx(
+    datetime_axis: bool,
+    sets: list[ToleranceSet],
+    labels: list[str],
+    overrides: dict[str, ToleranceSpec],
+) -> None:
+    """Refuse a non-zero ltolx on a date-time axis."""
+    if not datetime_axis:
+        return
+    where = [
+        (f"tolerance set {label!r}", spec.ltolx)
+        for spec, label in zip(sets, labels, strict=True)
+    ] + [(f"column_tolerances[{k!r}]", spec.ltolx) for k, spec in overrides.items()]
+    for name, ltolx in where:
+        if ltolx:
+            raise CompareArgumentError(
+                f"ltolx = {ltolx:g} in {name}: on a date-time axis times are seconds since "
+                "1970-01-01 (about 1.8e9), and ltolx scales with that absolute time, so it "
+                "is meaningless. Give atolx in seconds instead (e.g. atolx = 10800 for "
+                "plus or minus 3 hours); ltolx = 0 is accepted"
+            )
+
+
+def time_tolerance(c: Coefficients, ref_span: float | None) -> TimeTolerance | None:
+    """The resolved x half-width ``max(atolx, rtolx * span)`` if non-zero."""
+    seconds = max(c.atolx, c.rtolx * (ref_span or 0.0))
+    if not seconds > 0:
+        return None
+    duration = format_duration(seconds)
+    assert duration is not None
+    return TimeTolerance(seconds=seconds, duration=duration)
+
+
+def _reference_span(sf: SignalFile, lo: float | None, hi: float | None) -> float | None:
+    """max - min of the reference time within ``[lo, hi]``."""
+    t = sf.time[np.isfinite(sf.time)]
+    if lo is not None:
+        t = t[t >= lo]
+    if hi is not None:
+        t = t[t <= hi]
+    return float(np.max(t) - np.min(t)) if t.shape[0] else None
+
+
+def add_iso(row: Row, zone: str | None) -> None:
+    """Fill the ISO siblings of a row's times (date-time axes)."""
+    if row.worst is not None:
+        row.worst.x_iso = format_iso(row.worst.x, zone)
+    for iv in row.intervals or []:
+        iv.start_x_iso = format_iso(iv.start_x, zone)
+        iv.end_x_iso = format_iso(iv.end_x, zone)
+        iv.worst_x_iso = format_iso(iv.worst_x, zone)
 
 
 def _span(sf: SignalFile) -> tuple[float, float] | None:
@@ -263,11 +419,21 @@ def _range_json(window: tuple[float, float]) -> str:
     return f'{{"lo": {window[0]!r}, "hi": {window[1]!r}}}'
 
 
+def _times(span: tuple[float, float], zone: str | None, datetime_axis: bool) -> str:
+    """``[a, b]``, plus the ISO form on a date-time axis."""
+    text = f"[{span[0]!r}, {span[1]!r}]"
+    if datetime_axis:
+        text += f" ({format_iso(span[0], zone)} .. {format_iso(span[1], zone)})"
+    return text
+
+
 def _coverage_problems(
     ref_span: tuple[float, float] | None,
     tst_span: tuple[float, float] | None,
     lo: float | None,
     hi: float | None,
+    zone: str | None = None,
+    datetime_axis: bool = False,
 ) -> dict[int, str]:
     """Problem texts for the library's MISSING_* statuses, keyed by code.
 
@@ -279,8 +445,8 @@ def _coverage_problems(
     window = _overlap(ref_span, tst_span, lo, hi)
     if not window[0] < window[1]:
         return {}
-    ref_txt = f"reference covers time [{ref_span[0]!r}, {ref_span[1]!r}]"
-    tst_txt = f"test covers time [{tst_span[0]!r}, {tst_span[1]!r}]"
+    ref_txt = f"reference covers time {_times(ref_span, zone, datetime_axis)}"
+    tst_txt = f"test covers time {_times(tst_span, zone, datetime_axis)}"
     within = "" if lo is None and hi is None else " within the requested x_range"
     fix = f"; x_range {_range_json(window)} compares the overlap"
     return {
@@ -315,6 +481,58 @@ def _column_problem(name: str, ref: SignalFile, tst: SignalFile) -> tuple[int | 
             "non-numeric, empty or non-finite values (" + ", ".join(parts) + "); not compared"
         )
     return None
+
+
+def _missing(name: str, side: str, sf: SignalFile) -> str:
+    text = f"column {name!r} absent from the {side} file"
+    close = difflib.get_close_matches(name, list(sf.signal_columns), n=3)
+    if close:
+        text += "; did you mean " + " or ".join(repr(c) for c in close) + "?"
+    if is_pattern(name):
+        text += "; pairs take exact names, use columns for patterns"
+    return text
+
+
+def _pair_problem(e: Entry, ref: SignalFile, tst: SignalFile) -> tuple[int | None, str] | None:
+    """Server-detected problem of a column pair (as :func:`_column_problem`)."""
+    if e.reference == ref.time_column:
+        return None, f"{e.reference!r} is the time column of the reference file"
+    if e.test == tst.time_column:
+        return None, f"{e.test!r} is the time column of the test file"
+    in_ref = e.reference in ref.signal_columns
+    in_tst = e.test in tst.signal_columns
+    if not in_ref and not in_tst:
+        return int(funnel.Status.MISSING_REFERENCE), (
+            _missing(e.reference, "reference", ref) + "; " + _missing(e.test, "test", tst)
+        )
+    if not in_tst:
+        return int(funnel.Status.MISSING_TEST), _missing(e.test, "test", tst)
+    if not in_ref:
+        return int(funnel.Status.MISSING_REFERENCE), _missing(e.reference, "reference", ref)
+    parts = []
+    if ref.bad_cells[e.reference]:
+        parts.append(f"{ref.bad_cells[e.reference]} in the reference column")
+    if tst.bad_cells[e.test]:
+        parts.append(f"{tst.bad_cells[e.test]} in the test column")
+    if parts:
+        return None, (
+            "non-numeric, empty or non-finite values (" + ", ".join(parts) + "); not compared"
+        )
+    return None
+
+
+def _pair_entries(pairs: list[ColumnPair]) -> list[Entry]:
+    """Entries of explicit pairs; row keys must be unique."""
+    entries = [Entry(p.key, p.reference, p.test, pair=True) for p in pairs]
+    seen: set[str] = set()
+    for e in entries:
+        if e.key in seen:
+            raise CompareArgumentError(
+                f"pairs: row key {e.key!r} is used by more than one pair (a pair's key is "
+                "its label, else its test column); give the pairs distinct labels"
+            )
+        seen.add(e.key)
+    return entries
 
 
 def _library_row(
@@ -381,6 +599,7 @@ def run_compare(
     tst: SignalFile,
     *,
     columns: list[str] | None = None,
+    pairs: list[ColumnPair] | None = None,
     tolerances: list[ToleranceSet] | None = None,
     column_tolerances: dict[str, ToleranceSpec] | None = None,
     x_range: XRange | None = None,
@@ -399,18 +618,31 @@ def run_compare(
         raise CompareArgumentError("max_intervals must be >= 0")
     if max_rows < 1:
         raise CompareArgumentError("max_rows must be >= 1")
+    if pairs is not None and columns is not None:
+        raise CompareArgumentError(
+            "pairs and columns cannot be combined: use columns for same-name columns "
+            "(names or patterns), pairs for differently named reference/test columns"
+        )
+    if pairs is not None and not pairs:
+        raise CompareArgumentError("pairs is empty; omit it or give at least one pair")
     sets = list(tolerances) if tolerances else [ToleranceSet(label=DEFAULT_SET_LABEL)]
     labels = _labels(sets)
     overrides = dict(column_tolerances or {})
-    lo = x_range.lo if x_range is not None else None
-    hi = x_range.hi if x_range is not None else None
+    check_time_axes(ref, tst)
+    dt_axis = ref.is_datetime
+    zone = ref.time_zone if dt_axis else None
+    check_ltolx(dt_axis, sets, labels, overrides)
+    lo, hi = resolve_bounds(x_range, ref)
     if lo is not None and hi is not None and lo > hi:
         raise CompareArgumentError(f"x_range lo ({lo}) is greater than hi ({hi})")
 
     notes: list[str] = []
     only_ref: list[str] | None = None
     only_tst: list[str] | None = None
-    if columns is None:
+    entries: list[Entry]
+    if pairs is not None:
+        entries = _pair_entries(pairs)
+    elif columns is None:
         selected = [c for c in ref.signal_columns if c in tst.signal_columns]
         only_ref = [c for c in ref.signal_columns if c not in tst.signal_columns]
         only_tst = [c for c in tst.signal_columns if c not in ref.signal_columns]
@@ -426,34 +658,59 @@ def run_compare(
         for entry in unmatched:
             if is_pattern(entry):
                 notes.append(f"columns pattern {entry!r} matched no signal column")
+    if pairs is None:
+        entries = [Entry(c, c, c) for c in selected]
 
+    keys = [e.key for e in entries]
     for name in overrides:
-        if name not in selected:
+        if name not in keys:
             notes.append(f"override for column {name!r} ignored: column not compared")
     for label, sf in (("reference", ref), ("test", tst)):
+        if label == "test" and tst is ref:
+            continue
+        for h in sf.hints:
+            notes.append(f"{label} file: {h}")
         for p in sf.time_problems():
             notes.append(f"{label} file: {p}")
 
-    problems = {c: _column_problem(c, ref, tst) for c in selected}
-    valid = [c for c in selected if problems[c] is None]
+    problems = {
+        e.key: _pair_problem(e, ref, tst) if e.pair else _column_problem(e.key, ref, tst)
+        for e in entries
+    }
+    mixed = [name for name, sf in (("reference", ref), ("test", tst)) if sf.time_zone == "mixed"]
+    if mixed:
+        text = (
+            f"time column of the {' and '.join(mixed)} file mixes timestamps with and "
+            "without a time zone; not compared"
+        )
+        problems = {k: v if v is not None else (None, text) for k, v in problems.items()}
+    valid = [e.key for e in entries if problems[e.key] is None]
     t_ref = np.asarray(ref.time, dtype=np.float64)
     t_tst = np.asarray(tst.time, dtype=np.float64)
     ref_span, tst_span = _span(ref), _span(tst)
-    coverage = _coverage_problems(ref_span, tst_span, lo, hi)
+    coverage = _coverage_problems(ref_span, tst_span, lo, hi, zone, dt_axis)
+    x_span = _reference_span(ref, lo, hi) if dt_axis else None
 
     set_out: list[ToleranceSetOut] = []
     records: list[RowRecord] = []
     not_completed: list[tuple[str, str]] = []
+    pending: list[tuple[Entry, str]] = []
     stopped = False
     for spec, label in zip(sets, labels, strict=True):
         base = spec.given()
+        resolved = resolve_with_library(base)
         set_out.append(
-            ToleranceSetOut(label=label, given=base, resolved=resolve_with_library(base))
+            ToleranceSetOut(
+                label=label, given=base, resolved=resolved,
+                time_tolerance=time_tolerance(resolved, x_span) if dt_axis else None,
+            )
         )
         default_opts = make_options(base, lo, hi)
         per_col_given = {c: compose_override(base, overrides.get(c)) for c in valid}
         per_col_opts = {c: make_options(per_col_given[c], lo, hi) for c in valid if c in overrides}
-        for c in selected:
+        for e in entries:
+            c = e.key
+            pair_cols = (e.reference, e.test) if e.pair else (None, None)
             problem = problems[c]
             if problem is not None:
                 code, text = problem
@@ -461,6 +718,8 @@ def run_compare(
                     RowRecord(
                         row=Row(
                             column=c,
+                            reference_column=pair_cols[0],
+                            test_column=pair_cols[1],
                             tolerance_set=label,
                             verdict="error",
                             status=code,
@@ -469,19 +728,22 @@ def run_compare(
                         ),
                         given=compose_override(base, overrides.get(c)),
                         from_library=False,
+                        reference_column=e.reference,
+                        test_column=e.test,
                     )
                 )
                 continue
             if stopped:
                 not_completed.append((c, label))
+                pending.append((e, label))
                 continue
             opts = per_col_opts.get(c, default_opts)
             try:
                 res = funnel.compare(
                     t_ref,
-                    np.asarray(ref.values[c], dtype=np.float64),
+                    np.asarray(ref.values[e.reference], dtype=np.float64),
                     t_tst,
-                    np.asarray(tst.values[c], dtype=np.float64),
+                    np.asarray(tst.values[e.test], dtype=np.float64),
                     opts,
                     timeout=None if limit is None else limit.remaining(),
                     cancel=None if limit is None else limit.cancel,
@@ -489,6 +751,7 @@ def run_compare(
             except funnel.ComparisonTimeout:
                 stopped = True
                 not_completed.append((c, label))
+                pending.append((e, label))
                 continue
             code = int(res.status)
             summary = funnel.summarize(res, t_ref, opts)
@@ -496,19 +759,27 @@ def run_compare(
                 c, label, res, summary, c in overrides, max_intervals,
                 coverage.get(code),
             )
+            row.reference_column, row.test_column = pair_cols
+            if dt_axis:
+                add_iso(row, zone)
+                override = overrides.get(c)
+                if override is not None and any(k in override.given() for k in X_COEFFICIENTS):
+                    row.time_tolerance = time_tolerance(_coefficients(summary.tolerances), x_span)
             records.append(
                 RowRecord(
                     row=row,
                     given=per_col_given[c],
                     from_library=True,
                     library=(res, summary),
+                    reference_column=e.reference,
+                    test_column=e.test,
                 )
             )
 
     if ref_span is not None and tst_span is not None:
         spans = (
-            f"reference time spans [{ref_span[0]!r}, {ref_span[1]!r}], "
-            f"test time spans [{tst_span[0]!r}, {tst_span[1]!r}]"
+            f"reference time spans {_times(ref_span, zone, dt_axis)}, "
+            f"test time spans {_times(tst_span, zone, dt_axis)}"
         )
         if ref_span[1] < tst_span[0] or tst_span[1] < ref_span[0]:
             notes.append(f"time ranges do not overlap: {spans}")
@@ -519,7 +790,7 @@ def run_compare(
                 "to compare only the overlap"
             )
 
-    hint = no_x_tolerance_hint(records)
+    hint = no_x_tolerance_hint(records, dt_axis)
     if hint is not None:
         notes.append(hint)
 
@@ -534,7 +805,13 @@ def run_compare(
             "fewer columns or a narrower x_range"
         )
         pending_out = [
-            NotCompleted(column=c, tolerance_set=label) for c, label in not_completed[:max_rows]
+            NotCompleted(
+                column=e.key,
+                tolerance_set=label,
+                reference_column=e.reference if e.pair else None,
+                test_column=e.test if e.pair else None,
+            )
+            for e, label in pending[:max_rows]
         ]
         pending_omitted = max(0, len(not_completed) - max_rows) or None
 
@@ -558,7 +835,12 @@ def run_compare(
     result = CompareResult(
         reference=_file_info(ref),
         test=_file_info(tst),
-        x_range=RangeOut(lo=lo, hi=hi),
+        x_range=RangeOut(
+            lo=lo,
+            hi=hi,
+            lo_iso=format_iso(lo, zone) if dt_axis else None,
+            hi_iso=format_iso(hi, zone) if dt_axis else None,
+        ),
         tolerance_sets=set_out,
         totals=totals,
         rows=[r.row for r in shown],
@@ -573,5 +855,10 @@ def run_compare(
         notes=notes,
     )
     return CompareOutcome(
-        result=result, records=ordered, x_range=(lo, hi), not_completed=not_completed
+        result=result,
+        records=ordered,
+        x_range=(lo, hi),
+        not_completed=not_completed,
+        datetime_axis=dt_axis,
+        time_zone=zone,
     )

@@ -43,6 +43,7 @@ from simtest_funnel_mcp.compare import (
 from simtest_funnel_mcp.csvio import SignalFile, SignalFileError, load_csv
 from simtest_funnel_mcp.describe import DEFAULT_MAX_COLUMNS, describe
 from simtest_funnel_mcp.models import (
+    ColumnPair,
     CompareResult,
     DescribeResult,
     DrawnPoints,
@@ -70,6 +71,7 @@ from simtest_funnel_mcp.render import (
     time_digits,
 )
 from simtest_funnel_mcp.snippet import make_snippet
+from simtest_funnel_mcp.timeaxis import format_iso
 
 try:
     import fcntl
@@ -80,8 +82,14 @@ SERVER_NAME = "simtest-funnel"
 
 INSTRUCTIONS = """\
 Funnel (tolerance-tube) comparison of signals stored in local CSV files
-(comma-separated, header row, '#' comment lines, one shared time column).
-The server reads the files itself; never paste sample values into a call.
+(comma-separated, header row, '#' comment lines, one shared time column,
+numeric or ISO 8601 date-times). The server reads the files itself; never
+paste sample values into a call. If a file starts with a preamble (metadata
+lines before the real header, as in Open-Meteo CSV), pass header_line; errors
+and describe_signals problems suggest the likely value. Reference and test
+may be differently named columns of one file: compare_signals 'pairs' (no
+test_path needed), plot_signals 'test_column'. On a date-time time axis,
+times and x tolerances are seconds ("3 hours" = atolx 10800).
 Typical flow: describe_signals on the reference to see columns, time span,
 sampling and value ranges; choose tolerances (there is no time tolerance
 unless you give one, e.g. atolx); compare_signals; plot_signals to look at
@@ -101,15 +109,30 @@ CSV_HELP = (
     "CSV dialect: comma-separated, one header row, lines whose first non-blank character "
     "is '#' ignored ('#' elsewhere is data); a data row with more fields than the header "
     "is an error. "
+    "HEADER LINE: header_line (1-based physical file line, default 1) skips the lines "
+    "before it unread; the header is the first non-blank, non-comment line at or after "
+    "it. It is never detected automatically, but when a read fails or looks wrong and the "
+    "file seems to start with a preamble (a blank line, then a line that looks like a "
+    "header row), the error or a problem says so and suggests the header_line to pass. "
     "Time column: the first column named 'time' (case-insensitive), otherwise the first "
-    "column; the choice is echoed back."
+    "column; the choice is echoed back. It may be numeric or ISO 8601 date-times "
+    "(YYYY-MM-DD, optionally T or space and hh:mm, optional seconds and fraction, optional "
+    "Z or offset such as +01:00; detected when every non-empty cell is one). DATE-TIME "
+    "AXIS: times become seconds since 1970-01-01 UTC, so x tolerances and numeric x_range "
+    "bounds are in seconds; a timestamp without offset is read as UTC (describe_signals "
+    "flags it as having no time zone); reference and test must both be numeric, both "
+    "without time zone or both with offsets. Results echo times as numbers and as ISO "
+    "8601 strings (*_iso fields)."
 )
 
 DESCRIBE_DESCRIPTION = f"""\
-Describe a local CSV signal file without returning sample values: time column, row
-count, time start/end/span, sampling (uniform or not; min/median/max step), and for
+Describe a local CSV signal file without returning sample values: header line used,
+time column and its kind (numeric or datetime, with time zone or not), row count, time
+start/end/span (on a date-time axis also as ISO 8601 strings and durations), sampling
+(uniform or not; min/median/max step), and for
 every signal column its min, max and range, plus data problems (non-numeric or
-empty cells, time column not non-decreasing). Use it to pick columns and sensible
+empty cells, time column not non-decreasing, no time zone, preamble hints with the
+header_line to pass). Use it to pick columns and sensible
 tolerances before compare_signals. At most max_columns columns (default
 {DEFAULT_MAX_COLUMNS}) and as many problems are listed; the result states the totals and
 how many were omitted. 'columns' filters by exact name or glob pattern ('*', '?',
@@ -161,10 +184,31 @@ value range). For 1 % of the local value use "ltoly": 0.01; to allow both use
 "rtoly"/"ltoly" together (the max applies). Example "within 0.05 units, no time
 tolerance": {{"atoly": 0.05, "atolx": 0}}.
 
+DATE-TIME AXIS (ISO 8601 time column): x is seconds since 1970-01-01 UTC, so x
+tolerances are seconds. Example "within 2 °C and 3 hours": {{"atoly": 2, "atolx":
+10800}} (atoly in the column's unit, atolx = 3 * 3600 s). A non-zero ltolx is refused
+there (it would scale with ~1.8e9 s); rtolx is allowed. Every tolerance set (and row
+with an x override) echoes its non-zero time half-width as time_tolerance {{seconds,
+duration}}, e.g. {{"seconds": 10800, "duration": "PT3H"}}. x_range bounds may be ISO
+8601 strings, e.g. {{"lo": "2026-11-05T00:00", "hi": "2026-11-10T00:00"}}, with 'Z' or
+an offset exactly when the time columns have one.
+
+COLUMNS AND PAIRS: by default every signal column present in both files is compared
+with the same-named column. 'columns' accepts exact names and glob patterns ('*',
+'?', '[...]'). 'pairs' instead compares a reference column with a differently named
+test column: [{{"reference": "temperature_2m (°C)", "test":
+"temperature_2m_previous_day1 (°C)", "label": "day1"}}, ...] (exact names only, units
+in names are part of the name; one reference column may appear in several pairs).
+pairs and columns cannot be combined. A pair's row key ('column' in each row, also the
+key for column_tolerances) is its label, else its test column; keys must be unique.
+Pair rows also carry reference_column and test_column. test_path is optional with
+pairs: omitted, both columns come from the reference file (one file is read once);
+without pairs a test_path is required. test_header_line (default: header_line) is the
+header line of the test file.
+
 Pass several labelled sets in 'tolerances' to try e.g. strict and loose in one
 call. 'column_tolerances' overrides the sets per column, axis by axis: an axis for
 which the override gives any coefficient is taken entirely from the override.
-'columns' accepts exact names and glob patterns ('*', '?', '[...]').
 Columns missing from a file or with bad data are reported per row (verdict
 'error'), not as a failed call. Set include_snippet=true to get a pytest file that
 reproduces the returned rows in CI; it is returned in the structured content field
@@ -184,6 +228,13 @@ under a second even for a million samples; a nearly noise-free signal with a lar
 time tolerance can take much longer. Cancelling the call stops the running
 comparison."""
 
+HEADER_LINE_HELP = (
+    "1-based physical line where the header search starts (lines before it are skipped "
+    "unread; the header is the first non-blank, non-comment line at or after it). "
+    "Default 1 = first non-comment line. E.g. 4 for Open-Meteo CSV (3 preamble lines)."
+)
+TEST_HEADER_LINE_HELP = "header_line of the test file (default: header_line)."
+
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -192,7 +243,8 @@ READ_ONLY = ToolAnnotations(
 )
 
 PLOT_DESCRIPTION = f"""\
-Plot ONE funnel comparison - one signal column, one tolerance set - and return a
+Plot ONE funnel comparison - one signal column (or one reference column against a
+differently named test_column), one tolerance set - and return a
 small PNG preview (800x450) inline as image content so you can look at it. The plot
 shows the reference (dashed), the test (solid), the tolerance tube (grey band
 between its lower and upper bound) and every region where the test leaves the tube
@@ -203,6 +255,12 @@ of compare_signals (same tolerance resolution, same x_range meaning, same covera
 rule), so the plot never contradicts compare_signals with the same arguments; only
 the drawing is reduced (min/max per bucket, the worst point of every violation kept).
 The result carries the same summary row as compare_signals, never sample values.
+test_path is optional (default: the reference file; then give test_column), and
+test_column (default: column) plots column of the reference against test_column of the
+test like the corresponding compare_signals pair; legend and title then name both. On
+a date-time time axis the x ticks are dates and times, the x label says "(UTC)" or "(no
+time zone)", the subtitle shows the time tolerance as a duration (x ±PT3H), x_range
+accepts ISO 8601 strings and the result echoes the view also as ISO 8601 strings.
 
 output_path (optional): write the plot to this file - SVG (for documents; white
 background, fonts embedded as paths, byte-identical for identical input) when it
@@ -640,9 +698,42 @@ def _preview_png(data: PlotData) -> bytes:
     return buf.getvalue()
 
 
-def _load(raw: str, roots: list[Path]) -> SignalFile:
+def _load(
+    raw: str, roots: list[Path], header_line: int = 1, arg: str = "header_line"
+) -> SignalFile:
     try:
-        return load_csv(resolve_path(raw, roots))
+        return load_csv(resolve_path(raw, roots), header_line, arg=arg)
+    except SignalFileError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+#: Refusal when neither a test path nor pairs are given.
+NO_TEST_PATH = (
+    "test_path is missing: without pairs, the reference file would be compared with "
+    "itself and every column would pass trivially. Pass test_path, or pairs to compare "
+    "differently named columns within the reference file"
+)
+
+
+def _load_pair(
+    reference_path: str,
+    test_path: str | None,
+    roots: list[Path],
+    header_line: int,
+    test_header_line: int | None,
+) -> tuple[SignalFile, SignalFile]:
+    """Load reference and test; the test file defaults to the reference file
+    and one file (same path and header line) is read only once."""
+    ref = _load(reference_path, roots, header_line)
+    t_line = header_line if test_header_line is None else test_header_line
+    if test_path is None:
+        tst_path = ref.path
+    else:
+        tst_path = resolve_path(test_path, roots)
+    if tst_path == ref.path and t_line == header_line:
+        return ref, ref
+    try:
+        return ref, load_csv(tst_path, t_line, arg="test_header_line")
     except SignalFileError as exc:
         raise ToolError(str(exc)) from exc
 
@@ -731,9 +822,10 @@ def describe_signals_impl(
     columns: list[str] | None = None,
     max_columns: int = DEFAULT_MAX_COLUMNS,
     root_notes: list[str] | None = None,
+    header_line: int = 1,
 ) -> CallToolResult:
     """Describe one file; see :data:`DESCRIBE_DESCRIPTION`."""
-    sf = _load(path, roots)
+    sf = _load(path, roots, header_line)
     try:
         result = describe(sf, columns=columns, max_columns=max_columns)
     except ValueError as exc:
@@ -747,10 +839,13 @@ def describe_signals_impl(
 
 def compare_signals_impl(
     reference_path: str,
-    test_path: str,
+    test_path: str | None,
     roots: list[Path],
     *,
     columns: list[str] | None = None,
+    pairs: list[ColumnPair] | None = None,
+    header_line: int = 1,
+    test_header_line: int | None = None,
     tolerances: list[ToleranceSet] | None = None,
     column_tolerances: dict[str, ToleranceSpec] | None = None,
     x_range: XRange | None = None,
@@ -768,13 +863,15 @@ def compare_signals_impl(
     ``funnel.ComparisonCancelled``.
     """
     limit = _start_limit(time_limit, cancel)
-    ref = _load(reference_path, roots)
-    tst = _load(test_path, roots)
+    if test_path is None and pairs is None:
+        raise ToolError(NO_TEST_PATH)
+    ref, tst = _load_pair(reference_path, test_path, roots, header_line, test_header_line)
     try:
         outcome = run_compare(
             ref,
             tst,
             columns=columns,
+            pairs=pairs,
             tolerances=tolerances,
             column_tolerances=column_tolerances,
             x_range=x_range,
@@ -801,10 +898,13 @@ def compare_signals_impl(
 
 def plot_signals_impl(
     reference_path: str,
-    test_path: str,
+    test_path: str | None,
     roots: list[Path],
     *,
     column: str,
+    test_column: str | None = None,
+    header_line: int = 1,
+    test_header_line: int | None = None,
     tolerance: ToleranceSet | None = None,
     x_range: XRange | None = None,
     output_path: str | None = None,
@@ -835,12 +935,11 @@ def plot_signals_impl(
         if output_path is not None
         else None
     )
-    ref = _load(reference_path, roots)
-    tst = _load(test_path, roots)
+    ref, tst = _load_pair(reference_path, test_path, roots, header_line, test_header_line)
     try:
         outcome = prepare_plot(
             ref, tst, column=column, tolerance=tolerance, x_range=x_range,
-            max_intervals=max_intervals, limit=limit,
+            max_intervals=max_intervals, limit=limit, test_column=test_column,
         )
     except (PlotArgumentError, CompareArgumentError) as exc:
         raise ToolError(str(exc)) from exc
@@ -876,7 +975,12 @@ def plot_signals_impl(
         x_range=cr.x_range,
         tolerance_set=cr.tolerance_sets[0],
         row=outcome.record.row,
-        view=RangeOut(lo=data.view[0], hi=data.view[1]),
+        view=RangeOut(
+            lo=data.view[0],
+            hi=data.view[1],
+            lo_iso=format_iso(data.view[0], ref.time_zone) if data.date_axis else None,
+            hi_iso=format_iso(data.view[1], ref.time_zone) if data.date_axis else None,
+        ),
         file=file_out,
         preview=PlotPreview(width_px=pw, height_px=ph, bytes=len(preview)),
         drawn=DrawnPoints(
@@ -918,6 +1022,7 @@ def plot_signals_impl(
 def describe_signals(
     path: Annotated[str, Field(description="Path of the CSV file (absolute recommended).")],
     roots: Roots,
+    header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
     columns: Annotated[
         list[str] | None,
         Field(
@@ -934,7 +1039,8 @@ def describe_signals(
     ignored: list[str] = []
     paths = root_paths(roots, ignored)
     return describe_signals_impl(
-        path, paths, columns=columns, max_columns=max_columns, root_notes=ignored
+        path, paths, columns=columns, max_columns=max_columns, root_notes=ignored,
+        header_line=header_line,
     )
 
 
@@ -946,8 +1052,29 @@ def describe_signals(
 )
 async def compare_signals(
     reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
-    test_path: Annotated[str, Field(description="Path of the test CSV file.")],
     roots: Roots,
+    test_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Path of the test CSV file. Optional with pairs (default: the reference "
+                "file); required otherwise."
+            )
+        ),
+    ] = None,
+    pairs: Annotated[
+        list[ColumnPair] | None,
+        Field(
+            description=(
+                "Reference/test column pairs [{reference, test, label?}] of exact names; "
+                "the row key is the label, else the test column. Not with columns."
+            )
+        ),
+    ] = None,
+    header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
+    test_header_line: Annotated[
+        int | None, Field(ge=1, description=TEST_HEADER_LINE_HELP)
+    ] = None,
     columns: Annotated[
         list[str] | None,
         Field(
@@ -969,14 +1096,20 @@ async def compare_signals(
     ] = None,
     column_tolerances: Annotated[
         dict[str, ToleranceSpec] | None,
-        Field(description="Per-column overrides (column name -> coefficients), applied per axis."),
+        Field(
+            description=(
+                "Per-column overrides (row key -> coefficients), applied per axis; the key "
+                "is the column name, or for pairs the label (else the test column)."
+            )
+        ),
     ] = None,
     x_range: Annotated[
         XRange | None,
         Field(
             description=(
-                "Time window {lo, hi} to compare; bounds must be finite, omit a bound for "
-                "unbounded."
+                "Time window {lo, hi} to compare; bounds must be finite numbers (seconds since "
+                "1970 on a date-time axis) or, on a date-time axis, ISO 8601 strings; omit a "
+                "bound for unbounded."
             )
         ),
     ] = None,
@@ -1016,6 +1149,9 @@ async def compare_signals(
             test_path,
             paths,
             columns=columns,
+            pairs=pairs,
+            header_line=header_line,
+            test_header_line=test_header_line,
             tolerances=tolerances,
             column_tolerances=column_tolerances,
             x_range=x_range,
@@ -1037,11 +1173,29 @@ async def compare_signals(
 )
 async def plot_signals(
     reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
-    test_path: Annotated[str, Field(description="Path of the test CSV file.")],
     column: Annotated[
-        str, Field(min_length=1, description="The one signal column to plot (exact name).")
+        str,
+        Field(
+            min_length=1,
+            description="The one signal column to plot (exact name; the reference column).",
+        ),
     ],
     roots: Roots,
+    test_path: Annotated[
+        str | None,
+        Field(description="Path of the test CSV file (default: the reference file)."),
+    ] = None,
+    test_column: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            description="Test column to plot against column (exact name; default: column).",
+        ),
+    ] = None,
+    header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
+    test_header_line: Annotated[
+        int | None, Field(ge=1, description=TEST_HEADER_LINE_HELP)
+    ] = None,
     tolerance: Annotated[
         ToleranceSet | None,
         Field(
@@ -1056,8 +1210,8 @@ async def plot_signals(
         XRange | None,
         Field(
             description=(
-                "Time window {lo, hi} to compare and show; bounds must be finite, omit a "
-                "bound for unbounded."
+                "Time window {lo, hi} to compare and show; bounds must be finite numbers or, "
+                "on a date-time axis, ISO 8601 strings; omit a bound for unbounded."
             )
         ),
     ] = None,
@@ -1100,6 +1254,9 @@ async def plot_signals(
             test_path,
             paths,
             column=column,
+            test_column=test_column,
+            header_line=header_line,
+            test_header_line=test_header_line,
             tolerance=tolerance,
             x_range=x_range,
             output_path=output_path,

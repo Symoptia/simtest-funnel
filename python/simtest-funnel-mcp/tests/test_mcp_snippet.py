@@ -10,9 +10,9 @@ from pathlib import Path
 import json
 
 import pytest
-from conftest import WriteCsv, structured
+from conftest import OPEN_METEO_REF, WriteCsv, open_meteo_column, open_meteo_text, structured
 
-from simtest_funnel_mcp.models import ToleranceSet, ToleranceSpec, XRange
+from simtest_funnel_mcp.models import ColumnPair, ToleranceSet, ToleranceSpec, XRange
 from simtest_funnel_mcp.server import compare_signals_impl
 
 LOOSE = ToleranceSet(label="loose", atolx=0.1, atoly=0.1)
@@ -124,7 +124,9 @@ def test_snippet_covers_only_returned_rows_and_is_sent_once(write_csv: WriteCsv)
     assert "# 2995 row(s) not returned by the server (max_rows) are not included." in snippet
     text = result.content[0].text  # type: ignore[union-attr]
     assert "def test_funnel" not in text
-    assert len(json.dumps(d)) < 15_000
+    # The embedded reader converts date-time time columns (add-mcp-column-mapping-
+    # and-formats), which made every snippet about 7 kB larger.
+    assert len(json.dumps(d)) < 22_000
 
 
 def test_snippet_size_guard(
@@ -215,3 +217,64 @@ def test_trailing_comma_rows_fail_the_call(write_csv: WriteCsv) -> None:
     ref = write_csv("ref.csv", "time,a\n0,1,\n1,2,\n")
     with pytest.raises(ToolError, match=r"data row 1 \(line 2\) has 3 fields, header has 2"):
         compare_signals_impl(str(ref), str(ref), [])
+
+
+# --------------------------------------------------------------------------
+# Pairs, header lines and date-time time columns
+# --------------------------------------------------------------------------
+
+
+def _day_pairs(*days: int) -> list[ColumnPair]:
+    return [
+        ColumnPair(reference=OPEN_METEO_REF, test=open_meteo_column(d), label=f"day{d}")
+        for d in days
+    ]
+
+
+def test_snippet_of_a_one_file_pair_comparison(open_meteo: Path, tmp_path: Path) -> None:
+    d = structured(
+        compare_signals_impl(
+            str(open_meteo), None, [tmp_path.resolve()], header_line=4,
+            pairs=[*_day_pairs(1, 3, 5),
+                   ColumnPair(reference="temperature_2m", test=open_meteo_column(1))],
+            tolerances=[ToleranceSet(label="2C", atoly=2),
+                        ToleranceSet(label="2C_3h", atoly=2, atolx=10800)],
+            column_tolerances={"day3": ToleranceSpec(atoly=3)},
+            x_range=XRange(lo="2026-11-06T00:00"),
+            include_snippet=True,
+        )
+    )
+    snippet = d["snippet"]
+    assert "REFERENCE = DATA_ROOT / 'open_meteo.csv'" in snippet
+    assert "TEST = REFERENCE\n" in snippet
+    assert "REFERENCE_HEADER_LINE = 4\nTEST_HEADER_LINE = 4\n" in snippet
+    assert "# x_range in seconds since 1970-01-01 UTC: lo = 2026-11-06T00:00:00, hi = unbounded" in snippet
+    assert "X_RANGE = funnel.Range(lo=1793923200.0, hi=float(\"inf\"))" in snippet
+    assert f"('day5', {OPEN_METEO_REF!r}, {open_meteo_column(5)!r}, '2C'," in snippet
+    assert "funnel.Tolerances(atolx=10800.0, atoly=3.0)" in snippet  # day3 override
+    assert "Not reproduced" in snippet  # the misspelt reference column
+    statuses = {r["status_name"] for r in d["rows"] if r["verdict"] != "error"}
+    assert statuses == {"PASS", "FAIL"}
+    proc = _run_snippet(snippet, tmp_path, data_root=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "6 passed" in proc.stdout
+
+
+def test_snippet_of_two_files_with_different_header_lines(
+    write_csv: WriteCsv, tmp_path: Path
+) -> None:
+    ref = write_csv("ref.csv", open_meteo_text())
+    # The test file has no preamble but a comment line before its header.
+    tst = write_csv("tst.csv", "# exported\n" + open_meteo_text(preamble=False))
+    d = structured(
+        compare_signals_impl(
+            str(ref), str(tst), [tmp_path.resolve()], header_line=4, test_header_line=1,
+            pairs=_day_pairs(1, 5), tolerances=[ToleranceSet(atoly=2)], include_snippet=True,
+        )
+    )
+    snippet = d["snippet"]
+    assert "TEST = DATA_ROOT / 'tst.csv'" in snippet
+    assert "REFERENCE_HEADER_LINE = 4\nTEST_HEADER_LINE = 2\n" in snippet  # header used
+    proc = _run_snippet(snippet, tmp_path, data_root=tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "2 passed" in proc.stdout

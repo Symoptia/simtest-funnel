@@ -6,9 +6,13 @@ Optional output fields are omitted from the structured content when absent
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from simtest_funnel_mcp.reader import ISO_DATETIME
 
 COEFFICIENTS: tuple[str, ...] = ("atolx", "atoly", "ltolx", "ltoly", "rtolx", "rtoly")
 X_COEFFICIENTS: tuple[str, ...] = ("atolx", "ltolx", "rtolx")
@@ -29,13 +33,16 @@ class ToleranceSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     atolx: float | None = Field(
-        default=None, ge=0, description=f"Absolute tolerance in x (time units). {_NONNEG}"
+        default=None, ge=0, description=f"Absolute tolerance in x (time units; seconds on a date-time axis). {_NONNEG}"
     )
     atoly: float | None = Field(
         default=None, ge=0, description=f"Absolute tolerance in y (signal units). {_NONNEG}"
     )
     ltolx: float | None = Field(
-        default=None, ge=0, description=f"Tolerance in x relative to |t| at each sample. {_NONNEG}"
+        default=None, ge=0, description=(
+            f"Tolerance in x relative to |t| at each sample (refused on a date-time axis). "
+            f"{_NONNEG}"
+        ),
     )
     ltoly: float | None = Field(
         default=None,
@@ -73,17 +80,65 @@ class ToleranceSet(ToleranceSpec):
     )
 
 
+_BOUND = (
+    "time bound: a finite number (on a date-time axis: seconds since 1970-01-01 UTC) or, "
+    "on a date-time axis only, an ISO 8601 date-time string such as '2026-11-05T00:00' "
+    "(with 'Z' or an offset exactly when the time columns have one); omit for unbounded."
+)
+
+
 class XRange(BaseModel):
     """Time window to compare (inclusive); omitted bound = unbounded."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
-    lo: float | None = Field(
-        default=None, description="Lower time bound (finite); omit for unbounded."
+    lo: float | str | None = Field(default=None, description=f"Lower {_BOUND}")
+    hi: float | str | None = Field(default=None, description=f"Upper {_BOUND}")
+
+    @field_validator("lo", "hi")
+    @classmethod
+    def _iso_or_number(cls, v: float | str | None) -> float | str | None:
+        """Strings must be ISO 8601 date-times; numeric strings are read as
+        numbers as before (so ``"-inf"`` stays a validation error)."""
+        if not isinstance(v, str):
+            return v
+        if re.fullmatch(ISO_DATETIME, v.strip()):
+            return v.strip()
+        try:
+            number = float(v)
+        except ValueError:
+            raise ValueError(
+                f"{v!r} is neither a number nor an ISO 8601 date-time "
+                "(YYYY-MM-DD[Thh:mm[:ss[.f]][Z|+hh:mm]])"
+            ) from None
+        if not math.isfinite(number):
+            raise ValueError("bound must be finite")
+        return number
+
+
+class ColumnPair(BaseModel):
+    """A reference column compared against a differently named test column."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reference: str = Field(min_length=1, description="Exact reference column name.")
+    test: str = Field(min_length=1, description="Exact test column name.")
+    label: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Row key (default: the test column); used by column_tolerances.",
     )
-    hi: float | None = Field(
-        default=None, description="Upper time bound (finite); omit for unbounded."
-    )
+
+    @property
+    def key(self) -> str:
+        return self.label if self.label is not None else self.test
+
+
+class TimeTolerance(BaseModel):
+    """Resolved x half-width on a date-time axis."""
+
+    seconds: float
+    duration: str = Field(description="ISO 8601 duration, e.g. PT3H.")
 
 
 # --------------------------------------------------------------------------
@@ -96,12 +151,26 @@ class Sampling(BaseModel):
     min_step: float | None = None
     median_step: float | None = None
     max_step: float | None = None
+    median_step_duration: str | None = Field(
+        default=None, description="Date-time axes: median step as ISO 8601 duration."
+    )
 
 
 class TimeInfo(BaseModel):
+    kind: Literal["numeric", "datetime"] = Field(
+        default="numeric",
+        description="numeric, or datetime (ISO 8601 cells read as seconds since the epoch).",
+    )
+    time_zone: Literal["offset", "none", "mixed"] | None = Field(
+        default=None,
+        description="Date-time axes: cells carry offsets, none (read as UTC), or mixed.",
+    )
     start: float | None = None
+    start_iso: str | None = None
     end: float | None = None
+    end_iso: str | None = None
     span: float | None = None
+    span_duration: str | None = None
     sampling: Sampling
 
 
@@ -117,6 +186,7 @@ class ColumnInfo(BaseModel):
 
 class DescribeResult(BaseModel):
     path: str
+    header_line: int = Field(default=1, description="Physical line of the header used.")
     time_column: str
     time_column_rule: Literal["named time", "first column"]
     row_count: int
@@ -154,22 +224,33 @@ class Coefficients(BaseModel):
 
 class FileInfo(BaseModel):
     path: str
+    header_line: int | None = Field(default=None, description="Physical line of the header used.")
     time_column: str
     time_column_rule: Literal["named time", "first column"]
+    time_kind: Literal["numeric", "datetime"] | None = None
+    time_zone: Literal["offset", "none", "mixed"] | None = None
     row_count: int
     time_start: float | None = None
+    time_start_iso: str | None = None
     time_end: float | None = None
+    time_end_iso: str | None = None
 
 
 class RangeOut(BaseModel):
     lo: float | None = None
+    lo_iso: str | None = None
     hi: float | None = None
+    hi_iso: str | None = None
 
 
 class ToleranceSetOut(BaseModel):
     label: str
     given: dict[str, float]
     resolved: Coefficients
+    time_tolerance: TimeTolerance | None = Field(
+        default=None,
+        description="Date-time axes: the non-zero x half-width in seconds and as a duration.",
+    )
 
 
 class Totals(BaseModel):
@@ -192,25 +273,35 @@ class NotCompleted(BaseModel):
 
     column: str
     tolerance_set: str
+    reference_column: str | None = None
+    test_column: str | None = None
 
 
 class Worst(BaseModel):
     x: float | None = None
+    x_iso: str | None = None
     deviation: float | None = None
     tube_half_width_y: float | None = None
 
 
 class Interval(BaseModel):
     start_x: float
+    start_x_iso: str | None = None
     end_x: float
+    end_x_iso: str | None = None
     direction: Literal["above", "below"]
     point_count: int
     worst_deviation: float
     worst_x: float
+    worst_x_iso: str | None = None
 
 
 class Row(BaseModel):
-    column: str
+    column: str = Field(
+        description="Row key: the column name, or for a pair its label (else its test column)."
+    )
+    reference_column: str | None = Field(default=None, description="Pair rows only.")
+    test_column: str | None = Field(default=None, description="Pair rows only.")
     tolerance_set: str
     verdict: Literal["pass", "fail", "error"]
     status: int | None = None
@@ -218,6 +309,10 @@ class Row(BaseModel):
     problem: str | None = None
     tolerances: Coefficients | None = Field(
         default=None, description="Resolved values; present only when a column override applied."
+    )
+    time_tolerance: TimeTolerance | None = Field(
+        default=None,
+        description="Date-time axes: x half-width when an override changed the x axis.",
     )
     points_compared: int | None = None
     points_outside: int | None = None

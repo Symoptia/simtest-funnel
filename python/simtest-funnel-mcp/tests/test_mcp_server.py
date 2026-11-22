@@ -58,9 +58,10 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
     assert set(tools["plot_signals"].input_schema["properties"]) == {
         "reference_path", "test_path", "column", "tolerance", "x_range", "output_path",
         "overwrite", "max_intervals", "time_limit",
+        "test_column", "header_line", "test_header_line",
     }
     assert set(tools["plot_signals"].input_schema["required"]) == {
-        "reference_path", "test_path", "column",
+        "reference_path", "column",
     }
     description = tools["compare_signals"].description or ""
     for needle in (
@@ -73,12 +74,13 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
     ):
         assert needle in description, needle
     assert set(tools["describe_signals"].input_schema["properties"]) == {
-        "path", "columns", "max_columns",
+        "path", "columns", "max_columns", "header_line",
     }
     props = tools["compare_signals"].input_schema["properties"]
     assert set(props) == {
         "reference_path", "test_path", "columns", "tolerances", "column_tolerances",
         "x_range", "max_intervals", "max_rows", "include_snippet", "time_limit",
+        "pairs", "header_line", "test_header_line",
     }
     for name in ("compare_signals", "plot_signals"):
         limit = tools[name].input_schema["properties"]["time_limit"]
@@ -287,3 +289,150 @@ def test_main_rejects_a_missing_output_dir(tmp_path: Path, capsys: Any) -> None:
     assert info.value.code == 2
     err = capsys.readouterr().err
     assert "does not exist" in err and "--output-dir" in err
+
+
+# --------------------------------------------------------------------------
+# Pairs, header lines and date-time axes
+# --------------------------------------------------------------------------
+
+
+def _tools() -> dict[str, Any]:
+    async def run() -> Any:
+        async with Client(mcp) as client:
+            return await client.list_tools()
+
+    return {t.name: t for t in asyncio.run(run()).tools}
+
+
+def test_schemas_list_the_new_arguments() -> None:
+    tools = _tools()
+    for name in ("describe_signals", "compare_signals", "plot_signals"):
+        props = tools[name].input_schema["properties"]
+        assert props["header_line"]["minimum"] == 1 and props["header_line"]["default"] == 1
+    for name in ("compare_signals", "plot_signals"):
+        schema = tools[name].input_schema
+        assert "test_path" not in schema["required"]
+        assert schema["properties"]["test_header_line"]["default"] is None
+    assert "pairs" in tools["compare_signals"].input_schema["properties"]
+    assert "test_column" in tools["plot_signals"].input_schema["properties"]
+    # x_range bounds accept numbers and ISO strings.
+    defs = tools["compare_signals"].input_schema["$defs"]
+    lo = defs["XRange"]["properties"]["lo"]
+    assert {t.get("type") for t in lo["anyOf"]} >= {"number", "string"}
+
+
+def test_output_schemas_list_the_new_optional_fields() -> None:
+    tools = _tools()
+    compare = tools["compare_signals"].output_schema
+    assert compare is not None
+    defs = compare["$defs"]
+    assert {"header_line", "time_kind", "time_zone", "time_start_iso", "time_end_iso"} <= set(
+        defs["FileInfo"]["properties"]
+    )
+    assert {"lo_iso", "hi_iso"} <= set(defs["RangeOut"]["properties"])
+    assert "x_iso" in defs["Worst"]["properties"]
+    assert {"start_x_iso", "end_x_iso", "worst_x_iso"} <= set(defs["Interval"]["properties"])
+    assert {"reference_column", "test_column", "time_tolerance"} <= set(
+        defs["Row"]["properties"]
+    )
+    assert {"reference_column", "test_column"} <= set(defs["NotCompleted"]["properties"])
+    assert "time_tolerance" in defs["ToleranceSetOut"]["properties"]
+    assert set(defs["TimeTolerance"]["properties"]) == {"seconds", "duration"}
+    for field in ("reference_column", "test_column", "time_tolerance"):
+        assert field not in defs["Row"].get("required", [])
+    describe = tools["describe_signals"].output_schema
+    assert describe is not None
+    assert "header_line" in describe["properties"]
+    d_defs = describe["$defs"]
+    assert {"kind", "time_zone", "start_iso", "end_iso", "span_duration"} <= set(
+        d_defs["TimeInfo"]["properties"]
+    )
+    assert "median_step_duration" in d_defs["Sampling"]["properties"]
+
+
+def test_descriptions_explain_pairs_header_line_and_date_axis() -> None:
+    from simtest_funnel_mcp.server import (
+        COMPARE_DESCRIPTION,
+        CSV_HELP,
+        DESCRIBE_DESCRIPTION,
+        INSTRUCTIONS,
+        PLOT_DESCRIPTION,
+    )
+
+    for needle in (
+        '"within 2 °C and 3 hours": {"atoly": 2, "atolx":\n10800}',
+        "'pairs' instead compares a reference column with a differently named",
+        "row key",
+        "label, else its test column",
+        "test_path is optional with\npairs",
+        "test_header_line",
+        "A non-zero ltolx is refused",
+        "time_tolerance",
+        '{"lo": "2026-11-05T00:00", "hi": "2026-11-10T00:00"}',
+        "tolerances are seconds",
+    ):
+        assert needle in COMPARE_DESCRIPTION, needle
+    for needle in (
+        "HEADER LINE: header_line", "suggests the header_line to pass",
+        "seconds since 1970-01-01 UTC", "read as UTC", "both without time zone",
+    ):
+        assert needle in CSV_HELP, needle
+    assert CSV_HELP in COMPARE_DESCRIPTION and CSV_HELP in DESCRIBE_DESCRIPTION
+    assert CSV_HELP in PLOT_DESCRIPTION
+    assert "test_column" in PLOT_DESCRIPTION and "(no\ntime zone)" in PLOT_DESCRIPTION
+    assert "header_line" in INSTRUCTIONS and "'pairs'" in INSTRUCTIONS
+    assert "atolx 10800" in INSTRUCTIONS
+    # Fields the descriptions promise exist in the output schemas.
+    tools = _tools()
+    compare = tools["compare_signals"].output_schema
+    assert compare is not None
+    assert "time_tolerance" in compare["$defs"]["ToleranceSetOut"]["properties"]
+    assert "reference_column" in compare["$defs"]["Row"]["properties"]
+
+
+def test_one_file_pair_call_in_process(open_meteo: Path) -> None:
+    result = _call(
+        "compare_signals",
+        {
+            "reference_path": str(open_meteo),
+            "header_line": 4,
+            "pairs": [{"reference": "temperature_2m (°C)",
+                       "test": "temperature_2m_previous_day1 (°C)", "label": "day1"}],
+            "tolerances": [{"atoly": 2, "atolx": 10800}],
+            "x_range": {"lo": "2026-11-06T00:00"},
+        },
+    )
+    assert not result.is_error, result.content
+    d = result.structured_content
+    assert d["rows"][0]["column"] == "day1" and d["rows"][0]["verdict"] == "pass"
+    assert d["x_range"]["lo_iso"] == "2026-11-06T00:00:00"
+
+
+def test_bad_arguments_over_the_protocol(open_meteo: Path) -> None:
+    base = {"reference_path": str(open_meteo)}
+    assert _call("compare_signals", base).is_error  # neither test_path nor pairs
+    assert _call("describe_signals", {"path": str(open_meteo), "header_line": 0}).is_error
+    bad_pair = _call("compare_signals", {**base, "pairs": [{"reference": "a", "tst": "b"}]})
+    assert bad_pair.is_error
+    bad_bound = _call("compare_signals", {**base, "header_line": 4, "pairs": [
+        {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day1 (°C)"}],
+        "x_range": {"lo": "next tuesday"}})
+    assert bad_bound.is_error
+
+
+def test_readme_open_meteo_example_runs_against_the_fixture(open_meteo: Path) -> None:
+    import json
+    import re
+
+    from conftest import REPO_ROOT
+
+    readme = (REPO_ROOT / "python" / "simtest-funnel-mcp" / "README.md").read_text("utf-8")
+    blocks = [b for b in re.findall(r"```json\n(.*?)```", readme, re.S) if '"pairs"' in b]
+    assert len(blocks) == 1
+    args = json.loads(blocks[0])
+    args["reference_path"] = str(open_meteo)
+    result = _call("compare_signals", args)
+    assert not result.is_error, result.content
+    d = result.structured_content
+    assert {r["column"] for r in d["rows"]} == {"day1", "day3", "day5"}
+    assert d["tolerance_sets"][0]["time_tolerance"]["duration"] == "PT3H"

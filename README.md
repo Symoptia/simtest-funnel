@@ -208,8 +208,8 @@ All common tasks are available through `make`:
 
 [`python/simtest-funnel-mcp`](python/simtest-funnel-mcp) is a local
 [MCP](https://modelcontextprotocol.io) server (stdio) with three tools,
-`describe_signals(path)`, `compare_signals(reference_path, test_path, ...)` and
-`plot_signals(reference_path, test_path, column, ...)`, that let agents such as
+`describe_signals(path)`, `compare_signals(reference_path, test_path=None, ...)` and
+`plot_signals(reference_path, column, ...)`, that let agents such as
 Claude Code or Claude Desktop run funnel comparisons on local CSV files with
 explicit tolerances, without the samples entering the model's context.
 `plot_signals` draws one comparison (reference, test, tube, violations), returns
@@ -220,7 +220,10 @@ Code) or an output directory configured with `--output-dir DIR` /
 `SIMTEST_FUNNEL_MCP_OUTPUT_DIR` (needed for Claude Desktop).
 Comparisons run off the server's event loop and are limited to `time_limit`
 seconds per call (default 60); on timeout `compare_signals` returns the
-finished columns and lists the rest as not completed.
+finished columns and lists the rest as not completed. Reference and test may be
+differently named columns of one file or two (`pairs`, `test_column`), files
+may start with a preamble (`header_line`), and time columns may be ISO 8601
+date-times (read as seconds since the epoch, x tolerances in seconds).
 
 ```bash
 claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # once published to PyPI
