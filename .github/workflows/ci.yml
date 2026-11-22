@@ -24,7 +24,9 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # Same as `make test-rust`: the `json` feature enables the LBNL
+      # corpus tests (differential_lbnl_corpus, tests/corpus_parity.rs).
+      - run: cargo test --workspace --features simtest-funnel-core/json
 
   python-test:
     runs-on: ubuntu-latest
