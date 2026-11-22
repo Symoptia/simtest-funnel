@@ -60,6 +60,13 @@ jobs:
       - run: |
           wasm-pack build --target bundler crates/simtest-funnel-wasm --out-dir ../../packages/sdk/src/wasm
           cd packages/sdk && pnpm install && pnpm test
+      # Browser demo: build it (type check + Vite build, also writes
+      # target/doc/_headers) and run its network-free tests, so a broken demo
+      # is caught before the release job's `make demo`.
+      - name: Build browser demo
+        run: make demo
+      - name: Test browser demo
+        run: cd examples/web && pnpm test
 
   lint:
     runs-on: ubuntu-latest

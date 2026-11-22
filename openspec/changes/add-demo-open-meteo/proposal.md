@@ -66,10 +66,11 @@ directly from the docs site.
   "Weather data by Open-Meteo.com" (CC BY 4.0, link to the licence),
   forecasts by ECMWF, "Location data based on GeoNames", that the
   "latest run" is a model analysis and not station measurements, and a
-  usage note on Open-Meteo's free tier (wording depends on owner
-  decision 1).
+  usage note on Open-Meteo's free tier (non-commercial use; requests go
+  from the browser directly to Open-Meteo).
 - **Live requests can be switched off at build time**, leaving a
-  sample-only weather part (for owner decision 1).
+  sample-only weather part. Live search is on by default (owner
+  decision 1, Decisions).
 - **Tests and CI**: the demo gets its first automated tests (vitest,
   already used by the SDK) for the pure parts (URL building, JSON and
   sample parsing, missing values, caching, error mapping, the comparison
@@ -126,15 +127,14 @@ None. The weather part is part of the existing demo site.
 - No new runtime dependency; Plotly stays on its pinned CDN script.
   New dev dependency: `vitest` in `examples/web` (same major as the SDK).
 - **Depends on `add-mcp-url-ingestion`** for the bundled sample
-  (`examples/open-meteo/`, present in the working tree but not yet
-  committed); the demo uses it unchanged.
+  (`examples/open-meteo/`, committed); the demo uses it unchanged.
 - External: visitors' browsers call `geocoding-api.open-meteo.com` and
   `previous-runs-api.open-meteo.com`. Open-Meteo limits free use per IP
-  address, so each visitor has their own budget; the open question is
-  whether the use is non-commercial (owner decision 1).
+  address, so each visitor has their own budget; the owner judges the
+  open-source library demo to be non-commercial use (Decisions).
 - The remaining details (tabs, variables and presets, window, ages
   table, sample reuse, CSP, tests in CI) are worked out in design.md,
-  each marked as a design choice not yet confirmed by the owner.
+  each a design choice the owner accepted as recommended.
 
 ## Decisions
 
@@ -149,25 +149,16 @@ Decided by the owner (binding for design and specs):
 - **The default x tolerance is zero in all APIs**; the demo makes the
   time tolerance visible and explains it.
 
-Open for the owner (must be settled before implementation):
-
-1. **Whether a public demo on the company's docs site may call
-   Open-Meteo's free API.** Open-Meteo's terms allow the free API only
-   for non-commercial use. They list "private or non-profit websites or
-   apps that do not have subscriptions or advertising" as
-   non-commercial, and "commercial products or promotional activities"
-   as commercial. The demo has no ads or subscriptions, but it sits on
-   the documentation site of a company's product, which can be read as
-   promotional. This proposal considers it **unclear, not clearly
-   within the free terms**. Options (design.md §12):
-   (a) ask Open-Meteo for written confirmation and ship live search if
-   they agree (recommended first step);
-   (b) ship the weather part sample-only (live requests switched off at
-   build time) until that is settled — clearly fine, CC BY 4.0
-   attribution only;
-   (c) a commercial plan — it needs an API key that must not be in a
-   public page, so a small proxy (for example a Cloudflare Pages
-   Function) would be needed, which this change otherwise avoids;
-   (d) live requests only after the visitor opts in with a notice that
-   their browser will call Open-Meteo under its terms — a courtesy, not
-   a resolution of the commercial question.
+- **Live search ships enabled (owner decision 1, settled 2026-11-22).**
+  The owner judges the demo of the open-source library to be within
+  Open-Meteo's free non-commercial terms: no ads, no subscriptions, no
+  API key, each visitor's browser calls Open-Meteo directly within its
+  own per-IP budget. The build-time switch `VITE_WEATHER_LIVE` stays
+  (default on) so live search can be turned off without a code change if
+  Open-Meteo ever asks; the visible attribution, the usage note and the
+  request hygiene are unchanged. Options considered before the decision:
+  (a) ask Open-Meteo for written confirmation first, (b) ship sample-only
+  until then, (c) a commercial plan behind a key-hiding proxy, (d) an
+  opt-in click before the first live request.
+- **All design choices of design.md are accepted as recommended**;
+  deviations found during implementation are recorded there.

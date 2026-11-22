@@ -29,7 +29,7 @@ decisions, and the spec delta for the required behaviour. Current state:
   5 in a `node` environment.
 - The bundled sample of `add-mcp-url-ingestion` exists in the working
   tree (`examples/open-meteo/stockholm-2026-11-05-to-19.csv` and
-  `ATTRIBUTION.md`, not yet committed): the byte-identical CSV response
+  `ATTRIBUTION.md`, committed): the byte-identical CSV response
   for Stockholm, `models=ecmwf_ifs`, 2026-11-05..19, hourly
   `temperature_2m` and `_previous_day1/3/5`, a three-line preamble,
   ISO times in GMT, 360 rows, SHA-256 pinned in `ATTRIBUTION.md`.
@@ -170,9 +170,12 @@ no cache header.
 
 ## Decisions
 
-Items marked **(design choice, not yet confirmed by the owner)** are
-this design's answer to something the owner's decisions leave open;
-each gives the recommendation and the main alternative.
+Items marked **(design choice, not yet confirmed by the owner)** were
+this design's answer to something the owner's decisions left open; each
+gives the recommendation and the main alternative. **The owner accepted
+all of them as recommended (2026-11-22)**; the markers are kept for
+history. Deviations made during implementation are listed under
+"Implementation notes" at the end.
 
 ### 1. Place in the page: two tabs, synthetic first (design choice, not yet confirmed by the owner)
 
@@ -411,7 +414,7 @@ stronger, but needs Plotly's needs verified (style injection, possible
 `eval`), more risk than this change needs. Alternative: no policy —
 fewer moving parts, but then the hygiene promise is only by inspection.
 
-### 12. Live data switch and the terms question (owner decision 1 open; mechanism is a design choice, not yet confirmed by the owner)
+### 12. Live data switch and the terms question (owner decision 1: live search enabled; mechanism is a design choice, accepted)
 
 - Build-time constant `VITE_WEATHER_LIVE` (default `true`, read through
   `import.meta.env`). When `false`, the place search is not rendered
@@ -420,18 +423,23 @@ fewer moving parts, but then the hygiene promise is only by inspection.
   path, and the `_headers` rule drops the Open-Meteo hosts. `make demo`
   passes it through from the environment, so `publish-docs` can switch
   it without code changes.
-- The usage note under the attribution depends on the decision. With
-  live data: "Live data comes from Open-Meteo's free API, which is for
-  non-commercial use; requests go from your browser directly to
-  Open-Meteo." (plus whatever Open-Meteo asks for if they confirm).
-- Options for the owner (proposal, Decisions): (a) written confirmation
-  from Open-Meteo (recommended first step; this design ships live search
-  if they agree), (b) sample-only build (`VITE_WEATHER_LIVE=false`) until
-  then, (c) a commercial plan, which needs a key-hiding proxy and is out
-  of scope here, (d) an explicit opt-in click before the first live
-  request. Recommendation: (a), and ship with (b) if no answer arrives
-  before release. Rate limits are per IP address, so call volume is not
-  the concern: a visitor makes a handful of calls.
+- Usage note under the attribution, with live data: "Live data comes
+  from Open-Meteo's free API, which is for non-commercial use (terms).
+  Requests go from your browser directly to Open-Meteo, without an API
+  key; nothing is stored." In a sample-only build: "Live search is not
+  available on this site; the sample shows how it works." plus the
+  non-commercial note.
+- **Decision (owner, 2026-11-22): live search ships enabled**; the owner
+  judges the open-source library demo to be within Open-Meteo's free
+  non-commercial terms. `publish-docs` runs `make demo` without the
+  switch, so the deployed demo has live search. The options considered
+  before were (a) written confirmation from Open-Meteo first, (b) a
+  sample-only build until then, (c) a commercial plan behind a key-hiding
+  proxy, (d) an opt-in click before the first live request. Rate limits
+  are per IP address, so call volume is not the concern: a visitor makes
+  a handful of calls. If Open-Meteo objects, `VITE_WEATHER_LIVE=false`
+  on the "Build browser demo" step of `release.yml` turns live search
+  off without a code change.
 
 ### 13. Tests without network, and CI (design choice, not yet confirmed by the owner)
 
@@ -489,7 +497,8 @@ fewer moving parts, but then the hygiene promise is only by inspection.
 ## Risks / Trade-offs
 
 - [Open-Meteo considers the docs site commercial use and blocks it or
-  asks us to stop] → owner decision 1 before release; the build switch
+  asks us to stop] → the owner judged the use non-commercial and ships
+  live search (decision 1); the build switch
   turns live search off without a code change; the sample keeps the tab
   useful.
 - [Open-Meteo changes the API (column names, null semantics, CORS)] →
@@ -506,13 +515,13 @@ fewer moving parts, but then the hygiene promise is only by inspection.
   ±3 h; the sentence under the tolerances explains the time tolerance;
   acceptable for a demo.
 - [The visitor's clock is wrong, making "yesterday" wrong] → a future
-  `end_date` would include filled-in ages; clamp: if the API's last time
-  is later than "now" by more than an hour, trim the series to times
-  before now (cheap safeguard).
+  `end_date` would include filled-in ages; safeguard: hours of live data
+  later than "now" are left out of the comparison (the bundled sample is
+  never trimmed, so a clock behind 2026 does not empty it).
 - [CI time grows by a demo build] → seconds; the SDK build is already
   done in that job.
-- [The bundled sample is not committed yet] → this change depends on
-  `add-mcp-url-ingestion`; its sample is used unchanged.
+- [The sample's owner change is not archived yet] → this change depends
+  on `add-mcp-url-ingestion`; its committed sample is used unchanged.
 
 ## Migration Plan
 
@@ -523,5 +532,51 @@ state to migrate.
 
 ## Open Questions
 
-- Exact wording of the usage note once Open-Meteo has answered (owner
-  decision 1); it does not change the mechanism.
+None. (The usage-note wording was tied to owner decision 1, now
+settled.)
+
+## Implementation notes
+
+Deviations from the decisions above, found while implementing:
+
+- **§9, superseded forecast requests are not aborted.** A forecast
+  request for a superseded choice is left to finish and its answer is
+  ignored by the UI (a token check in `controller.ts`), but it lands in
+  the cache, so going back to that choice needs no new request. Aborting
+  it would waste the request and break sharing of the in-flight promise.
+  Geocoding searches are aborted as designed.
+- **§5 / Risks, clock safeguard for live data only.** Hours later than
+  now are left out only for live data; the bundled sample is compared in
+  full whatever the visitor's clock says.
+- **§11, `_headers` written by a script.** `make demo` writes
+  `target/doc/_headers` with `node examples/web/scripts/headers.mjs`,
+  which also holds the switch parsing used by `vite.config.ts`
+  (`isWeatherLive`: on unless `false`, `0`, `off` or `no`), so the policy
+  text is unit-tested and the build and the policy cannot disagree.
+  `make demo` also empties `target/doc/demo/` before copying, so a local
+  rebuild leaves no stale chunk (for example the live-data chunk after a
+  sample-only build).
+- **§12, switch normalised at build time.** `vite.config.ts` `define`s
+  `import.meta.env.VITE_WEATHER_LIVE` as `'true'` / `'false'`; the UI
+  imports `weather/live.ts` (the only module holding the API hosts,
+  through `openmeteo.ts`) dynamically behind that constant, so a
+  sample-only build contains no Open-Meteo API host (checked by grep on
+  the bundle). Errors and query normalisation live in `errors.ts` so the
+  sample path does not pull in the client.
+- **§13, tests.** `vitest.config.ts` aliases `@simtest-js/funnel` to
+  `packages/sdk/src/index.ts`, so the demo tests need only the SDK's
+  wasm glue (`build:wasm`), not its dist build. The setup file both makes
+  the global `fetch` throw and fails the test in `afterEach` if it was
+  called, so a swallowed error cannot hide a network call. Tests avoid
+  Node APIs (the bundled sample and its `ATTRIBUTION.md` are read with
+  `?raw`, the SHA-256 with WebCrypto), so no `@types/node` is needed.
+- **§14, module layout.** Besides the planned modules: `errors.ts`,
+  `search.ts` (debounce and abort, DOM-free), `controller.ts` (shown
+  data, loading, error and stale state, DOM-free), `live.ts` (client with
+  both caches), `text.ts` (all wording, including the attribution);
+  `synthetic.ts` exports its existing `waitForPlotly` for reuse.
+- **§6, plot.** No plot title (the one-line answer above states place,
+  age and tolerances, and a long title is cut off at phone width); the
+  legend sits above the plot, ticks read "9 Nov", hover "9 Nov 2026
+  12:00 UTC". The demo has no dark theme, so the weather tab is light
+  only like the rest of the page.

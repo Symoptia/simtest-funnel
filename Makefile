@@ -21,13 +21,16 @@ clean:  ## Remove all build artifacts
 build-sdk:  ## Build the @simtest-js/funnel SDK (wasm glue + dist)
 	cd packages/sdk && pnpm install && pnpm build
 
-demo: build-sdk  ## Build the browser demo into target/doc/demo/
-	cd examples/web && pnpm install && pnpm build
+demo: build-sdk  ## Build the browser demo into target/doc/demo/ (VITE_WEATHER_LIVE=false: sample-only weather tab)
+	cd examples/web && pnpm install && VITE_WEATHER_LIVE=$(VITE_WEATHER_LIVE) pnpm build
+	rm -rf target/doc/demo
 	mkdir -p target/doc/demo
 	cp -r examples/web/dist/. target/doc/demo/
 	# Cloudflare Pages honors a single _headers file at the deploy root, so
-	# the wasm MIME rule must live at target/doc/_headers (not under demo/).
-	printf '/*.wasm\n  Content-Type: application/wasm\n' > target/doc/_headers
+	# the wasm MIME rule and the demo's connect-src policy (only the site and,
+	# with live weather data, the two Open-Meteo API hosts) must live at
+	# target/doc/_headers (not under demo/).
+	VITE_WEATHER_LIVE=$(VITE_WEATHER_LIVE) node examples/web/scripts/headers.mjs target/doc/_headers
 
 demo-serve: build-sdk  ## Run the demo dev server (Vite) for local preview
 	cd examples/web && pnpm install && pnpm dev
@@ -62,8 +65,9 @@ lint-rust:  ## Clippy + cargo fmt check
 
 test: test-rust test-python test-js test-docs  ## Run all three language test suites
 
-test-js:  ## vitest (JavaScript/TypeScript)
+test-js:  ## vitest (JavaScript/TypeScript): SDK, then the browser demo
 	cd packages/sdk && pnpm run build:wasm && pnpm test
+	cd examples/web && pnpm install && pnpm test
 
 test-python:  ## pytest tests/python/ + simtest-funnel-mcp tests
 	cd crates/simtest-funnel-python && uv run maturin develop --uv
