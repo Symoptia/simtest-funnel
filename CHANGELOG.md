@@ -1,3 +1,10 @@
+# [1.0.0-beta.17](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.16...v1.0.0-beta.17) (2026-11-22)
+
+
+### Features
+
+* **mcp:** compare column pairs, skip preambles and read date-time columns ([257c9b1](https://github.com/Symoptia/simtest-funnel/commit/257c9b1daa676ea491be7d0fd036f0ce85579c15))
+
 # [1.0.0-beta.16](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.15...v1.0.0-beta.16) (2026-11-22)
 
 

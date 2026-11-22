@@ -1676,12 +1676,12 @@ wheels = [
 
 [[package]]
 name = "simtest-funnel"
-version = "1.0.0b16"
+version = "1.0.0b17"
 source = { editable = "crates/simtest-funnel-python" }
 
 [[package]]
 name = "simtest-funnel-mcp"
-version = "1.0.0b16"
+version = "1.0.0b17"
 source = { editable = "python/simtest-funnel-mcp" }
 dependencies = [
     { name = "anyio" },
