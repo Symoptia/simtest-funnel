@@ -39,9 +39,9 @@ def test_single_excursion_above() -> None:
     r = compare(t, y, t, yt, opts)
     s = summarize(r, t, opts)
     assert s.status == Status.FAIL
-    # Echo is the six resolved values: y given, x keeps the default.
+    # Echo is the six resolved values: y given, x keeps the default (zero).
     assert s.tolerances == Tolerances(
-        atolx=0.0, atoly=0.2, ltolx=0.0, ltoly=0.0, rtolx=2e-3, rtoly=0.0
+        atolx=0.0, atoly=0.2, ltolx=0.0, ltoly=0.0, rtolx=0.0, rtoly=0.0
     )
     assert s.x_range == Range()
     assert s.compared_range == Range(lo=0.0, hi=4.0)
@@ -83,7 +83,7 @@ def test_validation_status_summary() -> None:
     s = summarize(r, t, opts)
     assert s.status == Status.NON_MONOTONIC
     assert s.tolerances == Tolerances(
-        atolx=0.0, atoly=0.5, ltolx=0.0, ltoly=0.0, rtolx=2e-3, rtoly=0.0
+        atolx=0.0, atoly=0.5, ltolx=0.0, ltoly=0.0, rtolx=0.0, rtoly=0.0
     )
     assert s.x_range == opts.x_range
     assert s.intervals == ()
@@ -100,7 +100,7 @@ def test_default_options_are_echoed() -> None:
     s = summarize(r, t)
     assert s.tolerances == default_options().tolerances
     assert s.tolerances == Tolerances(
-        atolx=0.0, atoly=0.0, ltolx=0.0, ltoly=0.0, rtolx=2e-3, rtoly=2e-3
+        atolx=0.0, atoly=0.0, ltolx=0.0, ltoly=0.0, rtolx=0.0, rtoly=2e-3
     )
     # Options() and Options(tolerances=Tolerances()) mean the same.
     assert summarize(r, t, Options()).tolerances == s.tolerances

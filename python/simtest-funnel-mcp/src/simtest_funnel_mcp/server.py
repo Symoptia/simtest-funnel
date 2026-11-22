@@ -83,9 +83,10 @@ Funnel (tolerance-tube) comparison of signals stored in local CSV files
 (comma-separated, header row, '#' comment lines, one shared time column).
 The server reads the files itself; never paste sample values into a call.
 Typical flow: describe_signals on the reference to see columns, time span,
-sampling and value ranges; choose tolerances; compare_signals; plot_signals
-to look at one column (inline PNG preview) and optionally save the plot as
-an SVG or PNG file for a document. Use absolute paths. Stateless: pass the
+sampling and value ranges; choose tolerances (there is no time tolerance
+unless you give one, e.g. atolx); compare_signals; plot_signals to look at
+one column (inline PNG preview) and optionally save the plot as an SVG or
+PNG file for a document. Use absolute paths. Stateless: pass the
 paths on every call. Only plot_signals writes, and only the output_path
 it is given (never an existing file unless overwrite=true), which must lie
 inside a workspace root declared by the client or an output directory
@@ -140,14 +141,20 @@ constant or near-constant signals give atoly explicitly.
   rtolx/rtoly: fraction of the reference time span / value range
   ltolx/ltoly: fraction of the local |t| / |y_ref|
 Resolution rule (applied by the library, echoed back as six resolved values): for
-each axis, if none of its three coefficients is given that axis gets the default
-rtol = 0.002 (0.2 % of the range); if any is given, the axis's other coefficients
-are 0. An explicit 0 counts as given (atolx=0 means no time tolerance).
+each axis, if none of its three coefficients is given that axis gets its default -
+x: all 0 (NO time tolerance); y: rtoly = 0.002 (0.2 % of the value range). If any
+coefficient of an axis is given, that axis's other coefficients are 0. An explicit 0
+counts as given.
 
-TOLERANCE IN X: the tube is also widened along time. A test curve that is shifted
-or delayed by up to half_x still passes, so small timing offsets and steep edges
-(steps, switching events) do not cause false failures. A pure value tolerance
-(x axis given as 0) flags every slightly shifted edge.
+TOLERANCE IN X: there is none unless you give one. With x tolerance 0 the tube has
+no width in time (half_x is the 1e-10 floor): each test point is checked only
+against the y band around the reference at the same time, so a test curve that is
+shifted or delayed even slightly fails at steep edges (steps, switching events).
+Give an x tolerance when such shifts are acceptable: a test curve shifted by up to
+half_x then still passes. Prefer atolx (time units); rtolx is a fraction of the
+whole time span, so it grows with the length of the record (rtolx = 0.002 allows
+43 min on 15 days of data). A failed row with no x coefficient given gets a note
+suggesting an x tolerance.
 
 Example "1 % in y, 0.5 s in x": {{"rtoly": 0.01, "atolx": 0.5}} (1 % of the reference
 value range). For 1 % of the local value use "ltoly": 0.01; to allow both use
@@ -955,7 +962,8 @@ async def compare_signals(
         Field(
             description=(
                 "Tolerance sets, each with an optional unique 'label' and any of atolx, atoly, "
-                "ltolx, ltoly, rtolx, rtoly. Omit for one set with the library default."
+                "ltolx, ltoly, rtolx, rtoly. Omit for one set with the library default "
+                "(rtoly = 0.002, no time tolerance)."
             )
         ),
     ] = None,
@@ -1040,7 +1048,7 @@ async def plot_signals(
             description=(
                 "One tolerance set: optional 'label' and any of atolx, atoly, ltolx, ltoly, "
                 "rtolx, rtoly (same as one entry of compare_signals 'tolerances'). Omit for "
-                "the library default."
+                "the library default (rtoly = 0.002, no time tolerance)."
             )
         ),
     ] = None,

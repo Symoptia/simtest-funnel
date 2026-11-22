@@ -118,7 +118,7 @@ def test_resolved_tolerances_come_from_the_library(demo_reference: Path, demo_te
     s = d["tolerance_sets"][0]
     assert s["given"] == {"rtoly": 0.01}
     assert s["resolved"] == {
-        "atolx": 0.0, "atoly": 0.0, "ltolx": 0.0, "ltoly": 0.0, "rtolx": 0.002, "rtoly": 0.01
+        "atolx": 0.0, "atoly": 0.0, "ltolx": 0.0, "ltoly": 0.0, "rtolx": 0.0, "rtoly": 0.01
     }
     # Same as what summarize reports for that comparison.
     t = np.array([0.0, 1.0])
@@ -134,6 +134,9 @@ def test_no_sets_means_library_default(demo_reference: Path, demo_test: Path) ->
     default = funnel.default_options().tolerances
     assert s[0]["resolved"]["rtolx"] == default.rtolx
     assert s[0]["resolved"]["rtoly"] == default.rtoly
+    assert s[0]["resolved"] == {
+        "atolx": 0.0, "atoly": 0.0, "ltolx": 0.0, "ltoly": 0.0, "rtolx": 0.0, "rtoly": 0.002
+    }
     assert d["totals"]["rows"] == 3
 
 
@@ -424,3 +427,74 @@ def test_non_finite_arguments_are_rejected() -> None:
     for bad_tol in ({"atoly": "inf"}, {"rtolx": float("nan")}):
         with pytest.raises(ValidationError):
             ToleranceSet.model_validate(bad_tol)
+
+
+# --------------------------------------------------------------------------
+# Default x tolerance (zero) and the hint on failed rows
+# --------------------------------------------------------------------------
+
+NO_X_HINT = "had no x (time) tolerance"
+
+
+def _step_edge_files(write_csv: WriteCsv) -> tuple[Path, Path]:
+    """The shared step-edge case: the test step is delayed by 0.001 in time."""
+    t = np.arange(101) / 100.0
+    y_ref = np.clip((t - 0.49) / 0.01, 0.0, 1.0)
+    y_tst = np.clip((t - 0.491) / 0.01, 0.0, 1.0)
+
+    def text(y: np.ndarray) -> str:
+        return "time,y\n" + "".join(
+            f"{float(a)!r},{float(b)!r}\n" for a, b in zip(t, y, strict=True)
+        )
+
+    return write_csv("ref.csv", text(y_ref)), write_csv("tst.csv", text(y_tst))
+
+
+def test_default_has_no_x_tolerance_and_shifted_edge_fails(write_csv: WriteCsv) -> None:
+    ref, tst = _step_edge_files(write_csv)
+    d = _compare(ref, tst)
+    assert d["tolerance_sets"][0]["resolved"] == {
+        "atolx": 0.0, "atoly": 0.0, "ltolx": 0.0, "ltoly": 0.0, "rtolx": 0.0, "rtoly": 0.002
+    }
+    assert d["rows"][0]["verdict"] == "fail"
+    hints = [n for n in d["notes"] if NO_X_HINT in n]
+    assert hints == [
+        "1 failing row(s) had no x (time) tolerance: none was given and the default is 0. "
+        "If the test may be shifted or delayed in time against the reference (e.g. at "
+        "steep edges), consider an x tolerance such as atolx (time units)"
+    ]
+    # The text rendering shows the note too.
+    text = compare_signals_impl(str(ref), str(tst), []).content[0].text  # type: ignore[union-attr]
+    assert NO_X_HINT in text
+    # With an explicit x tolerance the shifted edge passes and there is no hint.
+    ok = _compare(ref, tst, tolerances=[ToleranceSet(atolx=0.002)])
+    assert ok["rows"][0]["verdict"] == "pass"
+    assert not any(NO_X_HINT in n for n in ok["notes"])
+
+
+def test_no_x_hint_only_for_failures_without_x_given(write_csv: WriteCsv) -> None:
+    ref, tst = _step_edge_files(write_csv)
+    sets = [
+        ToleranceSet(label="only_y", atoly=0.05),  # fails, no x given -> counted
+        ToleranceSet(label="zero_x", atolx=0, atoly=0.05),  # fails, x given as 0 -> not
+        ToleranceSet(label="with_x", atolx=0.002, atoly=0.05),  # passes -> not
+    ]
+    d = _compare(ref, tst, tolerances=sets)
+    rows = _rows(d)
+    assert [rows[("y", s)]["verdict"] for s in ("only_y", "zero_x", "with_x")] == [
+        "fail", "fail", "pass"
+    ]
+    hints = [n for n in d["notes"] if NO_X_HINT in n]
+    assert len(hints) == 1 and hints[0].startswith("1 failing row(s)")
+    # A per-column override that gives an x coefficient counts as x given.
+    over = _compare(
+        ref, tst, tolerances=[sets[0]], column_tolerances={"y": ToleranceSpec(atolx=0)}
+    )
+    assert over["rows"][0]["verdict"] == "fail"
+    assert not any(NO_X_HINT in n for n in over["notes"])
+
+
+def test_no_x_hint_absent_when_everything_passes(demo_reference: Path, demo_test: Path) -> None:
+    d = _compare(demo_reference, demo_test, tolerances=[ToleranceSet(atoly=10.0)])
+    assert d["totals"]["failed"] == 0
+    assert not any(NO_X_HINT in n for n in d["notes"])

@@ -1,13 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  compare,
-  defaultOptions,
-  downsampleMinMax,
-  Status,
-  summarize,
-} from '../src/index.js';
+import { compare, downsampleMinMax, Status, summarize } from '../src/index.js';
 
 function readXY(path: string): { x: Float64Array; y: Float64Array } {
   const lines = readFileSync(path, 'utf8').trim().split(/\r?\n/);
@@ -89,7 +83,9 @@ describe('downsampleMinMax', () => {
   it('keeps every violation of fail1 when worst points are pinned', () => {
     const ref = readXY(resolve(CORPUS, 'fail1/trended.csv'));
     const tst = readXY(resolve(CORPUS, 'fail1/simulated.csv'));
-    const options = defaultOptions();
+    // The corpus case's tolerances (param.json), given explicitly so the
+    // check does not depend on the library default.
+    const options = { tolerances: { rtolx: 2e-3, rtoly: 2e-3 } };
     const r = compare(ref.x, ref.y, tst.x, tst.y, options);
     const s = summarize(r, ref.x, options);
     expect(r.status).toBe(Status.Fail);

@@ -58,16 +58,21 @@ class Tolerances:
     ``atoly``/``ltoly``/``rtoly``. Coefficients are resolved per axis by
     the Rust core, identically in every simtest-funnel API:
 
-    - an axis with no coefficient given gets the default
-      ``rtol = 2e-3`` (other coefficients ``0.0``);
+    - an axis with no coefficient given gets its default: the x axis all
+      ``0.0`` (no time tolerance), the y axis ``rtoly = 2e-3`` (other
+      coefficients ``0.0``);
     - an axis with at least one coefficient given uses the given values
       and ``0.0`` for its other coefficients;
     - an explicit ``0.0`` counts as given.
 
-    So ``Tolerances()`` is the default (``rtolx = rtoly = 2e-3``) and
-    ``Tolerances(atoly=0.05)`` means ``atoly = 0.05`` with ``rtoly = 0``
-    and ``rtolx = 2e-3``; use ``Tolerances(atolx=0.0, atoly=0.05)`` for
-    zero x tolerance. Values returned by the library
+    So ``Tolerances()`` is the default (``rtoly = 2e-3``, everything else
+    ``0.0``) and ``Tolerances(atoly=0.05)`` means ``atoly = 0.05`` and
+    every other coefficient ``0.0``. Give an x coefficient, e.g.
+    ``Tolerances(atolx=0.5, atoly=0.05)``, to allow the test to be shifted
+    in time: with zero x tolerance the x half-width is the ``1e-10``
+    floor, so each test point is checked only against the y band around
+    the reference at the same x and a slightly delayed steep edge fails.
+    Values returned by the library
     (:func:`default_options`, :attr:`ViolationSummary.tolerances`) are
     always the six resolved floats.
     """
@@ -104,7 +109,7 @@ class CompareResult:
 
 def default_options() -> Options:
     """Return the default options with all six tolerances explicit
-    (``rtolx = rtoly = 2e-3``, others ``0.0``)."""
+    (``rtoly = 2e-3``, others ``0.0``: no tolerance in x)."""
     d = _ext.default_options()
     t = d["tolerances"]
     r = d["x_range"]
@@ -158,8 +163,8 @@ def compare(
 ) -> CompareResult:
     """Compare a test trajectory against a reference trajectory.
 
-    ``options=None`` (or ``Options()``) uses the default tolerances;
-    partially specified :class:`Tolerances` are resolved per axis (see
+    ``options=None`` (or ``Options()``) uses the default tolerances
+    (``rtoly = 2e-3``, no tolerance in x); partially specified :class:`Tolerances` are resolved per axis (see
     :class:`Tolerances`).
 
     The interpreter lock is released while the comparison runs, so other

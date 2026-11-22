@@ -8,7 +8,7 @@
 //! JavaScript/WASM (via wasm-bindgen) binding layers.
 //!
 //! Tolerances: [`Options::default()`] uses [`Tolerances::DEFAULT`]
-//! (`rtolx = rtoly = 2e-3`). Partially specified tolerances are expressed
+//! (`rtoly = 2e-3`, no tolerance in x). Partially specified tolerances are expressed
 //! with [`PartialTolerances`] and resolved per axis by
 //! [`PartialTolerances::resolve`]; every front end uses that rule.
 //!

@@ -23,7 +23,7 @@ let t_tst = [0.0_f64, 1.0, 2.0];
 let y_tst = [0.0_f64, 1.0, 2.0];
 
 // Only a y tolerance given: y uses atoly = 0.1 (rtoly = ltoly = 0),
-// x keeps the default rtolx = 2e-3.
+// x keeps its default: no tolerance in x.
 let opts = Options {
     tolerances: PartialTolerances { atoly: Some(0.1), ..Default::default() }.resolve(),
     ..Default::default()
@@ -41,8 +41,19 @@ reference extent within `x_range`. If that is effectively zero
 back to `rtol * max|value|` (when `rtol > 0`), then to `1e-10`; give
 `atoly` for constant or near-constant signals.
 
-`Options::default()` uses `Tolerances::DEFAULT`: `rtolx = rtoly = 2e-3`,
-all other coefficients zero. Partially specified tolerances
+`Options::default()` uses `Tolerances::DEFAULT`: `rtoly = 2e-3`, all
+other coefficients zero — **no tolerance in x (time) unless you give
+one**. Zero x tolerance means the x half-width is the `1e-10` floor: the
+tube has no width along x, so each test point is checked only against
+the y band around the reference at the same x, and a test curve shifted
+in time fails wherever the shift moves it by more than the y tolerance
+(steep edges, switching events). Give `atolx` (time units), `ltolx` or
+`rtolx` to allow such shifts. There is no x default because a tolerance
+relative to the x range grows with the length of the record, not with
+how fast the signal changes (a year of data at `rtolx = 2e-3` would
+allow 17.5 h of time shift).
+
+Partially specified tolerances
 (`PartialTolerances`, each coefficient `Option<f64>`) are resolved per
 axis — the same rule the Python, TypeScript and CLI front ends use:
 

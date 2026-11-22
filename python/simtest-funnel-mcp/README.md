@@ -213,13 +213,27 @@ on a constant reference (value range 0), it falls back to
 to `1e-10`. For constant or near-constant signals give `atoly` explicitly.
 
 Omitted coefficients are resolved by the library, per axis: an axis with no
-coefficient given gets `rtol = 0.002`; an axis with any coefficient given
-uses `0` for its others; an explicit `0` counts as given. The six resolved
-values are always echoed back.
+coefficient given gets its default — on the x axis all `0` (no time
+tolerance), on the y axis `rtoly = 0.002`; an axis with any coefficient
+given uses `0` for its others; an explicit `0` counts as given. The six
+resolved values are always echoed back.
 
 **Tolerance in x** widens the tube along time, so a test signal shifted or
 delayed by up to `half_x` still passes; steep edges and small timing
-offsets then do not cause false failures.
+offsets then do not cause false failures. There is **no tolerance in x
+unless you give one**: with x tolerance `0` the x half-width is the `1e-10`
+floor, so each test point is checked only against the y band around the
+reference at the same time and a slightly delayed steep edge fails. Prefer
+`atolx` (time units): `rtolx` is a fraction of the whole time span and grows
+with the length of the record (`rtolx = 0.002` allows 43 minutes on 15 days
+of data). When a row fails and no x coefficient was given for it,
+`compare_signals` and `plot_signals` add a note:
+
+```text
+1 failing row(s) had no x (time) tolerance: none was given and the default is 0.
+If the test may be shifted or delayed in time against the reference (e.g. at
+steep edges), consider an x tolerance such as atolx (time units)
+```
 
 "1 % in y, 0.5 s in x" is `{"rtoly": 0.01, "atolx": 0.5}` (or `ltoly` for
 1 % of the local value).

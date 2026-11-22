@@ -592,7 +592,7 @@ mod tests {
     use super::*;
     use crate::tube::{get_data_char, tube_halfwidths};
 
-    fn bounds_default(t: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+    fn bounds_rtol_2e_3(t: &[f64], y: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
         let dc = get_data_char(t, y);
         let tol = crate::options::Tolerances {
             atolx: 0.0,
@@ -610,7 +610,7 @@ mod tests {
     fn monotonic_reference_noop() {
         let t = [0.0, 1.0, 2.0, 3.0, 4.0];
         let y = [0.0, 1.0, 2.0, 3.0, 4.0];
-        let (lx, ly, ux, uy) = bounds_default(&t, &y);
+        let (lx, ly, ux, uy) = bounds_rtol_2e_3(&t, &y);
         assert!(lx.len() >= 2);
         assert!(ux.len() >= 2);
         // lower envelope stays strictly below reference, upper strictly above,
@@ -626,7 +626,7 @@ mod tests {
         // triangular reference: slope changes at the apex
         let t = [0.0, 1.0, 2.0];
         let y = [0.0, 1.0, 0.0];
-        let (lx, _ly, ux, _uy) = bounds_default(&t, &y);
+        let (lx, _ly, ux, _uy) = bounds_rtol_2e_3(&t, &y);
         // Expect more corner points than reference (corners inserted
         // at the apex).
         assert!(ux.len() >= 4);
@@ -639,7 +639,7 @@ mod tests {
         // segment: saw-tooth shape.
         let t = [0.0, 0.5, 1.0, 1.5, 2.0];
         let y = [0.0, 1.0, 0.0, 1.0, 0.0];
-        let (lx, _ly, ux, _uy) = bounds_default(&t, &y);
+        let (lx, _ly, ux, _uy) = bounds_rtol_2e_3(&t, &y);
         // Monotonic non-decreasing x after removal (with small eps for
         // identical corners).
         for w in ux.windows(2) {

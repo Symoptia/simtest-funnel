@@ -10,7 +10,8 @@ import {
 
 // Step-edge case shared with tests/python/test_tolerances.py, the Rust
 // core and CLI tests: the test signal is the reference step delayed by
-// 0.001 in x, so it passes only when the x axis keeps a non-zero tolerance.
+// 0.001 in x, so it passes only when an x tolerance is given (there is none
+// by default).
 const t = Float64Array.from({ length: 101 }, (_, i) => i / 100);
 const clip = (v: number): number => Math.min(Math.max(v, 0), 1);
 const yRef = t.map((x) => clip((x - 0.49) / 0.01));
@@ -24,7 +25,8 @@ const ZERO: ResolvedTolerances = {
   rtolx: 0,
   rtoly: 0,
 };
-const DEFAULT: ResolvedTolerances = { ...ZERO, rtolx: 2e-3, rtoly: 2e-3 };
+// The default: no tolerance in x, rtoly = 2e-3 in y.
+const DEFAULT: ResolvedTolerances = { ...ZERO, rtoly: 2e-3 };
 
 function resolved(options?: Options): {
   status: number;
@@ -39,7 +41,8 @@ function resolved(options?: Options): {
 
 describe('tolerance resolution', () => {
   it('uses the default when options are omitted', () => {
-    expect(resolved()).toEqual({ status: Status.Pass, tolerances: DEFAULT });
+    // No x tolerance by default: the delayed steep edge fails.
+    expect(resolved()).toEqual({ status: Status.Fail, tolerances: DEFAULT });
   });
 
   it('treats empty options / tolerances like omitted options', () => {
@@ -49,10 +52,22 @@ describe('tolerance resolution', () => {
     expect(resolved({ xRange: { lo: -Infinity, hi: Infinity } })).toEqual(none);
   });
 
-  it('keeps the x default when only atoly is given', () => {
+  it('keeps the x default (zero) when only atoly is given', () => {
     expect(resolved({ tolerances: { atoly: 0.05 } })).toEqual({
+      status: Status.Fail,
+      tolerances: { ...ZERO, atoly: 0.05 },
+    });
+  });
+
+  it('absorbs the time shift with an explicit x tolerance', () => {
+    expect(resolved({ tolerances: { atolx: 0.002, atoly: 0.05 } })).toEqual({
       status: Status.Pass,
-      tolerances: { ...ZERO, atoly: 0.05, rtolx: 2e-3 },
+      tolerances: { ...ZERO, atolx: 0.002, atoly: 0.05 },
+    });
+    // Only an x coefficient: y keeps its default rtoly = 2e-3.
+    expect(resolved({ tolerances: { rtolx: 2e-3 } })).toEqual({
+      status: Status.Pass,
+      tolerances: { ...ZERO, rtolx: 2e-3, rtoly: 2e-3 },
     });
   });
 

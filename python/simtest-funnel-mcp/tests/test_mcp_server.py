@@ -68,7 +68,8 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
         "half_x = max(atolx, rtolx * time_span_ref, ltolx * |t|)",
         "TOLERANCE IN X",
         '"1 % in y, 0.5 s in x": {"rtoly": 0.01, "atolx": 0.5}',
-        "rtol = 0.002",
+        "rtoly = 0.002",
+        "x: all 0 (NO time tolerance)",
     ):
         assert needle in description, needle
     assert set(tools["describe_signals"].input_schema["properties"]) == {

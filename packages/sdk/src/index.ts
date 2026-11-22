@@ -9,14 +9,18 @@ import * as wasm from './wasm/simtest_funnel_wasm.js';
  * simtest-funnel API (x axis: `atolx`/`ltolx`/`rtolx`; y axis:
  * `atoly`/`ltoly`/`rtoly`):
  *
- * - an axis with no coefficient given gets the default `rtol = 2e-3`
- *   (other coefficients `0`);
+ * - an axis with no coefficient given gets its default: the x axis all `0`
+ *   (no time tolerance), the y axis `rtoly = 2e-3` (other coefficients `0`);
  * - an axis with at least one coefficient given uses the given values and
  *   `0` for its other coefficients;
  * - an explicit `0` counts as given.
  *
- * So `{ atoly: 0.05 }` means `atoly = 0.05`, `rtoly = 0` and
- * `rtolx = 2e-3`; use `{ atolx: 0, atoly: 0.05 }` for zero x tolerance.
+ * So `{ atoly: 0.05 }` means `atoly = 0.05` and every other coefficient
+ * `0`. Give an x coefficient, e.g. `{ atolx: 0.5, atoly: 0.05 }`, to allow
+ * the test to be shifted in time: with zero x tolerance the x half-width is
+ * the `1e-10` floor, so each test point is checked only against the y band
+ * around the reference at the same x and a slightly delayed steep edge
+ * fails.
  */
 export interface Tolerances {
   atolx?: number | null;
@@ -51,7 +55,8 @@ export interface ResolvedXRange {
 
 /**
  * Options for {@link compare}. Omitting `options`, or omitting
- * `tolerances`, means the default tolerances (`rtolx = rtoly = 2e-3`).
+ * `tolerances`, means the default tolerances (`rtoly = 2e-3`, no tolerance
+ * in x).
  */
 export interface Options {
   tolerances?: Tolerances;
@@ -266,7 +271,7 @@ export function downsampleMinMax(
 
 /**
  * Returns the default options with all six tolerances explicit
- * (`rtolx = rtoly = 2e-3`, others `0`). Passing them to {@link compare}
+ * (`rtoly = 2e-3`, others `0`: no tolerance in x). Passing them to {@link compare}
  * is identical to omitting `options`.
  */
 export function defaultOptions(): ResolvedOptions {

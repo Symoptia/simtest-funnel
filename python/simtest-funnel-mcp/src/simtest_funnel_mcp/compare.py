@@ -190,6 +190,30 @@ def compose_override(base: dict[str, float], override: ToleranceSpec | None) -> 
     return out
 
 
+def no_x_tolerance_hint(records: list[RowRecord]) -> str | None:
+    """A note for failed rows compared without any x (time) tolerance.
+
+    Only rows the library judged FAIL and for which no x coefficient was
+    given (so the library default, zero x tolerance, applied) count; an
+    explicit ``atolx = 0`` is a deliberate choice and gets no hint.
+    """
+    count = sum(
+        1
+        for r in records
+        if r.from_library
+        and r.row.verdict == "fail"
+        and not any(k in r.given for k in X_COEFFICIENTS)
+    )
+    if count == 0:
+        return None
+    return (
+        f"{count} failing row(s) had no x (time) tolerance: none was given and the "
+        "default is 0. If the test may be shifted or delayed in time against the "
+        "reference (e.g. at steep edges), consider an x tolerance such as atolx "
+        "(time units)"
+    )
+
+
 def _labels(sets: list[ToleranceSet]) -> list[str]:
     labels = [s.label if s.label is not None else f"set{i + 1}" for i, s in enumerate(sets)]
     seen: set[str] = set()
@@ -494,6 +518,10 @@ def run_compare(
                 f"time ranges differ ({spans}); pass x_range {_range_json(window)} "
                 "to compare only the overlap"
             )
+
+    hint = no_x_tolerance_hint(records)
+    if hint is not None:
+        notes.append(hint)
 
     pending_out: list[NotCompleted] | None = None
     pending_omitted: int | None = None

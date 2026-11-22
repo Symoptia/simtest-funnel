@@ -460,7 +460,6 @@ mod tests {
             s.tolerances,
             Tolerances {
                 atoly: 0.2,
-                rtolx: 2e-3,
                 ..Tolerances::ZERO
             }
         );

@@ -56,7 +56,7 @@ y_ref = np.sin(2 * np.pi * t_ref)
 t_test = t_ref
 y_test = y_ref + 0.01
 
-# Only a y tolerance: rtoly = 0, x keeps the default rtolx = 2e-3.
+# Only a y tolerance: rtoly = 0; no x (time) tolerance unless given.
 result = compare(
     t_ref, y_ref, t_test, y_test,
     Options(tolerances=Tolerances(atoly=0.05)),
@@ -73,7 +73,7 @@ const tRef = Float64Array.from({ length: 101 }, (_, i) => i / 100);
 const yRef = tRef.map((t) => Math.sin(2 * Math.PI * t));
 const yTest = yRef.map((y) => y + 0.01);
 
-// Only a y tolerance: rtoly = 0, x keeps the default rtolx = 2e-3.
+// Only a y tolerance: rtoly = 0; no x (time) tolerance unless given.
 const result = compare(tRef, yRef, tRef, yTest, {
   tolerances: { atoly: 0.05 },
 });
@@ -93,7 +93,7 @@ fn main() {
         .collect();
     let y_test: Vec<f64> = y_ref.iter().map(|y| y + 0.01).collect();
 
-    // Only a y tolerance: rtoly = ltoly = 0, x keeps the default rtolx = 2e-3.
+    // Only a y tolerance: rtoly = ltoly = 0; no x (time) tolerance unless given.
     let opts = Options {
         tolerances: PartialTolerances { atoly: Some(0.05), ..Default::default() }.resolve(),
         ..Default::default()
@@ -102,6 +102,20 @@ fn main() {
     assert_eq!(r.status, Status::Pass);
 }
 ```
+
+### Time (x) tolerance
+
+By default there is **no tolerance in x**: only the y axis has a default
+(`rtoly = 2e-3`, 0.2 % of the reference value range). With zero x
+tolerance the tube's x half-width is the `1e-10` floor, so each test
+point is checked only against the y band around the reference at the
+same x, and a test curve that is shifted or delayed in time fails at
+steep edges and switching events even when the shift is tiny. Give
+`atolx` (time units, e.g. `atolx = 0.5` for half a second) when such
+shifts are acceptable. A range-relative `rtolx` grows with the length of
+the record rather than with how fast the signal changes (with
+`rtolx = 2e-3`, 15 days of data allow 43 minutes of shift, a year
+17.5 hours), which is why there is no x default.
 
 ### Stopping a long comparison
 
@@ -144,18 +158,18 @@ aware of the following:
   distinct exit codes (`0/1/2/3/4/5`) so shells can distinguish
   "inside the funnel" from "range asymmetry" — see
   [`crates/simtest-funnel-cli/README.md`](crates/simtest-funnel-cli/README.md).
-- **Default tolerance `rtolx = rtoly = 2e-3`, resolved per axis.**
-  The default matches the `csv-compare` project; LBNL defaults every
-  coefficient to `0.0`. In every simtest-funnel API (Rust, Python,
-  TypeScript, CLI) the coefficients you give are resolved per axis
-  (x: `atolx`/`ltolx`/`rtolx`, y: `atoly`/`ltoly`/`rtoly`): an axis
-  with no coefficient given gets `rtol = 2e-3`; an axis with at least
-  one coefficient given uses zero for its other coefficients; an
-  explicit `0` counts as given. So giving only `atoly` keeps
-  `rtolx = 2e-3` on the x axis. For exact LBNL parity give at least one
-  coefficient per axis (e.g. `atolx = 0`). This also applies to CLI
-  `--params` files: they use the LBNL `param.json` keys, but a missing
-  tolerance key is resolved per axis instead of meaning `0`.
+- **Default tolerance `rtoly = 2e-3`, no x tolerance, resolved per
+  axis.** LBNL defaults every coefficient to `0.0`; simtest-funnel
+  defaults only the y axis to `rtoly = 2e-3` (0.2 % of the reference
+  value range). In every simtest-funnel API (Rust, Python, TypeScript,
+  CLI) the coefficients you give are resolved per axis (x:
+  `atolx`/`ltolx`/`rtolx`, y: `atoly`/`ltoly`/`rtoly`): an axis with no
+  coefficient given gets its default (x: all zero; y: `rtoly = 2e-3`);
+  an axis with at least one coefficient given uses zero for its other
+  coefficients; an explicit `0` counts as given. For exact LBNL parity
+  give at least one y coefficient (e.g. `atoly = 0`). This also applies
+  to CLI `--params` files: they use the LBNL `param.json` keys, but a
+  missing y tolerance key is resolved per axis instead of meaning `0`.
 
 The core and CLI READMEs cross-link back to this section.
 

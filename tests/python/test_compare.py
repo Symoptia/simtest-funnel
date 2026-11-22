@@ -38,9 +38,11 @@ def test_version_is_nonempty() -> None:
     assert isinstance(version(), str) and len(version()) > 0
 
 
-def test_default_options_matches_2e_minus_3() -> None:
+def test_default_options_have_no_x_tolerance() -> None:
     o = default_options()
-    assert o.tolerances.rtolx == pytest.approx(2e-3)
+    assert o.tolerances.rtolx == 0.0
+    assert o.tolerances.atolx == 0.0
+    assert o.tolerances.ltolx == 0.0
     assert o.tolerances.rtoly == pytest.approx(2e-3)
 
 

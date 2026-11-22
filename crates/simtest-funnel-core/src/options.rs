@@ -51,16 +51,25 @@ impl Tolerances {
         rtoly: 0.0,
     };
 
-    /// Library default tolerances: `rtolx = rtoly = 2e-3` (0.2 % of the
-    /// reference range on each axis, matching csv-compare's `-t 0.002`),
-    /// all other coefficients zero. Equal to
+    /// Library default tolerances: `rtoly = 2e-3` (0.2 % of the reference
+    /// value range) and every other coefficient zero, so there is **no
+    /// tolerance in x** unless one is given. Equal to
     /// `PartialTolerances::default().resolve()`.
+    ///
+    /// Zero x tolerance means the x half-width falls to the `1e-10` floor:
+    /// in practice the tube has no width along x, so each test point is
+    /// checked only against the y band around the reference at the same
+    /// x, and a test curve shifted in x (e.g. a step that comes slightly
+    /// late) fails at a steep edge. Give `atolx`,
+    /// `ltolx` or `rtolx` to allow such shifts. There is no x default
+    /// because a range-relative x tolerance grows with the length of the
+    /// record rather than with how fast the signal changes.
     pub const DEFAULT: Tolerances = Tolerances {
         atolx: 0.0,
         atoly: 0.0,
         ltolx: 0.0,
         ltoly: 0.0,
-        rtolx: 2e-3,
+        rtolx: 0.0,
         rtoly: 2e-3,
     };
 }
@@ -74,8 +83,9 @@ impl Tolerances {
 ///
 /// - The x axis is `atolx`, `ltolx`, `rtolx`; the y axis is `atoly`,
 ///   `ltoly`, `rtoly`.
-/// - If **no** coefficient of an axis is given, that axis gets the
-///   default ([`Tolerances::DEFAULT`]: `rtol = 2e-3`, others zero).
+/// - If **no** coefficient of an axis is given, that axis gets its
+///   default ([`Tolerances::DEFAULT`]): all zero on the x axis (no time
+///   tolerance), `rtoly = 2e-3` and the others zero on the y axis.
 /// - If **at least one** coefficient of an axis is given, the given
 ///   values are used and the other coefficients of that axis are zero.
 /// - An explicit zero counts as given.
@@ -84,8 +94,12 @@ impl Tolerances {
 /// use simtest_funnel_core::{PartialTolerances, Tolerances};
 ///
 /// let t = PartialTolerances { atoly: Some(0.05), ..PartialTolerances::default() }.resolve();
-/// // y given -> rtoly = 0; x not given -> rtolx = 2e-3.
-/// assert_eq!(t, Tolerances { atoly: 0.05, rtolx: 2e-3, ..Tolerances::ZERO });
+/// // y given -> rtoly = 0; x not given -> x default, all zero.
+/// assert_eq!(t, Tolerances { atoly: 0.05, ..Tolerances::ZERO });
+///
+/// let t = PartialTolerances { atolx: Some(0.5), ..PartialTolerances::default() }.resolve();
+/// // x given -> atolx = 0.5; y not given -> rtoly = 2e-3.
+/// assert_eq!(t, Tolerances { atolx: 0.5, rtoly: 2e-3, ..Tolerances::ZERO });
 /// assert_eq!(PartialTolerances::default().resolve(), Tolerances::DEFAULT);
 /// ```
 ///
@@ -206,8 +220,8 @@ pub struct Options {
 
 impl Options {
     /// Library default options: [`Tolerances::DEFAULT`]
-    /// (`rtolx = rtoly = 2e-3`, all other coefficients zero; matches
-    /// csv-compare's `-t 0.002`) and `x_range = (-inf, +inf)`. Identical
+    /// (`rtoly = 2e-3`, all other coefficients zero, so no x tolerance)
+    /// and `x_range = (-inf, +inf)`. Identical
     /// to options built from `PartialTolerances::default().resolve()`.
     pub fn default_options() -> Self {
         Self {
@@ -238,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn only_atoly_given_keeps_x_default() {
+    fn only_atoly_given_x_default_is_zero() {
         let t = PartialTolerances {
             atoly: Some(0.05),
             ..p()
@@ -251,7 +265,7 @@ mod tests {
                 atoly: 0.05,
                 ltolx: 0.0,
                 ltoly: 0.0,
-                rtolx: 2e-3,
+                rtolx: 0.0,
                 rtoly: 0.0,
             }
         );
@@ -325,8 +339,8 @@ mod tests {
     }
 
     /// Step-edge case shared with the Python, TypeScript and CLI tests:
-    /// the test step is delayed by 0.001 in x, so it passes only when the
-    /// x axis keeps a non-zero tolerance.
+    /// the test step is delayed by 0.001 in x, so it passes only when an
+    /// x tolerance is given (there is no x tolerance by default).
     fn step_edge_status(tol: Tolerances) -> crate::Status {
         let clip = |v: f64| v.clamp(0.0, 1.0);
         let t: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
@@ -350,9 +364,21 @@ mod tests {
             atolx: Some(0.0),
             ..only_y
         };
-        assert_eq!(step_edge_status(only_y.resolve()), Status::Pass);
+        let y_and_x = PartialTolerances {
+            atolx: Some(0.002),
+            ..only_y
+        };
+        let only_rtolx = PartialTolerances {
+            rtolx: Some(2e-3),
+            ..p()
+        };
+        // Default and y-only: no x tolerance, the delayed edge fails.
+        assert_eq!(step_edge_status(p().resolve()), Status::Fail);
+        assert_eq!(step_edge_status(only_y.resolve()), Status::Fail);
         assert_eq!(step_edge_status(y_and_zero_x.resolve()), Status::Fail);
-        assert_eq!(step_edge_status(p().resolve()), Status::Pass);
+        // An explicit x tolerance absorbs the shift.
+        assert_eq!(step_edge_status(y_and_x.resolve()), Status::Pass);
+        assert_eq!(step_edge_status(only_rtolx.resolve()), Status::Pass);
     }
 
     #[cfg(feature = "json")]
@@ -372,9 +398,9 @@ mod tests {
     }
 
     #[test]
-    fn default_options_returns_2e_3_rtol() {
+    fn default_options_have_zero_x_and_2e_3_rtoly() {
         let o = Options::default_options();
-        assert_eq!(o.tolerances.rtolx, 2e-3);
+        assert_eq!(o.tolerances.rtolx, 0.0);
         assert_eq!(o.tolerances.rtoly, 2e-3);
         assert_eq!(o.tolerances.atolx, 0.0);
         assert_eq!(o.tolerances.atoly, 0.0);

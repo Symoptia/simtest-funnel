@@ -34,14 +34,16 @@ resolved in two steps:
    `null` means "not given").
 2. The given coefficients are resolved **per axis** — x is
    `atolx`/`ltolx`/`rtolx`, y is `atoly`/`ltoly`/`rtoly`:
-   - an axis with no coefficient given gets the default `rtol = 2e-3`
-     (other coefficients zero);
+   - an axis with no coefficient given gets its default: on the x axis
+     all zero (no time tolerance), on the y axis `rtoly = 2e-3` (other
+     coefficients zero);
    - an axis with at least one coefficient given uses the given values
      and zero for its other coefficients.
 
-So `--atoly 0.05` compares with `atoly = 0.05`, `rtoly = 0` and the
-x-axis default `rtolx = 2e-3`; add `--atolx 0` for zero x tolerance.
-This is the same rule the Rust, Python and TypeScript APIs use.
+So `--atoly 0.05` compares with `atoly = 0.05`, `rtoly = 0` and no x
+tolerance; add e.g. `--atolx 0.5` to allow the test to be shifted by up
+to 0.5 time units (without an x tolerance a slightly delayed steep edge
+fails). This is the same rule the Rust, Python and TypeScript APIs use.
 
 ```text
 simtest-funnel --params cases/success1/param.json
@@ -50,9 +52,10 @@ simtest-funnel --params cases/success1/param.json
 The `--params` file uses the same keys as LBNL Funnel's
 `funnel/tests/*/param.json`, but **missing tolerance keys do not mean 0**:
 as described above, the keys present are resolved per axis, so a file
-that omits every x (or y) coefficient compares that axis with
-`rtol = 2e-3`. An LBNL param file therefore gives LBNL results only if it
-names at least one coefficient per axis (add e.g. `"atolx": 0`).
+that omits every y coefficient compares with `rtoly = 2e-3` (a file that
+omits every x coefficient gets zero x tolerance, as in LBNL). An LBNL
+param file therefore gives LBNL results only if it names at least one y
+coefficient (add e.g. `"atoly": 0`).
 
 Writes five CSV files into the output directory (default `results`):
 
@@ -85,9 +88,9 @@ Writes five CSV files into the output directory (default `results`):
   and 4) so scripts can distinguish "inside funnel" from "one trajectory
   extends beyond the other".
 - **Default tolerance and per-axis resolution.** The workspace default
-  `rtolx = rtoly = 2e-3` matches the `csv-compare` project; the LBNL
-  default is `0.0` for every coefficient. A coefficient that is neither
-  flagged nor in `--params` is zero only if another coefficient of the
-  same axis is given; if none of an axis's coefficients is given, that
-  axis gets `rtol = 2e-3`. For exact LBNL parity give at least one
-  coefficient per axis (e.g. `"atolx": 0, "atoly": 0` in `param.json`).
+  is `rtoly = 2e-3` with every other coefficient zero (no tolerance in
+  x); the LBNL default is `0.0` for every coefficient. A coefficient that
+  is neither flagged nor in `--params` is zero only if another
+  coefficient of the same axis is given; if none of the y coefficients
+  is given, the y axis gets `rtoly = 2e-3`. For exact LBNL parity give at
+  least one y coefficient (e.g. `"atoly": 0` in `param.json`).

@@ -9,9 +9,10 @@ import pytest
 
 from simtest.funnel import (
     Downsampled,
+    Options,
     Status,
+    Tolerances,
     compare,
-    default_options,
     downsample_min_max,
     summarize,
 )
@@ -79,7 +80,9 @@ def test_validation_errors(
 def test_fail1_hard_downsampling_keeps_every_violation() -> None:
     tr, yr = _read_xy(CORPUS / "fail1" / "trended.csv")
     tt, yt = _read_xy(CORPUS / "fail1" / "simulated.csv")
-    opts = default_options()
+    # The corpus case's tolerances (param.json), given explicitly so the
+    # check does not depend on the library default.
+    opts = Options(tolerances=Tolerances(rtolx=2e-3, rtoly=2e-3))
     r = compare(tr, yr, tt, yt, opts)
     s = summarize(r, tr, opts)
     assert r.status == Status.FAIL

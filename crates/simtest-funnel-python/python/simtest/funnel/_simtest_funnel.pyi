@@ -65,7 +65,7 @@ def default_options() -> dict[str, Any]:
     The returned shape is ``{"tolerances": {...}, "x_range": {...}}``
     with all six tolerance values present as floats, matching
     ``simtest_funnel_core::Options::default_options()``
-    (``rtolx = rtoly = 2e-3``, others ``0.0``).
+    (``rtoly = 2e-3``, others ``0.0``: no tolerance in x).
     """
     ...
 
@@ -91,8 +91,9 @@ def compare(
     ``options`` is ``{"tolerances": {...}, "x_range": {...}}`` or ``None``.
     A tolerance key that is missing or ``None`` is "not given"; the given
     coefficients are resolved per axis in the Rust core (an axis with no
-    coefficient given gets ``rtol = 2e-3``, an axis with at least one
-    given uses zero for the rest; ``0.0`` counts as given). ``None``
+    coefficient given gets its default, all zero for x and
+    ``rtoly = 2e-3`` for y; an axis with at least one given uses zero for
+    the rest; ``0.0`` counts as given). ``None``
     options or ``tolerances`` mean the defaults.
 
     Returns a dict with keys:

@@ -38,10 +38,12 @@ describe('version', () => {
 });
 
 describe('defaultOptions', () => {
-  it('returns rtolx=rtoly=2e-3', () => {
+  it('returns no x tolerance and rtoly=2e-3', () => {
     const o = defaultOptions();
-    expect(o.tolerances?.rtolx).toBeCloseTo(2e-3);
-    expect(o.tolerances?.rtoly).toBeCloseTo(2e-3);
+    expect(o.tolerances.atolx).toBe(0);
+    expect(o.tolerances.ltolx).toBe(0);
+    expect(o.tolerances.rtolx).toBe(0);
+    expect(o.tolerances.rtoly).toBe(2e-3);
   });
 });
 

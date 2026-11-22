@@ -511,6 +511,21 @@ def _plot(demo_reference: Path, demo_test: Path, roots: list[Path], **kw: Any) -
     return plot_signals_impl(str(demo_reference), str(demo_test), roots, **kw)
 
 
+def test_plot_notes_missing_x_tolerance_on_failure(edge_files: tuple[Path, Path]) -> None:
+    ref, tst = edge_files
+    failed = structured(plot_signals_impl(
+        str(ref), str(tst), [], column="y", tolerance=ToleranceSet(atoly=0.05)
+    ))
+    assert failed["row"]["verdict"] == "fail"
+    assert any("had no x (time) tolerance" in n for n in failed["notes"])
+    # An x tolerance given (even one too small to pass) means no hint.
+    given = structured(plot_signals_impl(
+        str(ref), str(tst), [], column="y", tolerance=ToleranceSet(atolx=0.01, atoly=0.05)
+    ))
+    assert given["row"]["verdict"] == "fail"
+    assert not any("had no x (time) tolerance" in n for n in given["notes"])
+
+
 def test_plot_result_matches_compare_row(demo_reference: Path, demo_test: Path) -> None:
     root = demo_reference.parent.resolve()
     compared = structured(compare_signals_impl(

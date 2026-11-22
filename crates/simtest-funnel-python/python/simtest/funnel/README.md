@@ -47,17 +47,26 @@ the Rust, TypeScript and CLI front ends, so identical inputs give
 identical verdicts everywhere:
 
 - x axis: `atolx`, `ltolx`, `rtolx`; y axis: `atoly`, `ltoly`, `rtoly`.
-- An axis with **no** coefficient given gets the default `rtol = 2e-3`
-  (other coefficients `0.0`).
+- An axis with **no** coefficient given gets its default: the x axis
+  all `0.0` (no time tolerance), the y axis `rtoly = 2e-3` (other
+  coefficients `0.0`).
 - An axis with **at least one** coefficient given uses the given values
   and `0.0` for the rest of that axis.
 - An explicit `0.0` counts as given.
 
 | You pass | Effective tolerances |
 | --- | --- |
-| `options=None`, `Options()`, `Tolerances()` | `rtolx = rtoly = 2e-3`, rest `0` |
-| `Tolerances(atoly=0.05)` | `atoly = 0.05`, `rtolx = 2e-3`, rest `0` |
-| `Tolerances(atolx=0.0, atoly=0.05)` | `atoly = 0.05`, rest `0` |
+| `options=None`, `Options()`, `Tolerances()` | `rtoly = 2e-3`, rest `0` |
+| `Tolerances(atoly=0.05)` | `atoly = 0.05`, rest `0` |
+| `Tolerances(atolx=0.5)` | `atolx = 0.5`, `rtoly = 2e-3`, rest `0` |
+| `Tolerances(atolx=0.5, atoly=0.05)` | `atolx = 0.5`, `atoly = 0.05`, rest `0` |
+
+There is **no tolerance in x (time) unless you give one**. With zero x
+tolerance the x half-width is the `1e-10` floor: each test point is
+checked only against the y band around the reference at the same x, so a
+test curve that is shifted or delayed in time fails at steep edges even
+when the shift is tiny. Give `atolx` (time units) when such shifts are
+acceptable; a range-relative `rtolx` grows with the length of the record.
 
 `default_options()` and `ViolationSummary.tolerances` always report the
 six resolved floats.

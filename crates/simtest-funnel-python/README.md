@@ -31,10 +31,12 @@ print(result.status)  # 0 == Pass, -1 == Fail, 1/2 == MissingReference/Test
 ```
 
 `Tolerances(atoly=0.05)` sets the y axis only: `rtoly` becomes `0` and
-the x axis keeps the default `rtolx = 2e-3`. Tolerances are resolved per
-axis (an axis with no coefficient given gets `rtol = 2e-3`, an axis with
-at least one given uses `0.0` for the rest; explicit `0.0` counts as
-given) — see the package README for details.
+the x axis keeps its default, which is no tolerance in x (time); give
+e.g. `atolx=0.5` to allow the test to be shifted by up to 0.5 time units.
+Tolerances are resolved per axis (an axis with no coefficient given gets
+its default — x all `0.0`, y `rtoly = 2e-3` — an axis with at least one
+given uses `0.0` for the rest; explicit `0.0` counts as given) — see the
+package README for details.
 
 `compare` releases the interpreter lock while it runs, accepts
 `timeout=` (seconds, raises `ComparisonTimeout`) and `cancel=` (a

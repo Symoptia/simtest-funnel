@@ -16,8 +16,14 @@ fn fail1_summary_is_consistent_with_result() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/fail1");
     let (tr, yr) = read_xy_csv(&dir.join("trended.csv")).unwrap();
     let (tt, yt) = read_xy_csv(&dir.join("simulated.csv")).unwrap();
+    // The tolerances of the corpus case (param.json), given explicitly so
+    // the pinned values do not depend on the library default.
     let opts = Options {
-        tolerances: Tolerances::DEFAULT,
+        tolerances: Tolerances {
+            rtolx: 2e-3,
+            rtoly: 2e-3,
+            ..Tolerances::ZERO
+        },
         x_range: Range::default(),
     };
     let r = compare(&tr, &yr, &tt, &yt, &opts);

@@ -19,8 +19,8 @@ use simtest_funnel_core::{
 /// explicit `0`), else from the `--params` file if the key is present;
 /// the coefficients given that way are then resolved per axis by
 /// `PartialTolerances::resolve` (an axis with no coefficient given gets
-/// the default `rtol = 2e-3`; an axis with at least one given has its
-/// other coefficients set to zero).
+/// its default: no tolerance in x, `rtoly = 2e-3` in y; an axis with at
+/// least one given has its other coefficients set to zero).
 #[derive(Debug, Parser)]
 #[command(
     name = "simtest-funnel",
@@ -33,17 +33,19 @@ use simtest_funnel_core::{
         errors.csv contains *signed* deviations, not magnitudes.\n\n\
         Tolerances are resolved per axis (x: atolx/ltolx/rtolx, y: \
         atoly/ltoly/rtoly). Each coefficient comes from its flag, else \
-        from --params. An axis with no coefficient given uses the \
-        default rtol = 2e-3; an axis with at least one coefficient given \
-        uses zero for its other coefficients. An explicit 0 counts as \
-        given."
+        from --params. An axis with no coefficient given uses its \
+        default: no tolerance in x (time) and rtoly = 2e-3 in y. An axis \
+        with at least one coefficient given uses zero for its other \
+        coefficients. An explicit 0 counts as given. Give an x tolerance \
+        (e.g. --atolx) to allow the test to be shifted in time."
 )]
 struct Args {
     /// JSON file with compare parameters (same keys as LBNL
     /// `funnel/tests/*/param.json`). Unlike LBNL, a missing (or null)
     /// tolerance key is not 0: the coefficients present are resolved per
-    /// axis, so an axis with no key present gets rtol = 2e-3. For LBNL
-    /// semantics give at least one coefficient per axis (e.g. "atolx": 0).
+    /// axis, so a y axis with no key present gets rtoly = 2e-3 (an x axis
+    /// with no key present gets zero, as in LBNL). For LBNL semantics give
+    /// at least one y coefficient (e.g. "atoly": 0).
     #[arg(long)]
     params: Option<PathBuf>,
 
@@ -294,12 +296,18 @@ mod tests {
 
     #[test]
     fn step_edge_verdicts_follow_resolution() {
-        assert_eq!(step_edge_status(&["--atoly", "0.05"]), Status::Pass);
+        // No x tolerance unless one is given: the delayed edge fails.
+        assert_eq!(step_edge_status(&["--atoly", "0.05"]), Status::Fail);
         assert_eq!(
             step_edge_status(&["--atoly", "0.05", "--atolx", "0"]),
             Status::Fail
         );
-        assert_eq!(step_edge_status(&[]), Status::Pass);
+        assert_eq!(step_edge_status(&[]), Status::Fail);
+        assert_eq!(
+            step_edge_status(&["--atoly", "0.05", "--atolx", "0.002"]),
+            Status::Pass
+        );
+        assert_eq!(step_edge_status(&["--rtolx", "2e-3"]), Status::Pass);
     }
 
     #[test]
@@ -313,7 +321,17 @@ mod tests {
             resolved_tolerances(&["--atoly", "0.05"]),
             Tolerances {
                 atoly: 0.05,
-                rtolx: 2e-3,
+                ..Tolerances::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn default_has_no_x_tolerance() {
+        assert_eq!(
+            resolved_tolerances(&[]),
+            Tolerances {
+                rtoly: 2e-3,
                 ..Tolerances::ZERO
             }
         );

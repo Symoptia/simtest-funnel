@@ -5,7 +5,7 @@ The step-edge case below is shared with
 ``crates/simtest-funnel-cli/src/main.rs`` (CLI) and
 ``packages/sdk/tests/tolerances.test.ts`` (TypeScript): the test signal
 is the reference step delayed by ``0.001`` in x, so it passes only when
-the x axis keeps a non-zero tolerance.
+an x tolerance is given (there is none by default).
 """
 
 from __future__ import annotations
@@ -22,8 +22,9 @@ from simtest.funnel import (
     summarize,
 )
 
+# The default: no tolerance in x, rtoly = 2e-3 in y.
 DEFAULT = Tolerances(
-    atolx=0.0, atoly=0.0, ltolx=0.0, ltoly=0.0, rtolx=2e-3, rtoly=2e-3
+    atolx=0.0, atoly=0.0, ltolx=0.0, ltoly=0.0, rtolx=0.0, rtoly=2e-3
 )
 
 
@@ -43,7 +44,8 @@ def _resolved(options: Options | None) -> tuple[int, Tolerances]:
 def test_no_options_uses_default() -> None:
     status, tol = _resolved(None)
     assert tol == DEFAULT
-    assert status == Status.PASS
+    # No x tolerance by default: the delayed steep edge fails.
+    assert status == Status.FAIL
 
 
 def test_empty_options_and_tolerances_equal_no_options() -> None:
@@ -55,7 +57,21 @@ def test_empty_options_and_tolerances_equal_no_options() -> None:
 def test_only_atoly_keeps_x_default() -> None:
     status, tol = _resolved(Options(tolerances=Tolerances(atoly=0.05)))
     assert tol == Tolerances(
-        atolx=0.0, atoly=0.05, ltolx=0.0, ltoly=0.0, rtolx=2e-3, rtoly=0.0
+        atolx=0.0, atoly=0.05, ltolx=0.0, ltoly=0.0, rtolx=0.0, rtoly=0.0
+    )
+    assert status == Status.FAIL
+
+
+def test_explicit_x_tolerance_absorbs_time_shift() -> None:
+    status, tol = _resolved(Options(tolerances=Tolerances(atolx=0.002, atoly=0.05)))
+    assert tol == Tolerances(
+        atolx=0.002, atoly=0.05, ltolx=0.0, ltoly=0.0, rtolx=0.0, rtoly=0.0
+    )
+    assert status == Status.PASS
+    # Only an x coefficient: y keeps its default rtoly = 2e-3.
+    status, tol = _resolved(Options(tolerances=Tolerances(rtolx=2e-3)))
+    assert tol == Tolerances(
+        atolx=0.0, atoly=0.0, ltolx=0.0, ltoly=0.0, rtolx=2e-3, rtoly=2e-3
     )
     assert status == Status.PASS
 
