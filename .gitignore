@@ -15,3 +15,6 @@ output.txt
 
 # Claude Code agent worktrees (local scratch checkouts)
 .claude/worktrees/
+
+# Files for manual tests on other machines (copied out and back by hand)
+windows-handover/
