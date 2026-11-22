@@ -137,14 +137,7 @@ export function parsePlaces(json: unknown): Place[] {
       id: typeof r.id === 'number' ? r.id : places.length,
       name: r.name,
       admin1: typeof r.admin1 === 'string' ? r.admin1 : undefined,
-      admin2: typeof r.admin2 === 'string' ? r.admin2 : undefined,
       country: typeof r.country === 'string' ? r.country : undefined,
-      featureCode:
-        typeof r.feature_code === 'string' ? r.feature_code : undefined,
-      population:
-        typeof r.population === 'number' && r.population > 0
-          ? r.population
-          : undefined,
       latitude: r.latitude,
       longitude: r.longitude,
     });
