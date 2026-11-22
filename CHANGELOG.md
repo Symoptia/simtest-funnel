@@ -1,3 +1,10 @@
+# [1.0.0-beta.15](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.14...v1.0.0-beta.15) (2026-11-22)
+
+
+### Features
+
+* add cancellation and time limits for comparisons ([1b01256](https://github.com/Symoptia/simtest-funnel/commit/1b012560ca5ab439206234620b8468de165a51b9))
+
 # [1.0.0-beta.14](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.13...v1.0.0-beta.14) (2026-11-22)
 
 
