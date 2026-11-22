@@ -35,7 +35,8 @@ non-commercial use only and is limited to fewer than 10,000 calls a day
   `compare_signals` and `plot_signals` accept a public `https://` URL
   in place of an input file path. Output paths (`plot_signals`
   `output_path`) stay local. Everything after fetching (dialect,
-  preamble, date-time time, column mapping) behaves as for a local file.
+  `header_line`, date-time time, column pairs) behaves as for a local
+  file.
 - **Safety limits on every fetch**:
   - `https` only; redirects followed only to `https` and only a few
     hops, each hop checked again;
@@ -57,11 +58,23 @@ non-commercial use only and is limited to fewer than 10,000 calls a day
   results are reproducible across calls. Results name the URL, when it
   was fetched, its size and a content hash, so a verdict states exactly
   what was compared. The cache has a size limit.
-- **Network can be switched off**: a start-up option and environment
-  variable disable fetching entirely; a URL argument then fails with a
-  clear message (whether cached copies are still served is settled in
-  design). The tool annotations state the server may reach the network
-  when fetching is enabled.
+- **Network access is off by default**: a plain install keeps the
+  existing "local files only" guarantee. The user enables fetching when
+  starting the server with `--allow-network` or the environment variable
+  `SIMTEST_FUNNEL_MCP_ALLOW_NETWORK=1`, optionally restricted to given
+  hosts with a repeatable `--allow-host HOST` (also
+  `SIMTEST_FUNNEL_MCP_ALLOW_HOSTS`, comma-separated); `--allow-host`
+  implies `--allow-network`. With network access off, a URL argument is
+  refused with a message naming the option and the environment variable
+  (whether cached copies are still served then is settled in design).
+  The tool annotations state the server may reach the network only when
+  fetching is enabled.
+- **Direct connections only**: the first version connects directly to
+  the target host. Proxy environment variables (`HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY`) are ignored, so the public
+  address check always applies to the real target. When a fetch fails to
+  connect, the message says proxies are not supported yet and suggests
+  downloading the file and passing the local path.
 - **Open-Meteo forecast-vs-actual example**:
   - a small sample CSV bundled in the repository (one location, about
     15 days hourly, `temperature_2m` and its day-1/3/5 previous-run
@@ -69,7 +82,9 @@ non-commercial use only and is limited to fewer than 10,000 calls a day
     attribution ("Weather data by Open-Meteo.com", link to the
     licence, note of any changes), so tests and docs work offline;
   - documented live URLs with fixed `start_date` / `end_date`, so the
-    same comparison can be run against the API;
+    same comparison can be run against the API (with the server started
+    with `--allow-network`, or `--allow-host
+    previous-runs-api.open-meteo.com`);
   - a README walkthrough: describe, compare the day-1/3/5 forecasts
     against the latest run with a few tolerance tubes, plot one;
   - the walkthrough says plainly that the "actual" column is the latest
@@ -91,6 +106,8 @@ Explicitly out of scope:
 - A remote-hosted server (`add-mcp-remote-deploy`); this change is for
   the local stdio server only.
 - Plain `http://` and `file://` URLs.
+- Proxy support (`HTTPS_PROXY` and similar); a later change may add it
+  with the address check applied appropriately.
 - An example gallery beyond the Open-Meteo example.
 
 ## Capabilities
@@ -99,8 +116,9 @@ Explicitly out of scope:
 
 - `mcp-url-sources`: reading signal files from public URLs — which URLs
   are accepted, safety limits, what is (not) sent, the cache and its
-  reproducibility guarantee, how network access is switched off, and
-  what results report about a fetched file.
+  reproducibility guarantee, how network access is enabled at start-up
+  (off by default, optional host allow-list), direct connections only,
+  and what results report about a fetched file.
 - `example-datasets`: example data shipped with the repository — the
   bundled Open-Meteo sample, its attribution, the documented live URLs,
   and the walkthrough that must keep working offline.
@@ -109,7 +127,7 @@ Explicitly out of scope:
 
 - `mcp-server`: "Stateless file access" today forbids network
   connections and any file write except plot files; it changes to allow
-  fetching (when enabled) and writing the URL cache. Tool annotations
+  fetching (only when enabled at start-up) and writing the URL cache. Tool annotations
   change from closed-world when fetching is enabled. Workspace roots
   keep applying to local paths only. The snippet's handling of URL
   inputs is added.
@@ -134,14 +152,12 @@ Explicitly out of scope:
   fetch timeout must stay well below the per-call limit, and a
   cancelled or timed-out call must not leave a partial file in the
   cache.
-- Security posture of the server changes: it becomes able to send GET
-  requests chosen by the model. The README documents this, the
-  switch to turn it off and the address restrictions.
+- Security posture of the server changes only when the user opts in:
+  with `--allow-network` it can send GET requests chosen by the model.
+  The README documents this, the option, the host allow-list (a
+  model-chosen URL can carry data in its query string) and the address
+  restrictions.
 - Open points for design:
-  - **Default on or off.** Fetching enabled by default with an opt-out
-    switch, or disabled until the user opts in; and whether a host
-    allow-list option is offered (a model-chosen URL can carry data in
-    its query string).
   - **Cache lifetime.** Session-pinned only (fetch once per server
     session), or persistent across sessions with a maximum age and/or
     conditional revalidation (`ETag` / `Last-Modified`); whether a call
@@ -152,9 +168,6 @@ Explicitly out of scope:
     (connect and total, below the 60 s call limit); redirect hop count;
     accepted content types (`text/csv`, `text/plain`,
     `application/csv`, `application/octet-stream`?).
-  - **Proxies.** Honour `HTTPS_PROXY` (needed behind corporate proxies,
-    but then the address check applies to the proxy, not the target) or
-    ignore proxy settings.
   - **Snippets for URL inputs.** Embed the URL (CI needs network and the
     content may change), embed the URL plus the content hash and fail
     clearly on a mismatch, or advise vendoring the file.
@@ -168,3 +181,17 @@ Explicitly out of scope:
   - **HTTP client.** Standard library versus a dependency such as
     `httpx`, given the need to pin the connection to the checked
     address.
+
+## Decisions
+
+Decided by the owner:
+
+- **Network access off by default.** Enabled at start-up with
+  `--allow-network` / `SIMTEST_FUNNEL_MCP_ALLOW_NETWORK` (names
+  proposed), optionally restricted with a repeatable `--allow-host`.
+  With network off, URL arguments are refused with a message naming the
+  option. A plain install keeps the "local files only" guarantee.
+- **No proxies in the first version.** Direct connections only; proxy
+  environment variables are ignored; on failure the message says
+  proxies are not supported yet and suggests downloading the file and
+  passing the local path.

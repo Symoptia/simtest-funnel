@@ -41,41 +41,56 @@ Fetching data from URLs is the fourth gap and is a separate change
 
 ## What Changes
 
-- **Column mapping** in `compare_signals` and `plot_signals`: an agent
-  can compare a named reference column against a differently named test
-  column. Both columns may come from the same file (the test file may be
-  the reference file). Several pairs may be compared in one call,
-  including one reference column against several test columns
-  (`temperature_2m` against day 1, day 3 and day 5).
-  - Each result row names both the reference and the test column, and
-    rows stay uniquely identifiable when one reference column appears in
-    several pairs.
-  - Per-column tolerance overrides can be addressed to a pair.
+- **Column pairs** in `compare_signals`: a new argument
+  `pairs: [{reference, test, label?}]` compares a named reference
+  column against a differently named test column. Several pairs may be
+  given, including one reference column against several test columns
+  (`temperature_2m (°C)` against the day 1, day 3 and day 5 columns).
+  - `pairs` and `columns` are mutually exclusive in one call.
+  - `test_path` becomes optional and defaults to the reference file, so
+    both columns of a pair may come from one file.
+  - Pairs take exact column names only; glob patterns stay with
+    `columns`.
+  - Each result row carries both column names. A row is keyed by the
+    pair's label when given, else by its test column; per-column
+    tolerance overrides use the same key.
   - The existing same-name selection (`columns` with exact names and
-    glob patterns) keeps working unchanged; how it combines with
-    explicit pairs is settled in design (see open points).
-  - The pytest snippet reproduces mapped comparisons.
-- **Preamble before the header**: the reader can skip metadata lines
-  before the real header row. The default reading of existing plain CSV
-  files does not change (a file whose header is followed by a blank line
-  and then data is still read as today).
-- **Date-time time columns**: a time column of ISO 8601 date-times is
-  accepted and converted to a numeric time axis for the funnel, with a
-  defined unit for x tolerances and x-ranges and defined handling of
-  time zones (timestamps with an offset, `Z`, or none).
-  - Results echo times in a form a person can read as dates, while
-    structured content keeps exact values.
-  - Time-axis tolerances that make no sense on an absolute date axis
-    (for example `ltolx`, which scales with the absolute time value) are
-    flagged or refused rather than silently applied.
-  - Reference and test with incompatible time columns (for example one
-    numeric and one date-time, or one with and one without time zone)
-    are reported per file/row, not guessed.
-- **`describe_signals` reports what it detected**: preamble lines
-  skipped (and, bounded, what they contained), the header line used,
-  the time column type (numeric or date-time, with time zone handling),
-  and the time start/end as dates when the time column is a date-time.
-- Tool descriptions explain the mapping argument, the date-time time
+    glob patterns, or no selection) is unchanged.
+  - The pytest snippet reproduces pair comparisons.
+- **Column pairs** in `plot_signals`: an optional test column name (the
+  reference column keeps its existing argument) and an optional test
+  path (default: the reference file).
+- **Header line**: `describe_signals`, `compare_signals` and
+  `plot_signals` take an explicit `header_line` (1-based file line of
+  the header row; the default 1 reads files exactly as today). There is
+  no auto-detection. When reading fails or the header looks wrong and
+  the top of the file looks like a preamble (for example a blank line
+  before a later line that looks like a header row), the error or
+  problem text says so and suggests the likely `header_line`.
+  `describe_signals` echoes the header line used.
+- **Date-time time columns**: a time column whose cells all parse as
+  ISO 8601 date-times (seconds optional, `T` or space, fractional
+  seconds, optional `Z` or offset) is detected automatically.
+  - The numeric time is seconds since the Unix epoch, so an ISO file and
+    its `unixtime` twin give identical results. x tolerances are in
+    seconds (±3 h is `atolx = 10800`).
+  - Results echo times both as numbers and as ISO 8601 strings, and the
+    text rendering shows dates; `x_range` also accepts ISO strings.
+  - A non-zero `ltolx` on a date-time axis is refused (relative to about
+    1.7e9 epoch seconds it is meaningless). An explicit `rtolx` is
+    allowed; its resolved half-width is echoed in seconds and as a
+    duration.
+  - A timestamp without an offset is read as UTC and
+    `describe_signals` flags the column as having no time zone.
+    Comparing a zone-less time column against one with offsets, or a
+    numeric time column against a date-time one, is refused with an
+    explanation; two zone-less columns compare fine (a constant offset
+    cancels).
+- **`describe_signals` reports what it read**: the header line used, the
+  time column kind (numeric or date-time, with or without time zone),
+  and for a date-time column its start and end as dates and its span
+  and steps as durations.
+- Tool descriptions explain pairs, `header_line`, the date-time time
   axis and the unit of x tolerances well enough for an agent to turn
   "±2 °C and ±3 hours" into the right call.
 - Plain CSV files with a numeric time column and the header on the
@@ -88,8 +103,14 @@ Explicitly out of scope:
 - Files with several locations or entities stacked in one CSV (for
   example Open-Meteo's multi-location layout with a `location_id`
   column): one file holds one shared time axis.
+- Reading EnergyPlus EPW / IWEC2 weather files directly (no
+  column-name row, separate Year/Month/Day/Hour/Minute columns, hours
+  1-24, non-continuous years).
 - Time formats other than ISO 8601 (locale formats such as `01/02/2026`,
-  Excel serial dates), and user-supplied `strftime` formats.
+  Excel serial dates), a `time_format` option, user-supplied `strftime`
+  formats and duration strings (`"3h"`, `"PT3H"`) as tolerance input.
+- A `time_zone` argument (zone-less timestamps are always read as UTC).
+- Auto-detection of the header line.
 - Other delimiters, encodings and file formats.
 - Unit conversion between columns (both columns of a pair are compared
   as given; units in names such as `(°C)` are just part of the name).
@@ -106,11 +127,12 @@ Explicitly out of scope:
 ### Modified Capabilities
 
 - `mcp-server`: column selection gains explicit reference/test column
-  pairs (including one file); the CSV dialect gains preamble skipping;
-  the time column may be an ISO 8601 date-time; `describe_signals`
-  reports the header line, skipped preamble and time column type;
-  structured and text output echo date-time times; the snippet covers
-  the new options.
+  pairs (including one file, with `test_path` optional); the CSV
+  dialect gains an explicit header line and a preamble hint; the time
+  column may be an ISO 8601 date-time (epoch seconds, time zone rules,
+  `ltolx` refused, ISO `x_range` bounds); `describe_signals` reports the
+  header line and time column kind; structured and text output echo
+  date-time times; the snippet covers the new options.
 - `mcp-plots`: `plot_signals` can plot one reference column against a
   differently named test column, from one or two files, on a date-time
   time axis.
@@ -123,52 +145,54 @@ Explicitly out of scope:
   labels), `models.py` (output schemas), `server.py` (arguments and
   tool descriptions), `snippet.py`, README, tests.
 - Additive tool arguments and output fields; no change for existing
-  callers and existing files. No change to the Rust core or the other
+  callers and existing files, except that the generated snippet's case
+  tuples gain the reference and test column names. No change to the Rust core or the other
   bindings: the funnel still receives float64 time values.
-- Should land after `add-cancellation` or be merged with care: that
-  change also adds arguments to `compare_signals` and `plot_signals`
-  and touches the same modules.
+- **Depends on `zero-default-x-tolerance`**, which makes the default x
+  tolerance zero in all APIs (the default y tolerance stays
+  `rtoly = 2e-3`). Without it, a date-time comparison without explicit
+  x tolerance would get a hidden time tolerance of 0.2 % of the span
+  (about 43 minutes for 15 days). This change lands after that one.
+- `add-cancellation` has landed; this change builds on its `time_limit`
+  and worker-thread structure in `compare.py`, `plot.py` and
+  `server.py`.
 - Prerequisite of `add-mcp-url-ingestion` (its Open-Meteo example needs
   all three parts).
-- Open points for design:
-  - **Shape of the mapping argument.** A list of pairs
-    (`[{"reference": "...", "test": "...", "label": ...}]`) next to
-    `columns`, a `"ref=test"` string syntax inside `columns`, or a
-    single `test_column` for `plot_signals` plus pairs for
-    `compare_signals`; whether pairs and `columns` may be combined in
-    one call; whether `test_path` becomes optional (defaulting to the
-    reference file) when both columns are in one file.
-  - **Row identity and overrides.** What a row's `column` field holds
-    for a pair (test column, label, or `ref -> test`), and what keys
-    `column_tolerances` uses for pairs.
-  - **Globs in pairs.** Exact names only, or patterns on the test side
-    (`temperature_2m_previous_day*`) against one reference column.
-  - **Preamble: auto-detection versus explicit option.** An explicit
-    header-line / skip-lines argument on all three tools, a
-    conservative auto-detection (for example: a block, a blank line,
-    then a block whose first line is not data), or both; how a wrong
-    guess is made visible.
-  - **What `describe_signals` echoes from a preamble** (line count only,
-    or a bounded key/value view such as Open-Meteo's
-    `utc_offset_seconds`).
-  - **Date-time detection.** Automatic (every non-empty time cell
-    parses as ISO 8601) or an explicit `time_format` option; which ISO
-    8601 forms are accepted (seconds optional, space instead of `T`,
-    fractional seconds, date only).
-  - **Numeric x for date-times and the unit of x tolerances.** Seconds
-    since the Unix epoch (so an ISO file and its `unixtime` twin give
-    identical results) or seconds since the reference start (smaller
-    numbers); x tolerances and `x_range` in seconds only, or also
-    duration strings such as `"3h"` / `"PT3H"` and ISO date-times in
-    `x_range`.
-  - **Time zones.** Whether timestamps without an offset are taken as
-    UTC (flagged as "no time zone") or as unknown wall-clock time that
-    may only be compared with another zone-less column; what happens
-    with local times across a daylight-saving change (repeated or
-    missing hours).
-  - **`ltolx` and default `rtolx` on date axes.** Refuse a non-zero
-    `ltolx` on a date-time axis or only warn; state the resolved default
-    `rtolx` (0.2 % of the reference span, about 43 minutes for 15 days)
-    in seconds so the hidden time tolerance is visible.
-  - **How results echo times.** Numeric values plus ISO 8601 strings in
-    structured content, ISO only in the text rendering, or both.
+
+## Decisions
+
+Decided by the owner (binding for design and specs):
+
+1. **Column pairs**: `pairs: [{reference, test, label?}]` on
+   `compare_signals`, mutually exclusive with `columns`; `test_path`
+   optional, defaulting to the reference file; `plot_signals` gains a
+   way to name a different test column; exact names only in pairs; rows
+   carry both column names; overrides key on the label if given, else
+   the test column.
+2. **Preamble**: explicit `header_line` only (1-based, default 1 =
+   today's behaviour), no auto-detection; a preamble hint with the
+   likely `header_line` in error messages; `describe_signals` takes the
+   same argument and echoes the header line used. Rationale: explicit
+   skip counts are the standard mechanism (pandas `skiprows` / `header`,
+   W3C CSV on the Web `skipRows`); the Open-Meteo CSV layout is not
+   documented in its API docs, so a heuristic tuned to it would be
+   fragile.
+3. **Date-time time columns**: detected automatically when every time
+   cell parses as ISO 8601 (seconds optional, `T` or space, fractional
+   seconds, optional `Z` / offset); numeric x is seconds since the Unix
+   epoch; x tolerances in seconds; results echo the number and an ISO
+   string; `x_range` also accepts ISO strings; no duration strings and
+   no `time_format` option.
+4. **Default x tolerance**: zero, changed separately in all APIs by
+   `zero-default-x-tolerance`; a non-zero `ltolx` on a date-time axis is
+   refused; an explicit `rtolx` is allowed and echoed in seconds and as
+   a duration.
+5. **Time zones**: no offset means UTC, flagged by `describe_signals`;
+   zone-less against offset is refused; both zone-less is fine; no
+   `time_zone` argument.
+6. **Out of scope** as listed above (EPW / IWEC2, stacked multi-location
+   CSVs, non-ISO time formats, other delimiters, unit conversion).
+
+design.md works out the remaining details (argument names and JSON
+shapes, matching rules, error wording, output fields) and marks each as
+a design choice not yet confirmed by the owner.
