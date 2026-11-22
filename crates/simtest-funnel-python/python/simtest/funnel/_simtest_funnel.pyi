@@ -105,7 +105,9 @@ def compare(
       on the test x-grid (``0`` outside ``x_range``).
 
     With an ``x_range`` only test points inside it are judged, against the
-    tube built from the reference extended beyond it by the x tolerance;
+    tube built from the reference extended beyond it as far as needed for
+    that tube to equal the full-range one over the window (without
+    ``rtolx`` / ``rtoly`` the judged deviations equal the full-range ones);
     ``lower`` / ``upper`` then reach beyond the window.
     """
     ...

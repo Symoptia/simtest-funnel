@@ -70,17 +70,31 @@ no `Default` impl; spell explicit all-zero as `Tolerances::ZERO`.
 
 `Options::x_range` (default unbounded) is the window `[lo, hi]` of x in
 which test points are judged. The tube is built from the reference
-**extended beyond the window** by two x half-widths plus three samples
-on each side, so a test point near a window edge that is shifted in x by
-less than the x tolerance is judged exactly as in a comparison over the
-full range. Where the window reaches the first or last reference sample
-there is nothing to extend with, as in a full-range comparison.
+**extended beyond the window**: by two x half-widths plus three samples
+on each side to start with, and further until the corners of the
+extended reference provably give the full-range tube over the window.
+The corner algorithm adds no corners inside a collinear or constant run
+of reference samples, so the extension reaches past the end of such a
+run, however long. A test point near a window edge that is shifted in x
+by less than the x tolerance is therefore judged exactly as in a
+comparison over the full range. Where the window reaches the first or
+last reference sample there is nothing to extend with, as in a
+full-range comparison.
 
 - Without range-relative tolerances (`rtolx = rtoly = 0`), every test
-  point inside the window gets the same verdict as in the full-range
-  comparison (deviations and bounds are in practice bit-identical; the
-  only known difference is rounding when a run of collinear reference
-  segments crosses the start of the extension).
+  point inside the window gets the same deviation, bit for bit, and so
+  the same verdict as in the full-range comparison, for any `atolx`,
+  `atoly`, `ltolx` and `ltoly`. The argument (in `src/window.rs`) covers
+  the corner construction completely; for the loop removal it assumes
+  that each loop is cut where the curve crosses itself, which the C
+  reference's heuristic does except in degenerate geometry. Randomized
+  tests with adversarial references (collinear runs, steps, repeated and
+  clustered x, epoch-sized x) find no difference.
+- The extension usually stays within a few half-widths of the window.
+  It reaches the data end on a side through a collinear run that long,
+  or where the reference changes direction more often than the x
+  tolerance is wide (e.g. noise with a large `atolx`); the window then
+  costs about as much as the full-range comparison.
 - `rtolx` / `rtoly` (and the constant-reference fallback) are relative to
   the reference samples **inside the window**, so with them a windowed
   comparison differs from the full-range one by design.

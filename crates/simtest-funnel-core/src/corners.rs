@@ -14,7 +14,7 @@ use crate::cancel::{Cancelled, Checkpoint};
 /// Curve-indicator used by `removeLoop`: `+1` for upper, `-1` for
 /// lower.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Curve {
+pub(crate) enum Curve {
     Lower,
     Upper,
 }
@@ -53,8 +53,74 @@ fn denormalize(arr: &mut [f64], mag: f64) {
     }
 }
 
+/// A normalized x-value in the units of the bounds: what [`denormalize`]
+/// makes of `v` (the same operation, so the same bits).
+#[inline]
+pub(crate) fn denormalized(v: f64, mag: f64) -> f64 {
+    if mag > 1e-5 {
+        v * mag
+    } else {
+        v
+    }
+}
+
 /// Lower and upper tube curves `(lower_x, lower_y, upper_x, upper_y)`.
 pub(crate) type Bounds = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// The corner curve of one side with, for every corner, the reference
+/// point it belongs to (see [`CornerObserver`]).
+#[derive(Debug, Default)]
+pub(crate) struct CornerTrace {
+    /// Corner x-values (normalized), as [`build_corner_curve`] returns them.
+    pub x: Vec<f64>,
+    /// Reference point of each corner, parallel to `x`; non-decreasing.
+    pub tag: Vec<usize>,
+    /// First reference point of the scan.
+    pub start: usize,
+    /// Reference points whose corners cannot be undone, ascending.
+    pub firm: Vec<usize>,
+    /// Largest x of the corners that were undone, per reference point
+    /// `(point, x)`, in scan order.
+    pub undone: Vec<(usize, f64)>,
+}
+
+impl CornerObserver for CornerTrace {
+    fn start(&mut self, b: usize) {
+        self.start = b;
+    }
+    fn push(&mut self, i: usize, x: f64) {
+        self.x.push(x);
+        self.tag.push(i);
+    }
+    fn pop(&mut self) {
+        if let (Some(x), Some(i)) = (self.x.pop(), self.tag.pop()) {
+            self.undone.push((i, x));
+        }
+    }
+    fn corner_point(&mut self, i: usize, firm: bool) {
+        if firm {
+            self.firm.push(i);
+        }
+    }
+}
+
+/// Corner traces `[lower, upper]` of a reference with normalized x and
+/// x half-widths (`x_norm`, `hx_norm`), before loop removal.
+pub(crate) fn corner_traces<C: FnMut() -> Result<(), Cancelled>>(
+    x_norm: &[f64],
+    y_ref: &[f64],
+    hx_norm: &[f64],
+    hy: &[f64],
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<[CornerTrace; 2], Cancelled> {
+    let mut out = [CornerTrace::default(), CornerTrace::default()];
+    for (trace, curve) in out.iter_mut().zip([Curve::Lower, Curve::Upper]) {
+        let (cx, _) = scan_corners(x_norm, y_ref, hx_norm, hy, curve, trace, cp)?;
+        debug_assert_eq!(cx.len(), trace.x.len());
+        cp.now()?;
+    }
+    Ok(out)
+}
 
 /// Build lower + upper tube curves from a reference trajectory and
 /// per-point half-widths (not cancellable; tests only).
@@ -102,7 +168,7 @@ pub(crate) fn build_bounds_checked<C: FnMut() -> Result<(), Cancelled>>(
 
 /// `src / mag` (see [`normalize`]), consulting `cp` every
 /// [`CHECK_INTERVAL`](crate::cancel::CHECK_INTERVAL) elements.
-fn normalized_copy<C: FnMut() -> Result<(), Cancelled>>(
+pub(crate) fn normalized_copy<C: FnMut() -> Result<(), Cancelled>>(
     src: &[f64],
     mag: f64,
     cp: &mut Checkpoint<'_, C>,
@@ -127,6 +193,41 @@ fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
     curve: Curve,
     cp: &mut Checkpoint<'_, C>,
 ) -> Result<(Vec<f64>, Vec<f64>), Cancelled> {
+    scan_corners(x_norm, y_ref, hx_norm, hy, curve, &mut (), cp)
+}
+
+/// What the corner scan reports to a [`CornerObserver`]; the x-range
+/// extension uses it to find where the corners of a truncated reference
+/// equal those of the whole reference (see `compare::window_extension`).
+pub(crate) trait CornerObserver {
+    /// The scan starts at reference point `b` (after skipping leading
+    /// repeated points).
+    fn start(&mut self, _b: usize) {}
+    /// A corner of reference point `i` was appended at x `x`.
+    fn push(&mut self, _i: usize, _x: f64) {}
+    /// The last corner was removed again (the "same horizontal edge"
+    /// undo of the C reference).
+    fn pop(&mut self) {}
+    /// Reference point `i` got corners (its incoming and outgoing slopes
+    /// differ). `firm` is true when the undo condition was false, so its
+    /// corners stay, whatever corners precede them.
+    fn corner_point(&mut self, _i: usize, _firm: bool) {}
+}
+
+/// The observer of the plain comparison: records nothing.
+impl CornerObserver for () {}
+
+/// [`build_corner_curve`] reporting to `obs`. The arithmetic does not
+/// depend on the observer, so the curve is the same for every observer.
+pub(crate) fn scan_corners<C: FnMut() -> Result<(), Cancelled>, O: CornerObserver>(
+    x_norm: &[f64],
+    y_ref: &[f64],
+    hx_norm: &[f64],
+    hy: &[f64],
+    curve: Curve,
+    obs: &mut O,
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<(Vec<f64>, Vec<f64>), Cancelled> {
     let n = x_norm.len();
     // sign of y-offset for this curve: lower -> -1, upper -> +1.
     let y_sgn: f64 = match curve {
@@ -145,8 +246,10 @@ fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
 
     // For lower: "down left" = (x - hx, y - hy). For upper: "top left" =
     // (x - hx, y + hy).
+    obs.start(b);
     cx.push(x_norm[b] - hx_norm[b]);
     cy.push(y_ref[b] + y_sgn * hy[b]);
+    obs.push(b, x_norm[b] - hx_norm[b]);
 
     if b + 1 < n {
         // slopes of reference curve (initialization)
@@ -169,6 +272,7 @@ fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
         if initial_other {
             cx.push(x_norm[b] + hx_norm[b]);
             cy.push(y_ref[b] + y_sgn * hy[b]);
+            obs.push(b, x_norm[b] + hx_norm[b]);
         }
 
         // ----- 1.2 iterate -----
@@ -191,6 +295,7 @@ fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
             };
 
             if !equ(m0, m1) {
+                let before = cx.len();
                 // Corner insertion patterns — distinct for lower vs upper.
                 match curve {
                     Curve::Lower => {
@@ -237,21 +342,30 @@ fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
                     }
                 }
 
+                for &x in &cx[before..] {
+                    obs.push(i, x);
+                }
+
                 // Remove last added points if next reference's horizontal
                 // tube edge lies at the same y.
                 let len = cy.len();
                 let last_y = cy[len - 1];
                 let next_edge = y_ref[i + 1] + y_sgn * hy[i + 1];
-                if equ(next_edge, last_y) {
+                let undo = equ(next_edge, last_y);
+                obs.corner_point(i, !undo);
+                if undo {
                     if s0 * s1 == -1 && len >= 3 && equ(cy[len - 3], last_y) {
                         // two-point undo
                         cx.pop();
                         cy.pop();
                         cx.pop();
                         cy.pop();
+                        obs.pop();
+                        obs.pop();
                     } else if s0 * s1 != -1 && len >= 2 && equ(cy[len - 2], last_y) {
                         cx.pop();
                         cy.pop();
+                        obs.pop();
                     }
                 }
             }
@@ -268,12 +382,14 @@ fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
         if add_end_left {
             cx.push(x_norm[n - 1] - hx_norm[n - 1]);
             cy.push(y_ref[n - 1] + y_sgn * hy[n - 1]);
+            obs.push(n - 1, x_norm[n - 1] - hx_norm[n - 1]);
         }
     }
 
     // Down/top right end point
     cx.push(x_norm[n - 1] + hx_norm[n - 1]);
     cy.push(y_ref[n - 1] + y_sgn * hy[n - 1]);
+    obs.push(n - 1, x_norm[n - 1] + hx_norm[n - 1]);
 
     Ok((cx, cy))
 }

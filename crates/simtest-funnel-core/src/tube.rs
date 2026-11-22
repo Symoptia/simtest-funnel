@@ -80,7 +80,7 @@ fn eq_zero(v: f64) -> bool {
 /// is not taken although it is larger.
 ///
 /// As a function of `x` it has the form `max(c, ltolx*|x|)`, which the
-/// x-range extension relies on (see `compare::extended_indices`).
+/// x-range extension relies on (see `window::initial_extension`).
 #[inline]
 pub(crate) fn halfwidth_x_bound(x: f64, dc: DataChar, tol: &Tolerances) -> f64 {
     let fallback = if eq_zero(tol.rtolx) {

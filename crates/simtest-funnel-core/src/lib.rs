@@ -36,6 +36,7 @@ pub mod options;
 pub mod status;
 pub mod summary;
 pub(crate) mod tube;
+pub(crate) mod window;
 
 pub use cancel::{CancelToken, Cancelled};
 pub use compare::{

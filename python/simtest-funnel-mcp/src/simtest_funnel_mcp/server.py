@@ -254,10 +254,13 @@ whole time span, so it grows with the length of the record (rtolx = 0.002 allows
 suggesting an x tolerance.
 
 X_RANGE: only test points inside x_range are judged, but the tube there is built
-from the reference extended beyond x_range (by twice half_x plus 3 samples on each
-side), so a test curve shifted by less than half_x passes at the window edges
-exactly as in a comparison of the whole files. At the first and last reference
-sample there is nothing to extend with. time_span_ref and value_range_ref (the rtol
+from the reference extended beyond x_range as far as needed for it to equal the
+tube of the whole reference there (twice half_x plus 3 samples on each side to
+start with, further through a straight or constant stretch of the reference).
+Without rtolx/rtoly every point inside x_range gets the same deviation and verdict
+as in a comparison of the whole files, so a test curve shifted by less than half_x
+passes at the window edges. At the first and last reference sample there is
+nothing to extend with. time_span_ref and value_range_ref (the rtol
 bases) stay those of the reference inside x_range.
 
 Example "1 % in y, 0.5 s in x": {{"rtoly": 0.01, "atolx": 0.5}} (1 % of the reference

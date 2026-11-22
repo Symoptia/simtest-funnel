@@ -88,11 +88,14 @@ reference) or `MISSING_TEST` (the reverse), still reports
 time spans and the exact `x_range` that compares the overlap.
 
 Only test points inside `x_range` are judged, but the tube there is built
-from the reference extended beyond `x_range` (by twice the x half-width
-plus 3 samples on each side), so a test curve shifted by less than the x
-tolerance passes at the window edges exactly as it does when the whole
-files are compared. At the first and last reference sample there is
-nothing to extend with. The bases of `rtolx` / `rtoly` (reference time
+from the reference extended beyond `x_range` as far as needed for it to
+equal the tube of the whole reference there (twice the x half-width plus
+3 samples on each side to start with, and past the end of a straight or
+constant stretch of the reference that the window edge falls in). Without
+`rtolx` / `rtoly`, every point inside `x_range` therefore gets the same
+deviation and verdict as when the whole files are compared, and a test
+curve shifted by less than the x tolerance passes at the window edges. At
+the first and last reference sample there is nothing to extend with. The bases of `rtolx` / `rtoly` (reference time
 span and value range) are those of the reference inside `x_range`.
 
 ### `plot_signals(reference_path, column, test_path=None, test_column=None, ...)`

@@ -76,12 +76,16 @@ compares `x >= 0.5`. Results report ranges as `ResolvedXRange` with both
 bounds present (`-Infinity` / `Infinity` when unbounded).
 
 Only test points inside the window are judged, but the tube is built from
-the reference extended beyond the window by the x tolerance (two x
-half-widths plus three samples per side), so a test point near a window
-edge that is shifted by less than the x tolerance passes exactly as in a
-comparison over the full range (without `rtolx` / `rtoly`, every point in
-the window gets the same verdict as in the full-range comparison). At the
-first and last reference sample there is nothing to extend with.
+the reference extended beyond the window as far as needed for it to equal
+the full-range tube there (two x half-widths plus three samples per side
+to start with, and past the end of any collinear or constant run of
+reference samples the window edge falls in), so a test point near a
+window edge that is shifted by less than the x tolerance passes exactly
+as in a comparison over the full range (without `rtolx` / `rtoly`, every
+point in the window gets the same deviation and verdict as in the
+full-range comparison; see the core crate's README for the precise
+guarantee). At the first and last reference sample there is nothing to
+extend with.
 `rtolx` / `rtoly` are relative to the reference inside the window.
 `lowerX` / `upperX` reach beyond the window by the extension;
 `errorsY` is `0` for test points outside `xRange`.
