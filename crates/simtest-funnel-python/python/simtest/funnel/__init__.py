@@ -6,7 +6,9 @@ typed dataclass-based interface. See the project README for usage.
 
 from __future__ import annotations
 
+import math
 import operator
+import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Literal, Mapping, Sequence
@@ -15,6 +17,23 @@ import numpy as np
 from numpy.typing import NDArray
 
 from simtest.funnel import _simtest_funnel as _ext
+
+CancelToken = _ext.CancelToken
+"""Thread-safe cancellation token for :func:`compare` / :func:`compare_dataframes`.
+
+``CancelToken()`` creates an uncancelled token; ``token.cancel()`` (from any
+thread) stops every comparison using it at its next checkpoint (within
+milliseconds), which then
+raises :class:`ComparisonCancelled`; ``token.cancelled`` tells whether
+``cancel()`` was called. A cancelled token stays cancelled."""
+
+ComparisonCancelled = _ext.ComparisonCancelled
+"""Raised when a comparison is stopped by its :class:`CancelToken` (base
+class of :class:`ComparisonTimeout`)."""
+
+ComparisonTimeout = _ext.ComparisonTimeout
+"""Raised when a comparison exceeds its ``timeout`` (subclass of
+:class:`ComparisonCancelled`)."""
 
 
 class Status(IntEnum):
@@ -133,18 +152,42 @@ def compare(
     t_test: Sequence[float] | np.ndarray,
     y_test: Sequence[float] | np.ndarray,
     options: Options | None = None,
+    *,
+    timeout: float | None = None,
+    cancel: CancelToken | None = None,
 ) -> CompareResult:
     """Compare a test trajectory against a reference trajectory.
 
     ``options=None`` (or ``Options()``) uses the default tolerances;
     partially specified :class:`Tolerances` are resolved per axis (see
     :class:`Tolerances`).
+
+    The interpreter lock is released while the comparison runs, so other
+    Python threads keep running. The comparison can be stopped:
+
+    - ``timeout``: seconds from the start of the call; when exceeded,
+      :class:`ComparisonTimeout` is raised (``ValueError`` for a negative or
+      non-finite value);
+    - ``cancel``: a :class:`CancelToken`; ``cancel.cancel()`` from another
+      thread makes this call raise :class:`ComparisonCancelled`;
+    - Ctrl-C (SIGINT) while running in the main thread raises
+      ``KeyboardInterrupt`` (or whatever the SIGINT handler raises).
+
+    Each of these stops the comparison within milliseconds: the core
+    checks at least every ~11 ms (measured up to 10 million samples in a
+    release build). Not covered are the copy of the four input arrays
+    made before the comparison starts (about 50 ms for 10 million
+    samples) and the core's validation of the time arrays (about 16 ms);
+    ``timeout`` counts from the start of the call, so they count against
+    it. When none fires, the result is identical to a call without them.
     """
     tref = _as_f64(t_reference)
     yref = _as_f64(y_reference)
     ttst = _as_f64(t_test)
     ytst = _as_f64(y_test)
-    d = _ext.compare(tref, yref, ttst, ytst, _options_to_dict(options))
+    d = _ext.compare(
+        tref, yref, ttst, ytst, _options_to_dict(options), timeout=timeout, cancel=cancel
+    )
     return CompareResult(
         status=int(d["status"]),
         lower=(np.asarray(d["lower"][0]), np.asarray(d["lower"][1])),
@@ -182,12 +225,22 @@ def compare_dataframes(
     time_column: str = "time",
     default_options: Options | None = None,
     option_overrides: Mapping[str, Options] | None = None,
+    timeout: float | None = None,
+    cancel: CancelToken | None = None,
 ) -> dict[str, CompareResult]:
     """Compare every common signal of two pandas DataFrames.
 
     The first column of each DataFrame MUST be the time column; its
     name is matched case-insensitively against ``time_column``.
+
+    ``timeout`` (seconds) limits the whole call, all columns together, and
+    ``cancel`` is passed to every :func:`compare`; when either fires,
+    :class:`ComparisonTimeout` / :class:`ComparisonCancelled` is raised and
+    no results are returned.
     """
+    if timeout is not None and not (math.isfinite(timeout) and timeout >= 0):
+        raise ValueError(f"timeout must be a finite number of seconds >= 0, got {timeout}")
+    deadline = None if timeout is None else time.monotonic() + timeout
     overrides = dict(option_overrides or {})
     ref_cols = list(reference.columns)
     tst_cols = list(test.columns)
@@ -213,7 +266,18 @@ def compare_dataframes(
         opts = overrides.get(name, default_options)
         y_ref = np.asarray(reference[name].to_numpy(), dtype=np.float64)
         y_tst = np.asarray(test[name].to_numpy(), dtype=np.float64)
-        out[name] = compare(t_ref, y_ref, t_tst, y_tst, opts)
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        try:
+            out[name] = compare(
+                t_ref, y_ref, t_tst, y_tst, opts, timeout=remaining, cancel=cancel
+            )
+        except ComparisonTimeout:
+            # compare() names the time it was given (what was left of the
+            # call's limit); report the caller's limit instead.
+            raise ComparisonTimeout(
+                f"comparison of column {name!r} exceeded the time limit of {timeout} s "
+                "of compare_dataframes"
+            ) from None
     return out
 
 
@@ -404,7 +468,10 @@ def version() -> str:
 
 
 __all__ = [
+    "CancelToken",
     "CompareResult",
+    "ComparisonCancelled",
+    "ComparisonTimeout",
     "Downsampled",
     "Options",
     "Range",

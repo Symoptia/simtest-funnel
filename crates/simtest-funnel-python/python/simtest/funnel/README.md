@@ -135,12 +135,54 @@ results = compare_dataframes(
 The first column of each DataFrame must be the time column; its name is
 matched case-insensitively against `time_column` (default `"time"`).
 
+## Time limits, cancellation and Ctrl-C
+
+`compare` releases the interpreter lock while it runs, so other Python
+threads keep running. A running comparison can be stopped; it then stops
+within milliseconds (the core checks at least every ~11 ms, measured up
+to 10 million samples in a release build). Before the limit or the token
+can act, the binding copies the four input arrays (about 50 ms for 10
+million samples) and the core validates the time arrays (about 16 ms for
+10 million samples); a `timeout` counts from the start of the call, so
+that time counts against it:
+
+```python
+import threading
+from simtest.funnel import CancelToken, ComparisonCancelled, ComparisonTimeout, compare
+
+try:
+    result = compare(t_ref, y_ref, t_test, y_test, timeout=10.0)  # seconds
+except ComparisonTimeout:
+    ...  # took longer than 10 s
+
+token = CancelToken()
+threading.Timer(5.0, token.cancel).start()  # cancel from another thread
+try:
+    result = compare(t_ref, y_ref, t_test, y_test, cancel=token)
+except ComparisonCancelled:  # also catches ComparisonTimeout
+    ...
+```
+
+- `timeout`: seconds from the start of the call; exceeding it raises
+  `ComparisonTimeout` (a subclass of `ComparisonCancelled`). Negative or
+  non-finite values raise `ValueError`.
+- `cancel`: a `CancelToken`; `token.cancel()` (thread-safe) makes every
+  comparison using it raise `ComparisonCancelled`. A cancelled token stays
+  cancelled.
+- Ctrl-C (SIGINT) while a comparison runs in the main thread raises
+  `KeyboardInterrupt` as usual.
+- `compare_dataframes` takes the same `timeout` (for the whole call) and
+  `cancel` arguments.
+
+When none of these fires, results are identical to a call without them.
+
 ## API
 
-- `compare(t_ref, y_ref, t_test, y_test, options=None) -> CompareResult`
+- `compare(t_ref, y_ref, t_test, y_test, options=None, *, timeout=None, cancel=None) -> CompareResult`
 - `summarize(result, t_reference, options=None) -> ViolationSummary` (with `ViolationInterval`, `WorstDeviation`)
 - `downsample_min_max(x, y, buckets, pinned_x=None) -> Downsampled` (`indices`, `x`, `y` arrays)
-- `compare_dataframes(reference, test, *, time_column="time", default_options=None, option_overrides=None) -> dict[str, CompareResult]`
+- `compare_dataframes(reference, test, *, time_column="time", default_options=None, option_overrides=None, timeout=None, cancel=None) -> dict[str, CompareResult]`
+- `CancelToken` (`cancel()`, `cancelled`), exceptions `ComparisonCancelled` and its subclass `ComparisonTimeout`
 - `default_options() -> Options` (all six tolerances explicit)
 - `status_message(code: int) -> str`
 - `Status` — `IntEnum` with `PASS=0`, `FAIL=-1`, `MISSING_REFERENCE=1`, `MISSING_TEST=2`, and validation codes `10..14`.

@@ -1,11 +1,12 @@
 //! Public `compare` / `compare_into` API wiring the tube-size,
 //! corner-enumeration, and error stages together.
 
-use crate::corners::build_bounds;
-use crate::errors::compute_errors;
+use crate::cancel::{CancelToken, Cancelled, Checkpoint};
+use crate::corners::build_bounds_checked;
+use crate::errors::compute_errors_checked;
 use crate::options::{Options, Range};
 use crate::status::Status;
-use crate::tube::{get_data_char, tube_halfwidths};
+use crate::tube::{get_data_char_checked, tube_halfwidths_checked};
 
 /// Caller-provided output buffers for [`compare_into`].
 pub struct Outputs<'a> {
@@ -56,19 +57,26 @@ fn is_non_decreasing(x: &[f64]) -> bool {
     x.windows(2).all(|w| w[0] <= w[1])
 }
 
-fn filter_to_range(x: &[f64], y: &[f64], lo: f64, hi: f64) -> (Vec<f64>, Vec<f64>) {
-    let mut ox = Vec::new();
-    let mut oy = Vec::new();
-    for i in 0..x.len() {
-        if x[i] >= lo && x[i] <= hi {
-            ox.push(x[i]);
-            oy.push(y[i]);
-        }
+/// Index range of the points of a non-decreasing, NaN-free `x` with
+/// `lo <= x[i] <= hi`.
+///
+/// Such points are contiguous, so two binary searches find them; this
+/// selects exactly the points the former element-by-element filter kept
+/// (`x[i] >= lo && x[i] <= hi`, nothing when a bound is NaN) without
+/// copying or scanning the input.
+fn range_indices(x: &[f64], lo: f64, hi: f64) -> std::ops::Range<usize> {
+    if lo.is_nan() || hi.is_nan() {
+        return 0..0;
     }
-    (ox, oy)
+    let start = x.partition_point(|&v| v < lo);
+    let end = x.partition_point(|&v| v <= hi).max(start);
+    start..end
 }
 
 /// Full comparison returning owned vectors.
+///
+/// Cannot be interrupted; see [`compare_cancellable`] /
+/// [`compare_with_check`] for a comparison that can be stopped.
 pub fn compare(
     t_ref: &[f64],
     y_ref: &[f64],
@@ -76,15 +84,75 @@ pub fn compare(
     y_test: &[f64],
     opts: &Options,
 ) -> CompareResult {
+    match compare_impl(t_ref, y_ref, t_test, y_test, opts, &mut || Ok(())) {
+        Ok(r) => r,
+        // The check above never fires.
+        Err(_) => unreachable!("a check that never fires cannot cancel"),
+    }
+}
+
+/// [`compare`] that stops when `token` is cancelled or its deadline
+/// passes.
+///
+/// Returns `Err(`[`Cancelled`]`)` if the token fired before the
+/// comparison finished (including a token that had already fired), and
+/// otherwise exactly the result of [`compare`]. Input validation comes
+/// first: invalid input returns its status even if the token has fired.
+/// See the [`cancel`](crate::cancel) module for how promptly a comparison
+/// stops.
+pub fn compare_cancellable(
+    t_ref: &[f64],
+    y_ref: &[f64],
+    t_test: &[f64],
+    y_test: &[f64],
+    opts: &Options,
+    token: &CancelToken,
+) -> Result<CompareResult, Cancelled> {
+    compare_impl(t_ref, y_ref, t_test, y_test, opts, &mut || token.check())
+}
+
+/// [`compare`] that calls `check` at its checkpoints and stops as soon as
+/// `check` returns `Err`, returning that error.
+///
+/// `check` is called between the phases of the comparison, every 32 768
+/// elements inside the linear phases and, inside the corner clean-up,
+/// after every few tens of thousands of elementary steps (typically
+/// about 0.1 ms apart), so it may be moderately expensive, e.g. read a
+/// clock or poll for an interrupt. It is not called for
+/// invalid input, which returns its status as in [`compare`]. If `check`
+/// never returns `Err`, the result equals [`compare`] exactly.
+pub fn compare_with_check<F>(
+    t_ref: &[f64],
+    y_ref: &[f64],
+    t_test: &[f64],
+    y_test: &[f64],
+    opts: &Options,
+    mut check: F,
+) -> Result<CompareResult, Cancelled>
+where
+    F: FnMut() -> Result<(), Cancelled>,
+{
+    compare_impl(t_ref, y_ref, t_test, y_test, opts, &mut check)
+}
+
+/// The comparison pipeline shared by every entry point.
+fn compare_impl<C: FnMut() -> Result<(), Cancelled>>(
+    t_ref: &[f64],
+    y_ref: &[f64],
+    t_test: &[f64],
+    y_test: &[f64],
+    opts: &Options,
+    check: &mut C,
+) -> Result<CompareResult, Cancelled> {
     // 1. Validate
     if t_ref.len() != y_ref.len() || t_test.len() != y_test.len() {
-        return empty_result(Status::LengthMismatch);
+        return Ok(empty_result(Status::LengthMismatch));
     }
     if t_ref.len() < 2 || t_test.len() < 2 {
-        return empty_result(Status::InsufficientData);
+        return Ok(empty_result(Status::InsufficientData));
     }
     if !is_non_decreasing(t_ref) || !is_non_decreasing(t_test) {
-        return empty_result(Status::NonMonotonic);
+        return Ok(empty_result(Status::NonMonotonic));
     }
 
     // 2. Effective x-range: intersect x_range with reference extents.
@@ -95,41 +163,50 @@ pub fn compare(
     let eff_lo = opts.x_range.lo.max(ref_lo);
     let eff_hi = opts.x_range.hi.min(ref_hi);
     if eff_lo >= eff_hi {
-        return empty_result(Status::EmptyRange);
+        return Ok(empty_result(Status::EmptyRange));
     }
     // Also require x_range intersects test data.
     if opts.x_range.lo > test_hi || opts.x_range.hi < test_lo {
-        return empty_result(Status::EmptyRange);
+        return Ok(empty_result(Status::EmptyRange));
     }
 
-    // 3. Filter reference to x_range.
-    let (tr, yr) = filter_to_range(t_ref, y_ref, opts.x_range.lo, opts.x_range.hi);
-    let (tt, yt) = filter_to_range(t_test, y_test, opts.x_range.lo, opts.x_range.hi);
-    if tr.len() < 2 || tt.len() < 2 {
-        return empty_result(Status::InsufficientData);
+    // 3. Restrict the reference to x_range (both time arrays are
+    //    non-decreasing and NaN-free here, so the points in range are a
+    //    contiguous slice). Only the count of test points in range
+    //    matters: errors are computed on the full test arrays so that
+    //    `errors_x`/`errors_y` keep length `n_test`.
+    let r = range_indices(t_ref, opts.x_range.lo, opts.x_range.hi);
+    let (tr, yr) = (&t_ref[r.clone()], &y_ref[r]);
+    if tr.len() < 2 || range_indices(t_test, opts.x_range.lo, opts.x_range.hi).len() < 2 {
+        return Ok(empty_result(Status::InsufficientData));
     }
-    // `yt` filtered view is not consumed further; errors are computed on the
-    // full test arrays so that `errors_x`/`errors_y` keep length `n_test`.
-    let _ = yt;
+
+    // Checkpoints: before the work starts (an already fired signal does
+    // no work), between the phases, and inside every phase whose cost
+    // grows with the input: every `CHECK_INTERVAL` elements in the linear
+    // loops, by counted work in the corner clean-up.
+    let mut cp = Checkpoint::new(check);
+    cp.now()?;
 
     // 4. tube size + bounds
-    let dc = get_data_char(&tr, &yr);
-    let (hx, hy) = tube_halfwidths(&tr, &yr, dc, &opts.tolerances);
-    let (lx, ly, ux, uy) = build_bounds(&tr, &yr, &hx, &hy, dc.mag_x);
+    let dc = get_data_char_checked(tr, yr, &mut cp)?;
+    let (hx, hy) = tube_halfwidths_checked(tr, yr, dc, &opts.tolerances, &mut cp)?;
+    cp.now()?;
+    let (lx, ly, ux, uy) = build_bounds_checked(tr, yr, &hx, &hy, dc.mag_x, &mut cp)?;
 
     // 5. errors: computed over original t_test / y_test arrays (caller sees
     //    length-n_test output); deviations are non-zero only inside eff range.
-    let (ex, ey) = compute_errors(t_test, y_test, &lx, &ly, &ux, &uy);
+    let (ex, ey) = compute_errors_checked(t_test, y_test, &lx, &ly, &ux, &uy, &mut cp)?;
 
     // 6. classify status
-    let status = classify_status(t_ref, t_test, &ey, eff_lo, eff_hi, opts.x_range);
+    let status = classify_status(t_ref, t_test, &ey, eff_lo, eff_hi, opts.x_range, &mut cp)?;
 
-    CompareResult {
+    Ok(CompareResult {
         status,
         lower: (lx, ly),
         upper: (ux, uy),
         errors: (ex, ey),
-    }
+    })
 }
 
 /// Allocation-free variant filling caller buffers.
@@ -208,43 +285,48 @@ fn empty_result(status: Status) -> CompareResult {
 /// `eps = 1e-12 * max(|t_ref_max|, |t_test_max|)` guards the range
 /// comparisons against floating-point noise when the inputs share
 /// identical endpoints.
-fn classify_status(
+fn classify_status<C: FnMut() -> Result<(), Cancelled>>(
     t_ref: &[f64],
     t_test: &[f64],
     ey: &[f64],
     eff_lo: f64,
     eff_hi: f64,
     x_range: Range,
-) -> Status {
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<Status, Cancelled> {
     // 1. Fail wins: any non-zero deviation inside the effective range.
-    for (j, &e) in ey.iter().enumerate() {
-        if e != 0.0 {
-            let x = t_test[j];
-            if x >= eff_lo && x <= eff_hi {
-                return Status::Fail;
-            }
+    let mut fail = false;
+    cp.chunks(ey.len(), |r| {
+        if !fail {
+            fail = r.into_iter().any(|j| {
+                let x = t_test[j];
+                ey[j] != 0.0 && x >= eff_lo && x <= eff_hi
+            });
         }
+    })?;
+    if fail {
+        return Ok(Status::Fail);
     }
 
     // 2/3. Range-asymmetry checks within the requested x-range.
     let (Some(&tr_lo), Some(&tr_hi)) = (t_ref.first(), t_ref.last()) else {
-        return Status::Pass;
+        return Ok(Status::Pass);
     };
     let (Some(&tt_lo), Some(&tt_hi)) = (t_test.first(), t_test.last()) else {
-        return Status::Pass;
+        return Ok(Status::Pass);
     };
     let eps = 1e-12 * tr_hi.abs().max(tt_hi.abs());
     let (r_lo, r_hi) = (tr_lo.max(x_range.lo), tr_hi.min(x_range.hi));
     let (t_lo, t_hi) = (tt_lo.max(x_range.lo), tt_hi.min(x_range.hi));
 
     if t_hi > r_hi + eps || t_lo < r_lo - eps {
-        return Status::MissingReference;
+        return Ok(Status::MissingReference);
     }
     if r_hi > t_hi + eps || r_lo < t_lo - eps {
-        return Status::MissingTest;
+        return Ok(Status::MissingTest);
     }
 
-    Status::Pass
+    Ok(Status::Pass)
 }
 
 #[cfg(test)]
@@ -471,5 +553,81 @@ mod tests {
         };
         let (s, _, _) = compare_into(&t, &y, &t, &y, &opts_loose(), &mut out);
         assert_eq!(s, Status::BufferTooSmall);
+    }
+
+    /// The element-by-element filter `range_indices` replaced.
+    fn filter_indices(x: &[f64], lo: f64, hi: f64) -> Vec<usize> {
+        (0..x.len()).filter(|&i| x[i] >= lo && x[i] <= hi).collect()
+    }
+
+    #[test]
+    fn range_indices_selects_what_the_filter_selected() {
+        let xs: [&[f64]; 5] = [
+            &[0.0, 1.0, 2.0, 3.0],
+            &[0.0, 1.0, 1.0, 1.0, 2.0, 2.0],
+            &[-0.0, 0.0, 0.0, 5.0],
+            &[f64::NEG_INFINITY, -1.0, 1.0, f64::INFINITY],
+            &[3.0, 3.0],
+        ];
+        let bounds = [
+            f64::NEG_INFINITY,
+            -2.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.5,
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        for x in xs {
+            for &lo in &bounds {
+                for &hi in &bounds {
+                    let r: Vec<usize> = range_indices(x, lo, hi).collect();
+                    assert_eq!(r, filter_indices(x, lo, hi), "x={x:?} lo={lo} hi={hi}");
+                }
+            }
+        }
+    }
+
+    /// The linear phases (half-widths, corner curves, deviations,
+    /// classification) consult the check every `CHECK_INTERVAL` elements,
+    /// not only at phase boundaries, so even a comparison without loops to
+    /// remove can be stopped between any two chunks of work.
+    #[test]
+    fn linear_phases_are_checked_per_chunk() {
+        use crate::cancel::CHECK_INTERVAL;
+        let n = 8 * CHECK_INTERVAL;
+        let t: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let y: Vec<f64> = t.iter().map(|v| v * 0.5).collect();
+        let opts = Options::default();
+        let mut calls = 0usize;
+        let r = compare_with_check(&t, &y, &t, &y, &opts, || {
+            calls += 1;
+            Ok(())
+        })
+        .expect("never cancelled");
+        assert_eq!(r.status, Status::Pass);
+        // Phase boundaries plus the corner clean-up alone give fewer than
+        // 30 checks here; every linear pass over n points adds 8.
+        assert!(calls >= 80, "checks: {calls}");
+
+        // A check that fires at any of them stops the comparison.
+        for k in [1, 2, calls / 4, calls / 2, calls - 1, calls] {
+            let mut seen = 0usize;
+            let res = compare_with_check(&t, &y, &t, &y, &opts, || {
+                seen += 1;
+                if seen >= k {
+                    Err(Cancelled::Requested)
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(matches!(res, Err(Cancelled::Requested)), "k={k}");
+            assert_eq!(seen, k);
+        }
     }
 }

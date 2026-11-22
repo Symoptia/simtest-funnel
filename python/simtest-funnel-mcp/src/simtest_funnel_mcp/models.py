@@ -179,6 +179,19 @@ class Totals(BaseModel):
     passed: int
     failed: int
     errors: int
+    not_completed: int | None = Field(
+        default=None,
+        description=(
+            "Comparisons stopped by the time limit (no row); absent when all completed."
+        ),
+    )
+
+
+class NotCompleted(BaseModel):
+    """A (column, tolerance set) comparison stopped by the time limit."""
+
+    column: str
+    tolerance_set: str
 
 
 class Worst(BaseModel):
@@ -227,6 +240,16 @@ class CompareResult(BaseModel):
     columns_only_in_reference_count: int | None = None
     columns_only_in_test: list[str] | None = None
     columns_only_in_test_count: int | None = None
+    time_limit_reached: bool | None = Field(
+        default=None,
+        description="True when the time limit stopped the call; rows cover completed "
+        "comparisons only. Absent when every comparison completed.",
+    )
+    not_completed: list[NotCompleted] | None = Field(
+        default=None,
+        description="Comparisons not completed within the time limit (capped by max_rows).",
+    )
+    not_completed_omitted: int | None = None
     notes: list[str] = Field(default_factory=list)
     snippet: str | None = None
 

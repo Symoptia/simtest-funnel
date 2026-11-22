@@ -3,19 +3,108 @@
 //! Python bindings for the simtest-funnel trajectory comparison library.
 //!
 //! Exposes `compare`, `summarize`, `downsample_min_max`, `default_options`,
-//! `status_message`, and the `Status` integer constants through PyO3 as the
+//! `status_message`, the `Status` integer constants, `CancelToken` and the
+//! `ComparisonCancelled` / `ComparisonTimeout` exceptions through PyO3 as the
 //! native extension module `_simtest_funnel`, re-exported through the
 //! namespace package `simtest.funnel`.
+//!
+//! `compare` releases the GIL while the comparison runs. It stops when its
+//! time limit passes or its `CancelToken` is cancelled, and, in the main
+//! thread, when a signal handler raises (Ctrl-C: `KeyboardInterrupt`).
+
+use std::time::{Duration, Instant};
 
 use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
-use pyo3::exceptions::PyValueError;
+use pyo3::create_exception;
+use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use simtest_funnel_core::{
-    compare as core_compare, downsample_min_max as core_downsample_min_max, status_message,
-    summarize as core_summarize, CompareResult, Options, PartialTolerances, Range, Status,
-    Tolerances,
+    compare_with_check, downsample_min_max as core_downsample_min_max, status_message,
+    summarize as core_summarize, CancelToken as CoreCancelToken, Cancelled, CompareResult, Options,
+    PartialTolerances, Range, Status, Tolerances,
 };
+
+create_exception!(
+    simtest.funnel,
+    ComparisonCancelled,
+    PyException,
+    "A comparison was stopped before it finished: its CancelToken was cancelled \
+     (or, as the subclass ComparisonTimeout, its time limit passed)."
+);
+create_exception!(
+    simtest.funnel,
+    ComparisonTimeout,
+    ComparisonCancelled,
+    "A comparison was stopped because its time limit passed."
+);
+
+/// How often the main thread polls for Python signals (Ctrl-C) while a
+/// comparison runs with the GIL released.
+const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A cancellation token shared between threads.
+///
+/// Pass it as `cancel=` to `compare`; calling `cancel()` from any thread
+/// stops every comparison using it at its next checkpoint (within
+/// milliseconds), which then raises `ComparisonCancelled`. A cancelled
+/// token stays cancelled; use a new token for new work.
+#[pyclass(frozen, name = "CancelToken", module = "simtest.funnel")]
+struct PyCancelToken {
+    inner: CoreCancelToken,
+}
+
+#[pymethods]
+impl PyCancelToken {
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: CoreCancelToken::new(),
+        }
+    }
+
+    /// Request cancellation (thread-safe, idempotent).
+    fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    /// Whether `cancel()` has been called.
+    #[getter]
+    fn cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+
+    fn __repr__(&self) -> String {
+        let state = if self.inner.is_cancelled() {
+            "True"
+        } else {
+            "False"
+        };
+        format!("CancelToken(cancelled={state})")
+    }
+}
+
+/// Validate a time limit in seconds: `None` = no limit; negative or
+/// non-finite raises `ValueError`; a limit too large to represent means
+/// no limit.
+fn parse_timeout(timeout: Option<f64>) -> PyResult<Option<Duration>> {
+    match timeout {
+        None => Ok(None),
+        Some(t) if !t.is_finite() || t < 0.0 => Err(PyValueError::new_err(format!(
+            "timeout must be a finite number of seconds >= 0, got {t}"
+        ))),
+        Some(t) => Ok(Duration::try_from_secs_f64(t).ok()),
+    }
+}
+
+/// Whether the calling thread is Python's main thread (the only thread in
+/// which signal handlers run).
+fn in_main_thread(py: Python<'_>) -> PyResult<bool> {
+    let threading = py.import("threading")?;
+    let current = threading.call_method0("get_ident")?;
+    let main = threading.call_method0("main_thread")?.getattr("ident")?;
+    current.eq(main)
+}
 
 fn dict_get_f64(d: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<f64>> {
     match d.get_item(key)? {
@@ -79,7 +168,8 @@ fn parse_options(py_options: Option<&Bound<'_, PyAny>>) -> PyResult<Options> {
 }
 
 #[pyfunction]
-#[pyo3(signature = (t_reference, y_reference, t_test, y_test, options=None))]
+#[pyo3(signature = (t_reference, y_reference, t_test, y_test, options=None, *, timeout=None, cancel=None))]
+#[allow(clippy::too_many_arguments)]
 fn compare<'py>(
     py: Python<'py>,
     t_reference: PyReadonlyArray1<'py, f64>,
@@ -87,14 +177,55 @@ fn compare<'py>(
     t_test: PyReadonlyArray1<'py, f64>,
     y_test: PyReadonlyArray1<'py, f64>,
     options: Option<&Bound<'py, PyAny>>,
+    timeout: Option<f64>,
+    cancel: Option<&Bound<'py, PyCancelToken>>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let started = Instant::now();
+    let limit = parse_timeout(timeout)?;
     let opts = parse_options(options)?;
-    let t_ref = t_reference.as_slice()?;
-    let y_ref = y_reference.as_slice()?;
-    let t_tst = t_test.as_slice()?;
-    let y_tst = y_test.as_slice()?;
+    let mut token = cancel.map_or_else(CoreCancelToken::new, |c| c.get().inner.clone());
+    if let Some(d) = limit.and_then(|l| started.checked_add(l)) {
+        token = token.with_deadline(d);
+    }
+    let main_thread = in_main_thread(py)?;
+    // Copies: other Python threads may run (and write to the arrays) while
+    // the GIL is released below.
+    let t_ref = t_reference.as_slice()?.to_vec();
+    let y_ref = y_reference.as_slice()?.to_vec();
+    let t_tst = t_test.as_slice()?.to_vec();
+    let y_tst = y_test.as_slice()?.to_vec();
 
-    let r = core_compare(t_ref, y_ref, t_tst, y_tst, &opts);
+    let (outcome, signal_err) = py.detach(move || {
+        let mut signal_err: Option<PyErr> = None;
+        let mut last_poll = Instant::now();
+        let outcome = compare_with_check(&t_ref, &y_ref, &t_tst, &y_tst, &opts, || {
+            token.check()?;
+            if main_thread && last_poll.elapsed() >= SIGNAL_POLL_INTERVAL {
+                last_poll = Instant::now();
+                if let Err(e) = Python::attach(|py| py.check_signals()) {
+                    signal_err = Some(e);
+                    return Err(Cancelled::Requested);
+                }
+            }
+            Ok(())
+        });
+        (outcome, signal_err)
+    });
+    if let Some(e) = signal_err {
+        return Err(e);
+    }
+    let r = match outcome {
+        Ok(r) => r,
+        Err(Cancelled::DeadlineExceeded) => {
+            return Err(ComparisonTimeout::new_err(format!(
+                "comparison exceeded the time limit of {} s",
+                timeout.unwrap_or_default()
+            )))
+        }
+        Err(Cancelled::Requested) => {
+            return Err(ComparisonCancelled::new_err("comparison cancelled"))
+        }
+    };
 
     let out = PyDict::new(py);
     out.set_item("status", r.status as i32)?;
@@ -295,6 +426,12 @@ fn init_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(status_message_py, m)?)?;
     m.add_function(wrap_pyfunction!(summarize, m)?)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_class::<PyCancelToken>()?;
+    m.add(
+        "ComparisonCancelled",
+        m.py().get_type::<ComparisonCancelled>(),
+    )?;
+    m.add("ComparisonTimeout", m.py().get_type::<ComparisonTimeout>())?;
 
     m.add("STATUS_PASS", 0_i32)?;
     m.add("STATUS_FAIL", -1_i32)?;

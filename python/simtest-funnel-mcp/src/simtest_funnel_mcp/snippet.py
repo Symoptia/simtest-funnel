@@ -159,6 +159,11 @@ def make_snippet(
             f"    # {res.rows_omitted} row(s) not returned by the server (max_rows) "
             "are not included.\n"
         )
+    if res.totals.not_completed:
+        out += (
+            f"    # {res.totals.not_completed} comparison(s) not completed within the "
+            "server's time limit are not included.\n"
+        )
     if dropped:
         out += f"    # {dropped} row(s) left out to keep this snippet under the size cap.\n"
     return out + _FOOTER

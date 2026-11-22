@@ -55,6 +55,40 @@ axis — the same rule the Python, TypeScript and CLI front ends use:
 A plain `Tolerances` value is fully explicit and used verbatim. It has
 no `Default` impl; spell explicit all-zero as `Tolerances::ZERO`.
 
+## Cancellation
+
+`compare` cannot be interrupted. To stop a long comparison, use
+`compare_cancellable` with a `CancelToken` (a flag any thread can set via
+`cancel()`, clones share it, plus an optional deadline), or
+`compare_with_check` with your own check closure. Both return
+`Err(Cancelled::Requested | Cancelled::DeadlineExceeded)` when stopped and
+otherwise exactly what `compare` returns; invalid input still returns its
+status. The signal is checked between phases, every 32 768 elements of the
+linear passes and every few tens of thousands of steps inside the corner
+clean-up; in a release build checks were at most about 11 ms apart, also
+for 10 million samples, so a comparison stops within milliseconds. Only
+input validation (about 16 ms for 10 million samples) runs before the
+first check, since invalid input reports its status even when the signal
+has fired. The checks cost nothing measurable. `Status` is unchanged.
+
+```rust
+use simtest_funnel_core::{compare_cancellable, CancelToken, Cancelled, Options};
+use std::time::Duration;
+
+let t: Vec<f64> = (0..1000).map(f64::from).collect();
+let y: Vec<f64> = t.iter().map(|v| v.sin()).collect();
+let token = CancelToken::new().with_timeout(Duration::from_secs(5));
+let _remote = token.clone(); // e.g. hand to another thread: _remote.cancel()
+match compare_cancellable(&t, &y, &t, &y, &Options::default(), &token) {
+    Ok(r) => println!("status {:?}", r.status),
+    Err(Cancelled::DeadlineExceeded) => println!("took longer than 5 s"),
+    Err(Cancelled::Requested) => println!("cancelled"),
+}
+```
+
+On `wasm32-unknown-unknown` do not set a deadline (`std::time::Instant`
+panics there); the flag works everywhere.
+
 ## Downsampling for output
 
 `downsample_min_max(x, y, buckets, pinned_x)` reduces a signal for plots

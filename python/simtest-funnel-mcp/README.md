@@ -44,6 +44,7 @@ by exact name or glob pattern (`*`, `?`, `[...]`), e.g.
 | `max_intervals` | 5 | Violation intervals listed per failing row (largest deviation first) |
 | `max_rows` | 100 | Rows returned (errors, then failures, then passes); totals always cover all rows |
 | `include_snippet` | false | Add a pytest file reproducing the returned rows (for CI), in the structured field `snippet` |
+| `time_limit` | 60 | Deadline in seconds for the whole call, counted from its start, reading the files included (positive); see [Time limit and cancellation](#time-limit-and-cancellation) |
 
 The result has one row per (column, tolerance set) with verdict
 (`pass` / `fail` / `error`), the library status code, points outside the
@@ -77,6 +78,7 @@ look at it. SVG is never returned inline (it would reach the model as text).
 | `output_path` | none | Write the plot here: `.svg` (document) or `.png` (1600 x 900 px), inside a workspace root or a configured output directory. Omit for the preview only |
 | `overwrite` | false | Replace `output_path` if it exists (refused otherwise) |
 | `max_intervals` | 5 | Violation intervals listed in the result row (all are drawn) |
+| `time_limit` | 60 | Deadline in seconds for the whole call (reading, comparison, rendering); when reached the call fails and nothing is written |
 
 The plot shows the reference (dark grey, dashed), the test (blue, solid),
 the tolerance tube (grey band between thin lower and upper bound lines) and
@@ -108,8 +110,20 @@ output directory (below); a relative `output_path` is taken relative to the
 first workspace root, else the first output directory; the directory must
 already exist (none is created); a symbolic link must point to a file with
 the same extension; an existing file is refused unless `overwrite=true`.
-These checks run before any CSV file is read. The file is written only after rendering succeeded, so a
-failed call writes nothing. Output is deterministic: the same input gives
+These checks run before any CSV file is read. The file is written only
+after rendering succeeded, under a temporary name in the target directory,
+and moved into place (atomically replacing an existing file with
+`overwrite=true`; never replacing one without it) only if the call is
+still live, so a failed, cancelled or timed-out call writes nothing and no
+partial file ever appears. Because the checks run up to a minute before
+the write, the write itself does not trust the checked path: on Linux and
+macOS it works on a handle of the target directory, opened without
+following a symbolic link and verified to lie inside a workspace root or
+output directory immediately before the file is moved into place, and a
+symbolic link at the file name is replaced, never followed. (On Windows
+the directory is resolved and checked again immediately before the write,
+which narrows but cannot close that window.) The reported `file.path` is
+where the file was written. Output is deterministic: the same input gives
 byte-identical SVG and PNG files (with the same matplotlib version), so
 plots can be kept in a repository and diffed. SVG text is embedded as
 paths (bundled DejaVu Sans), so files look the same everywhere.
@@ -120,6 +134,39 @@ slowed). It adds about 24 MB of wheels (~77 MB installed). matplotlib
 keeps a font cache in its cache directory (`~/.cache/matplotlib`, or
 `$MPLCONFIGDIR`), created on first use in an environment; that is the only
 other file touched.
+
+### Time limit and cancellation
+
+Comparisons run in a worker thread without holding the Python interpreter
+lock, so the server keeps answering other requests while one runs.
+Comparisons usually take well under a second even for a million samples;
+a nearly noise-free signal with a large time tolerance (`rtolx`/`atolx`)
+can take much longer.
+
+- `time_limit` (seconds, default 60) is a deadline for the whole call,
+  counted from its start: reading the CSV files counts against it (and,
+  for `plot_signals`, rendering). Comparisons start only while time
+  remains, and a running one stops when the limit is reached. Reading and
+  rendering are not interrupted, so a call can overrun the limit by the
+  time they take.
+- `compare_signals` then still succeeds: `rows` hold the comparisons that
+  finished (server-detected problems such as missing columns included),
+  `not_completed` lists the `{column, tolerance_set}` pairs that did not
+  (capped at `max_rows`, the rest counted in `not_completed_omitted`),
+  `totals.not_completed` counts them, `time_limit_reached` is `true` and a
+  note suggests a larger `time_limit`, fewer columns or a narrower
+  `x_range`. The text shows them on a `NOT COMPLETED (time limit)` line; a
+  requested snippet covers the finished rows only. When everything
+  finishes, none of these fields appear.
+- `plot_signals` is one comparison: when the limit is reached the call
+  fails with an error naming the limit and nothing is written. The limit
+  and cancellation are checked before rendering and again immediately
+  before the file is moved into place.
+- When the client cancels a call (MCP `notifications/cancelled`, e.g. the
+  user interrupts the agent), the running comparison stops within
+  milliseconds and no further comparison of that call is started. A
+  cancelled `plot_signals` call never writes its file, also when the
+  cancellation arrives after the comparison, while rendering.
 
 ### Pytest snippet
 

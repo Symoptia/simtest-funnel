@@ -24,7 +24,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 import simtest.funnel as funnel
-from simtest_funnel_mcp.compare import CompareOutcome, RowRecord, run_compare
+from simtest_funnel_mcp.compare import CompareOutcome, RowRecord, TimeLimit, run_compare
 from simtest_funnel_mcp.csvio import SignalFile
 from simtest_funnel_mcp.models import COEFFICIENTS, Coefficients, ToleranceSet, XRange
 from simtest_funnel_mcp.selection import is_pattern
@@ -320,8 +320,12 @@ def prepare_plot(
     x_range: XRange | None,
     max_intervals: int,
     buckets: int = DEFAULT_BUCKETS,
+    limit: TimeLimit | None = None,
 ) -> PlotOutcome:
-    """Compare one column on the full data and reduce it for drawing."""
+    """Compare one column on the full data and reduce it for drawing.
+
+    A comparison stopped by ``limit`` raises :class:`PlotArgumentError`.
+    """
     if not column.strip():
         raise PlotArgumentError("column is empty")
     known = set(ref.signal_columns) | set(tst.signal_columns)
@@ -338,7 +342,15 @@ def prepare_plot(
         x_range=x_range,
         max_intervals=max_intervals,
         max_rows=1,
+        limit=limit,
     )
+    if outcome.not_completed:
+        assert limit is not None
+        raise PlotArgumentError(
+            f"cannot plot column {column!r}: the comparison did not finish within the "
+            f"time limit of {limit.describe()}. No file was written. Pass a larger "
+            "time_limit or a narrower x_range."
+        )
     record = outcome.records[0]
     row = record.row
     if row.verdict == "error" or record.library is None:

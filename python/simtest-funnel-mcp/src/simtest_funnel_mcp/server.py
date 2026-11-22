@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import errno
 import io
 import os
-from collections.abc import Sequence
+import secrets
+import stat
+import threading
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeVar
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
+import anyio
+import anyio.to_thread
 from mcp.server.mcpserver import Context, ListRoots, MCPServer, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import (
@@ -28,7 +35,9 @@ from simtest_funnel_mcp import __version__
 from simtest_funnel_mcp.compare import (
     DEFAULT_MAX_INTERVALS,
     DEFAULT_MAX_ROWS,
+    DEFAULT_TIME_LIMIT,
     CompareArgumentError,
+    TimeLimit,
     run_compare,
 )
 from simtest_funnel_mcp.csvio import SignalFile, SignalFileError, load_csv
@@ -62,6 +71,11 @@ from simtest_funnel_mcp.render import (
 )
 from simtest_funnel_mcp.snippet import make_snippet
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
+
 SERVER_NAME = "simtest-funnel"
 
 INSTRUCTIONS = """\
@@ -76,7 +90,11 @@ paths on every call. Only plot_signals writes, and only the output_path
 it is given (never an existing file unless overwrite=true), which must lie
 inside a workspace root declared by the client or an output directory
 configured when the server was started; with neither, omit output_path
-and use the inline preview."""
+and use the inline preview. compare_signals and plot_signals stop
+time_limit seconds (default 60) after the call started, reading the files
+included: compare_signals then returns the finished rows and lists the
+comparisons not completed; plot_signals fails and writes nothing. Raise
+time_limit for very long signals."""
 
 CSV_HELP = (
     "CSV dialect: comma-separated, one header row, lines whose first non-blank character "
@@ -145,7 +163,19 @@ Columns missing from a file or with bad data are reported per row (verdict
 reproduces the returned rows in CI; it is returned in the structured content field
 'snippet' only. Its data paths are relative to the first workspace root (else the
 server's working directory) and resolved against $SIMTEST_FUNNEL_DATA_ROOT or the
-current directory, so commit the CSV files at the same relative location."""
+current directory, so commit the CSV files at the same relative location.
+
+TIME LIMIT: time_limit (seconds, default {DEFAULT_TIME_LIMIT:g}) is a deadline for the whole
+call, counted from its start, so the time spent reading the files counts against it.
+Comparisons are started only while time remains and a running comparison is stopped
+at the deadline; reading itself is not interrupted, so a call can overrun the limit by
+the time spent reading. When the limit is reached the call still succeeds: rows are
+returned for the comparisons that finished, the others are listed in 'not_completed'
+(totals.not_completed counts them, time_limit_reached is true) and a note suggests a
+larger time_limit, fewer columns or a narrower x_range. Comparisons usually take well
+under a second even for a million samples; a nearly noise-free signal with a large
+time tolerance can take much longer. Cancelling the call stops the running
+comparison."""
 
 READ_ONLY = ToolAnnotations(
     read_only_hint=True,
@@ -181,7 +211,15 @@ x_range restricts the comparison exactly as in compare_signals (rtol bases are
 computed within it) and is also the time window shown, so it doubles as zoom.
 A column that cannot be compared (missing, bad data, time ranges that differ,
 non-monotonic time) is an error and nothing is written; use compare_signals to see
-all problems. Tolerance coefficients: see compare_signals. {CSV_HELP}"""
+all problems. Tolerance coefficients: see compare_signals.
+
+time_limit (seconds, default {DEFAULT_TIME_LIMIT:g}) is a deadline for the whole call,
+counted from its start: reading the files, the comparison and rendering. The comparison
+is stopped at the deadline; reading and rendering are not interrupted, but the deadline
+is checked before rendering and again immediately before the file is written. When the
+limit is reached, or the call is cancelled, the call fails and nothing is written: the
+file is written under a temporary name and moved into place only while the call is
+still live, so no partial or late file appears. {CSV_HELP}"""
 
 PLOT = ToolAnnotations(
     read_only_hint=False,
@@ -333,15 +371,250 @@ def resolve_output_path(
     return target, fmt
 
 
-def _write_plot(target: Path, data: bytes, overwrite: bool) -> None:
-    """Write ``data``; without ``overwrite`` the file is created exclusively."""
+#: Whether the platform can write relative to a directory file descriptor
+#: without following symbolic links (Linux, macOS and other POSIX systems;
+#: not Windows). See :func:`_publish_plot`.
+_DIR_FD_WRITES = (
+    hasattr(os, "O_DIRECTORY")
+    and hasattr(os, "O_NOFOLLOW")
+    and {os.open, os.stat, os.unlink, os.rename, os.link} <= os.supports_dir_fd
+)
+
+#: ``errno`` values with which ``link`` fails on file systems without hard
+#: links; :func:`_publish_plot` then creates the file exclusively instead.
+_NO_HARD_LINKS = frozenset(
+    e
+    for e in (
+        getattr(errno, "EPERM", None),
+        getattr(errno, "ENOTSUP", None),
+        getattr(errno, "EOPNOTSUPP", None),
+        getattr(errno, "EMLINK", None),
+    )
+    if e is not None
+)
+
+
+class PublishGate:
+    """Orders the cancellation of a call against the publishing of its file.
+
+    :func:`run_off_loop` cancels the call's token while holding the gate,
+    and :func:`_publish_plot` checks the token and moves the finished file
+    into place while holding it. So the file either appears before the
+    call is reported cancelled or never; the gate is held only for the few
+    system calls of the final check and move.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        self._lock.release()
+
+
+def _check_live(limit: TimeLimit, when: str) -> None:
+    """Raise a :class:`ToolError` if the call was cancelled or its time
+    limit has passed (``when`` says at which step)."""
+    if limit.cancel.cancelled:
+        raise ToolError(f"plot_signals was cancelled {when}; no file was written")
+    if limit.remaining() <= 0.0:
+        raise ToolError(
+            f"plot_signals reached its time limit of {limit.describe()} {when}; no file "
+            "was written. The limit counts from the start of the call and covers reading "
+            "the files, the comparison and rendering. Pass a larger time_limit or a "
+            "narrower x_range."
+        )
+
+
+def _outside(target: Path, allowed: Sequence[Path]) -> ToolError:
+    return ToolError(
+        f"{target} is outside the workspace roots and configured output directories "
+        f"({', '.join(map(str, allowed))}); not written"
+    )
+
+
+def _fd_dir_path(dir_fd: int, hint: Path) -> Path:
+    """The current location of the directory open as ``dir_fd``.
+
+    Asks the kernel where available (``F_GETPATH`` on macOS,
+    ``/proc/self/fd`` on Linux), else resolves ``hint``. The caller checks
+    that the result really is that directory (same device and inode).
+    """
+    get_path = getattr(fcntl, "F_GETPATH", None) if fcntl is not None else None
+    if fcntl is not None and get_path is not None:
+        raw = fcntl.fcntl(dir_fd, get_path, b"\0" * 1024)  # MAXPATHLEN
+        return Path(os.fsdecode(raw.split(b"\0", 1)[0]))
+    proc = Path(f"/proc/self/fd/{dir_fd}")
+    if proc.is_symlink():
+        return Path(os.readlink(proc))
+    return Path(os.path.realpath(hint))
+
+
+def _verified_dir(dir_fd: int, hint: Path, allowed: Sequence[Path]) -> Path:
+    """Where the directory ``dir_fd`` is now, verified to be inside
+    ``allowed``; raises :class:`ToolError` otherwise."""
+    where = _fd_dir_path(dir_fd, hint)
+    if not any(where.is_relative_to(os.path.realpath(r)) for r in allowed):
+        raise _outside(where, allowed)
     try:
-        with open(target, "wb" if overwrite else "xb") as fh:
+        st = os.stat(where, follow_symlinks=False)
+    except OSError as exc:
+        raise ToolError(f"cannot write into {hint}: {exc}") from exc
+    fst = os.fstat(dir_fd)
+    if (st.st_dev, st.st_ino) != (fst.st_dev, fst.st_ino):
+        raise ToolError(f"directory {hint} was moved or replaced during the call; not written")
+    return where
+
+
+def _publish_plot(
+    target: Path,
+    data: bytes,
+    overwrite: bool,
+    allowed: Sequence[Path],
+    limit: TimeLimit,
+    gate: PublishGate,
+) -> Path:
+    """Write ``data`` to ``target`` (checked by :func:`resolve_output_path`)
+    and return where the file now is.
+
+    The data first goes to a temporary file in the target directory, which
+    is moved into place only if the call is still live (not cancelled,
+    time limit not reached), so no partial file and no file of a cancelled
+    call ever appears under the target name: with ``overwrite`` by an
+    atomic rename, otherwise by a hard link that fails if the name exists
+    (or, on file systems without hard links, by an exclusive create).
+
+    ``target`` was checked before the files were read and compared, which
+    can take a minute; meanwhile a directory on the path could be replaced
+    by a symbolic link pointing elsewhere. So, where the platform allows,
+    everything happens relative to a file descriptor of the target
+    directory, opened without following a final symbolic link and verified
+    to lie inside ``allowed`` immediately before the file is moved into
+    place; the temporary file is created with ``O_EXCL | O_NOFOLLOW`` and
+    a symbolic link at the target name is replaced, never followed.
+    """
+    if not _DIR_FD_WRITES:
+        return _publish_plot_by_path(target, data, overwrite, allowed, limit, gate)
+    parent, name = target.parent, target.name
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    try:
+        dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | cloexec)
+    except OSError as exc:
+        raise ToolError(f"cannot write {target}: directory {parent}: {exc}") from exc
+    tmp = f".{name}.{secrets.token_hex(8)}.tmp"
+    try:
+        _verified_dir(dir_fd, parent, allowed)
+        try:
+            fd = os.open(
+                tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | cloexec,
+                0o666,
+                dir_fd=dir_fd,
+            )
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            with gate:
+                _check_live(limit, "before the file was written")
+                where = _verified_dir(dir_fd, parent, allowed)
+                if overwrite:
+                    try:
+                        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        if stat.S_ISDIR(st.st_mode):
+                            raise ToolError(
+                                f"{where / name} exists and is not a regular file; not written"
+                            )
+                    os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                else:
+                    try:
+                        os.link(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                    except FileExistsError:
+                        raise
+                    except OSError as exc:
+                        if exc.errno not in _NO_HARD_LINKS:
+                            raise
+                        fd = os.open(
+                            name,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | cloexec,
+                            0o666,
+                            dir_fd=dir_fd,
+                        )
+                        try:
+                            with os.fdopen(fd, "wb") as fh:
+                                fh.write(data)
+                        except BaseException:
+                            os.unlink(name, dir_fd=dir_fd)
+                            raise
+            return where / name
+        except FileExistsError as exc:
+            raise ToolError(
+                f"{parent / name} already exists; pass overwrite=true to replace it"
+            ) from exc
+        except OSError as exc:
+            raise ToolError(f"cannot write {target}: {exc}") from exc
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _publish_plot_by_path(
+    target: Path,
+    data: bytes,
+    overwrite: bool,
+    allowed: Sequence[Path],
+    limit: TimeLimit,
+    gate: PublishGate,
+) -> Path:
+    """:func:`_publish_plot` for platforms without ``dir_fd`` writes
+    (Windows).
+
+    Not free of races: the target directory is resolved again and checked
+    against ``allowed`` immediately before the file is moved into place,
+    which narrows the window between check and use to a few system calls
+    but cannot close it. Temporary file, liveness check and move into
+    place work as in :func:`_publish_plot`.
+    """
+    tmp: Path | None = None
+    try:
+        parent = target.parent.resolve(strict=True)
+        if not any(parent.is_relative_to(r) for r in allowed):
+            raise _outside(parent, allowed)
+        tmp = parent / f".{target.name}.{secrets.token_hex(8)}.tmp"
+        with open(tmp, "xb") as fh:
             fh.write(data)
+        with gate:
+            _check_live(limit, "before the file was written")
+            parent = target.parent.resolve(strict=True)
+            if not any(parent.is_relative_to(r) for r in allowed):
+                raise _outside(parent, allowed)
+            where = parent / target.name
+            if overwrite:
+                if where.is_dir():
+                    raise ToolError(f"{where} exists and is not a regular file; not written")
+                os.replace(tmp, where)
+            else:
+                try:
+                    os.link(tmp, where)
+                except FileExistsError:
+                    raise
+                except OSError:
+                    with open(where, "xb") as fh:
+                        fh.write(data)
+        return where
     except FileExistsError as exc:
         raise ToolError(f"{target} already exists; pass overwrite=true to replace it") from exc
     except OSError as exc:
         raise ToolError(f"cannot write {target}: {exc}") from exc
+    finally:
+        if tmp is not None:
+            with contextlib.suppress(FileNotFoundError):
+                tmp.unlink()
 
 
 def _preview_png(data: PlotData) -> bytes:
@@ -402,6 +675,43 @@ def _dump(model: DescribeResult | CompareResult | PlotResult) -> dict[str, objec
     return dumped
 
 
+def _start_limit(time_limit: float, cancel: funnel.CancelToken | None) -> TimeLimit:
+    try:
+        return TimeLimit.start(time_limit, cancel)
+    except CompareArgumentError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+_T = TypeVar("_T")
+
+
+async def run_off_loop(
+    work: Callable[[funnel.CancelToken], _T], gate: PublishGate | None = None
+) -> _T:
+    """Run ``work(token)`` in a worker thread, off the event loop.
+
+    The comparison releases the GIL, so the server keeps reading and
+    answering messages meanwhile. When the call is cancelled (the client's
+    ``notifications/cancelled`` cancels the handler), the token is cancelled
+    so the running comparison stops at its next checkpoint, and the
+    cancellation propagates at once (the worker's late result is dropped).
+    With a ``gate`` the token is cancelled while holding it, so a worker
+    that publishes a file under the same gate (:func:`_publish_plot`)
+    either has published it already or sees the cancellation and never
+    does.
+    """
+    token = funnel.CancelToken()
+    try:
+        return await anyio.to_thread.run_sync(lambda: work(token), abandon_on_cancel=True)
+    except anyio.get_cancelled_exc_class():
+        if gate is None:
+            token.cancel()
+        else:
+            with gate:
+                token.cancel()
+        raise
+
+
 # --------------------------------------------------------------------------
 # Tool implementations (plain functions, also used by in-process tests)
 # --------------------------------------------------------------------------
@@ -441,8 +751,16 @@ def compare_signals_impl(
     max_rows: int = DEFAULT_MAX_ROWS,
     include_snippet: bool = False,
     root_notes: list[str] | None = None,
+    time_limit: float = DEFAULT_TIME_LIMIT,
+    cancel: funnel.CancelToken | None = None,
 ) -> CallToolResult:
-    """Compare two files; see :data:`COMPARE_DESCRIPTION`."""
+    """Compare two files; see :data:`COMPARE_DESCRIPTION`.
+
+    ``time_limit`` counts from the start of the call; ``cancel`` (the
+    call's token) stops the running comparison with
+    ``funnel.ComparisonCancelled``.
+    """
+    limit = _start_limit(time_limit, cancel)
     ref = _load(reference_path, roots)
     tst = _load(test_path, roots)
     try:
@@ -455,6 +773,7 @@ def compare_signals_impl(
             x_range=x_range,
             max_intervals=max_intervals,
             max_rows=max_rows,
+            limit=limit,
         )
     except CompareArgumentError as exc:
         raise ToolError(str(exc)) from exc
@@ -486,12 +805,21 @@ def plot_signals_impl(
     max_intervals: int = DEFAULT_MAX_INTERVALS,
     root_notes: list[str] | None = None,
     output_dirs: Sequence[Path] = (),
+    time_limit: float = DEFAULT_TIME_LIMIT,
+    cancel: funnel.CancelToken | None = None,
+    gate: PublishGate | None = None,
 ) -> CallToolResult:
     """Plot one comparison; see :data:`PLOT_DESCRIPTION`.
 
     ``output_dirs`` are the configured output directories (the tool passes
-    :func:`configured_output_dirs`).
+    :func:`configured_output_dirs`). ``time_limit`` / ``cancel`` as in
+    :func:`compare_signals_impl`, except that the limit also covers
+    rendering: it and the token are checked before rendering and
+    immediately before the file is moved into place, and a call that is
+    no longer live fails without writing. ``gate`` is the one given to
+    :func:`run_off_loop` for the call (a private one when omitted).
     """
+    limit = _start_limit(time_limit, cancel)
     if max_intervals < 0:
         raise ToolError("max_intervals must be >= 0")
     # Check the output path before any work, write only after rendering.
@@ -505,21 +833,30 @@ def plot_signals_impl(
     try:
         outcome = prepare_plot(
             ref, tst, column=column, tolerance=tolerance, x_range=x_range,
-            max_intervals=max_intervals,
+            max_intervals=max_intervals, limit=limit,
         )
     except (PlotArgumentError, CompareArgumentError) as exc:
         raise ToolError(str(exc)) from exc
     data = outcome.data
+    _check_live(limit, "before rendering")
     preview = _preview_png(data)
     pw, ph = png_size(preview)
     file_out: PlotFile | None = None
     if target is not None:
         path, fmt = target
+        _check_live(limit, "before rendering the file")
         blob = render(data, fmt) if fmt == "svg" else render(data, fmt, PNG_FILE_DPI)
-        _write_plot(path, blob, overwrite)
+        written = _publish_plot(
+            path,
+            blob,
+            overwrite,
+            [*roots, *output_dirs],
+            limit,
+            gate if gate is not None else PublishGate(),
+        )
         size = png_size(blob) if fmt == "png" else None
         file_out = PlotFile(
-            path=str(path),
+            path=str(written),
             format=fmt,
             bytes=len(blob),
             width_px=size[0] if size else None,
@@ -600,7 +937,7 @@ def describe_signals(
     description=COMPARE_DESCRIPTION,
     annotations=READ_ONLY,
 )
-def compare_signals(
+async def compare_signals(
     reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
     test_path: Annotated[str, Field(description="Path of the test CSV file.")],
     roots: Roots,
@@ -650,21 +987,37 @@ def compare_signals(
             )
         ),
     ] = False,
+    time_limit: Annotated[
+        float,
+        Field(
+            gt=0,
+            allow_inf_nan=False,
+            description=(
+                "Deadline in seconds for the whole call, counted from its start and "
+                "including reading the files (default 60). When reached, finished rows "
+                "are returned and the rest listed in 'not_completed'."
+            ),
+        ),
+    ] = DEFAULT_TIME_LIMIT,
 ) -> Annotated[CallToolResult, CompareResult]:
     ignored: list[str] = []
     paths = root_paths(roots, ignored)
-    return compare_signals_impl(
-        reference_path,
-        test_path,
-        paths,
-        columns=columns,
-        tolerances=tolerances,
-        column_tolerances=column_tolerances,
-        x_range=x_range,
-        max_intervals=max_intervals,
-        max_rows=max_rows,
-        include_snippet=include_snippet,
-        root_notes=ignored,
+    return await run_off_loop(
+        lambda token: compare_signals_impl(
+            reference_path,
+            test_path,
+            paths,
+            columns=columns,
+            tolerances=tolerances,
+            column_tolerances=column_tolerances,
+            x_range=x_range,
+            max_intervals=max_intervals,
+            max_rows=max_rows,
+            include_snippet=include_snippet,
+            root_notes=ignored,
+            time_limit=time_limit,
+            cancel=token,
+        )
     )
 
 
@@ -674,7 +1027,7 @@ def compare_signals(
     description=PLOT_DESCRIPTION,
     annotations=PLOT,
 )
-def plot_signals(
+async def plot_signals(
     reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
     test_path: Annotated[str, Field(description="Path of the test CSV file.")],
     column: Annotated[
@@ -716,21 +1069,41 @@ def plot_signals(
     max_intervals: Annotated[
         int, Field(ge=0, description="Max violation intervals listed in the result row.")
     ] = DEFAULT_MAX_INTERVALS,
+    time_limit: Annotated[
+        float,
+        Field(
+            gt=0,
+            allow_inf_nan=False,
+            description=(
+                "Deadline in seconds for the whole call, counted from its start: reading "
+                "the files, the comparison and rendering (default 60). When reached, the "
+                "call fails and nothing is written."
+            ),
+        ),
+    ] = DEFAULT_TIME_LIMIT,
 ) -> Annotated[CallToolResult, PlotResult]:
     ignored: list[str] = []
     paths = root_paths(roots, ignored)
-    return plot_signals_impl(
-        reference_path,
-        test_path,
-        paths,
-        column=column,
-        tolerance=tolerance,
-        x_range=x_range,
-        output_path=output_path,
-        overwrite=overwrite,
-        max_intervals=max_intervals,
-        root_notes=ignored,
-        output_dirs=configured_output_dirs(),
+    output_dirs = configured_output_dirs()
+    gate = PublishGate()
+    return await run_off_loop(
+        lambda token: plot_signals_impl(
+            reference_path,
+            test_path,
+            paths,
+            column=column,
+            tolerance=tolerance,
+            x_range=x_range,
+            output_path=output_path,
+            overwrite=overwrite,
+            max_intervals=max_intervals,
+            root_notes=ignored,
+            output_dirs=output_dirs,
+            time_limit=time_limit,
+            cancel=token,
+            gate=gate,
+        ),
+        gate,
     )
 
 

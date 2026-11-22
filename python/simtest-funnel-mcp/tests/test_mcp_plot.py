@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import os
+import shutil
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,7 @@ from mcp_types import TextContent
 from numpy.typing import NDArray
 
 import simtest.funnel as funnel
+from simtest_funnel_mcp import server
 from simtest_funnel_mcp.csvio import load_csv
 from simtest_funnel_mcp.models import ToleranceSet, XRange
 from simtest_funnel_mcp.plot import (
@@ -633,3 +637,132 @@ def test_large_input_structured_result_stays_small(spike_files: tuple[Path, Path
     assert longest_list(d) <= 5  # intervals capped; no sample arrays
     assert d["drawn"]["test"] <= 2 * d["drawn"]["buckets"] + 3
     assert d["drawn"]["violation_markers"] >= 1
+
+
+# --------------------------------------------------------------------------
+# Writing: the checked path is not trusted at write time
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def swap_during_work(monkeypatch: pytest.MonkeyPatch) -> list[Callable[[], None]]:
+    """Actions run after the comparison, i.e. between the output path check
+    and the write (where a concurrent process could change the tree)."""
+    actions: list[Callable[[], None]] = []
+    real = prepare_plot
+
+    def prepare_then_swap(*args: Any, **kwargs: Any) -> PlotOutcome:
+        out = real(*args, **kwargs)
+        for action in actions:
+            action()
+        return out
+
+    monkeypatch.setattr("simtest_funnel_mcp.server.prepare_plot", prepare_then_swap)
+    return actions
+
+
+def _dir_to_symlink(directory: Path, target: Path) -> Callable[[], None]:
+    def swap() -> None:
+        shutil.rmtree(directory)
+        os.symlink(target, directory)
+
+    return swap
+
+
+@pytest.fixture(params=["dir_fd", "by_path"])
+def write_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Run a test with the dir_fd writer and with the Windows fallback."""
+    if request.param == "dir_fd" and not server._DIR_FD_WRITES:
+        pytest.skip("no dir_fd writes on this platform")
+    monkeypatch.setattr(server, "_DIR_FD_WRITES", request.param == "dir_fd")
+    return str(request.param)
+
+
+def test_directory_swapped_for_symlink_is_refused(
+    demo_reference: Path, demo_test: Path, tmp_path: Path,
+    swap_during_work: list[Callable[[], None]], write_mode: str,
+) -> None:
+    ws, outside = tmp_path / "ws", tmp_path / "outside"
+    (ws / "sub").mkdir(parents=True)
+    outside.mkdir()
+    swap_during_work.append(_dir_to_symlink(ws / "sub", outside))
+    with pytest.raises(ToolError, match="not written|cannot write"):
+        _plot(demo_reference, demo_test, [ws, demo_reference.parent], column="z",
+              output_path=str(ws / "sub" / "z.svg"))
+    assert list(outside.iterdir()) == []
+
+
+def test_intermediate_directory_swapped_for_symlink_is_refused(
+    demo_reference: Path, demo_test: Path, tmp_path: Path,
+    swap_during_work: list[Callable[[], None]], write_mode: str,
+) -> None:
+    ws, outside = tmp_path / "ws", tmp_path / "outside"
+    (ws / "sub" / "deep").mkdir(parents=True)
+    (outside / "deep").mkdir(parents=True)
+    swap_during_work.append(_dir_to_symlink(ws / "sub", outside))
+    with pytest.raises(ToolError, match="outside"):
+        _plot(demo_reference, demo_test, [ws, demo_reference.parent], column="z",
+              output_path=str(ws / "sub" / "deep" / "z.svg"))
+    assert list((outside / "deep").iterdir()) == []
+
+
+def test_overwrite_replaces_a_swapped_in_symlink_instead_of_following_it(
+    demo_reference: Path, demo_test: Path, tmp_path: Path,
+    swap_during_work: list[Callable[[], None]], write_mode: str,
+) -> None:
+    ws, outside = tmp_path / "ws", tmp_path / "outside"
+    ws.mkdir()
+    outside.mkdir()
+    target = ws / "z.svg"
+    target.write_text("old plot")
+    victim = outside / "victim.svg"
+    victim.write_text("precious")
+
+    def swap() -> None:
+        target.unlink()
+        os.symlink(victim, target)
+
+    swap_during_work.append(swap)
+    d = structured(_plot(demo_reference, demo_test, [ws, demo_reference.parent], column="z",
+                         output_path=str(target), overwrite=True))
+    assert victim.read_text() == "precious"
+    assert not target.is_symlink()
+    assert target.read_bytes().startswith(b"<?xml")
+    assert d["file"]["path"] == str(target.resolve())
+    assert sorted(p.name for p in ws.iterdir()) == ["z.svg"]  # no temporary file left
+
+
+def test_file_created_during_the_call_is_kept_without_overwrite(
+    demo_reference: Path, demo_test: Path, tmp_path: Path,
+    swap_during_work: list[Callable[[], None]], write_mode: str,
+) -> None:
+    target = tmp_path / "z.svg"
+
+    def create() -> None:
+        target.write_text("theirs")
+
+    swap_during_work.append(create)
+    with pytest.raises(ToolError, match="already exists; pass overwrite=true"):
+        _plot(demo_reference, demo_test, [tmp_path, demo_reference.parent], column="z",
+              output_path=str(target))
+    assert target.read_text() == "theirs"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["z.svg"]
+
+
+def test_write_without_hard_links_still_creates_exclusively(
+    demo_reference: Path, demo_test: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    write_mode: str,
+) -> None:
+    def no_links(*args: Any, **kwargs: Any) -> None:
+        raise OSError(errno.EPERM, "hard links not supported")
+
+    monkeypatch.setattr(os, "link", no_links)  # the os module server uses
+    target = tmp_path / "z.svg"
+    d = structured(_plot(demo_reference, demo_test, [tmp_path, demo_reference.parent],
+                         column="z", output_path=str(target)))
+    assert d["file"]["path"] == str(target.resolve())
+    assert target.read_bytes().startswith(b"<?xml")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["z.svg"]
+    with pytest.raises(ToolError, match="already exists"):
+        _plot(demo_reference, demo_test, [tmp_path, demo_reference.parent], column="z",
+              output_path=str(target))

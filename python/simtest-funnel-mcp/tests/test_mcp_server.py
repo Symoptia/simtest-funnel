@@ -57,7 +57,7 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
     assert plot.idempotent_hint is True
     assert set(tools["plot_signals"].input_schema["properties"]) == {
         "reference_path", "test_path", "column", "tolerance", "x_range", "output_path",
-        "overwrite", "max_intervals",
+        "overwrite", "max_intervals", "time_limit",
     }
     assert set(tools["plot_signals"].input_schema["required"]) == {
         "reference_path", "test_path", "column",
@@ -77,8 +77,16 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
     props = tools["compare_signals"].input_schema["properties"]
     assert set(props) == {
         "reference_path", "test_path", "columns", "tolerances", "column_tolerances",
-        "x_range", "max_intervals", "max_rows", "include_snippet",
+        "x_range", "max_intervals", "max_rows", "include_snippet", "time_limit",
     }
+    for name in ("compare_signals", "plot_signals"):
+        limit = tools[name].input_schema["properties"]["time_limit"]
+        assert limit["default"] == 60
+        assert limit["exclusiveMinimum"] == 0
+        assert "time_limit" not in tools[name].input_schema.get("required", [])
+    assert "time_limit" in (tools["compare_signals"].description or "")
+    assert "not_completed" in (tools["compare_signals"].description or "")
+    assert "time_limit" in (tools["plot_signals"].description or "")
 
 
 def test_unknown_coefficient_is_rejected(demo_reference: Path, demo_test: Path) -> None:

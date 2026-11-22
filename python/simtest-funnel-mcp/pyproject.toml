@@ -16,6 +16,10 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2",
     "matplotlib>=3.8",
+    # Imported directly: anyio.to_thread.run_sync(abandon_on_cancel=...)
+    # needs anyio 4.1; PIL quantizes the inline preview.
+    "anyio>=4.1",
+    "pillow>=9",
 ]
 
 [project.scripts]

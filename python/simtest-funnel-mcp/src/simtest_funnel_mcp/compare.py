@@ -7,11 +7,12 @@ results, and bounds the output size.
 
 from __future__ import annotations
 
+import math
+import time
 from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
-import pandas as pd
 
 import simtest.funnel as funnel
 from simtest_funnel_mcp.csvio import SignalFile
@@ -24,6 +25,7 @@ from simtest_funnel_mcp.models import (
     CompareResult,
     FileInfo,
     Interval,
+    NotCompleted,
     RangeOut,
     Row,
     ToleranceSet,
@@ -44,16 +46,53 @@ MAX_LISTED_COLUMNS = 50
 #: Label of the single set used when no tolerance set is given.
 DEFAULT_SET_LABEL = "default"
 
-#: Key of the time column in the frames handed to the library; cannot
-#: collide with a CSV column name (those never contain NUL).
-_TIME_KEY = "\0time"
-
 _LIBRARY_MISSING = {int(funnel.Status.MISSING_REFERENCE), int(funnel.Status.MISSING_TEST)}
 _VERDICT_ORDER = {"error": 0, "fail": 1, "pass": 2}
 
 
+#: Default time limit of a tool call, in seconds.
+DEFAULT_TIME_LIMIT = 60.0
+
+
 class CompareArgumentError(ValueError):
     """Invalid ``compare_signals`` arguments (reported as a tool error)."""
+
+
+@dataclass(frozen=True)
+class TimeLimit:
+    """Time limit of one tool call: a deadline plus the call's cancel token.
+
+    Comparisons are started only while time remains and get the remaining
+    time as their ``timeout``; a comparison that times out raises
+    ``funnel.ComparisonTimeout``. Cancelling ``cancel`` (the call was
+    cancelled by the client) makes the running comparison raise
+    ``funnel.ComparisonCancelled``.
+    """
+
+    seconds: float
+    #: ``time.monotonic()`` value at which the limit is reached.
+    deadline: float
+    cancel: funnel.CancelToken = field(default_factory=funnel.CancelToken)
+
+    @classmethod
+    def start(cls, seconds: float, cancel: funnel.CancelToken | None = None) -> TimeLimit:
+        """A limit of ``seconds`` from now (positive and finite)."""
+        if not (math.isfinite(seconds) and seconds > 0):
+            raise CompareArgumentError(
+                f"time_limit must be a positive finite number of seconds, got {seconds}"
+            )
+        return cls(
+            seconds=seconds,
+            deadline=time.monotonic() + seconds,
+            cancel=cancel if cancel is not None else funnel.CancelToken(),
+        )
+
+    def remaining(self) -> float:
+        """Seconds left (``0.0`` once the limit is reached)."""
+        return max(0.0, self.deadline - time.monotonic())
+
+    def describe(self) -> str:
+        return f"{self.seconds:g} s"
 
 
 @dataclass
@@ -73,8 +112,11 @@ class RowRecord:
 @dataclass
 class CompareOutcome:
     result: CompareResult
+    #: Completed comparisons only (rows), in result order.
     records: list[RowRecord] = field(default_factory=list)
     x_range: tuple[float | None, float | None] = (None, None)
+    #: (column, tolerance set) pairs stopped by the time limit, in order.
+    not_completed: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _status_name(code: int) -> str:
@@ -251,13 +293,6 @@ def _column_problem(name: str, ref: SignalFile, tst: SignalFile) -> tuple[int | 
     return None
 
 
-def _frame(sf: SignalFile, columns: list[str]) -> pd.DataFrame:
-    data: dict[str, np.ndarray] = {_TIME_KEY: sf.time}
-    for c in columns:
-        data[c] = sf.values[c]
-    return pd.DataFrame(data)
-
-
 def _library_row(
     column: str,
     label: str,
@@ -327,8 +362,15 @@ def run_compare(
     x_range: XRange | None = None,
     max_intervals: int = DEFAULT_MAX_INTERVALS,
     max_rows: int = DEFAULT_MAX_ROWS,
+    limit: TimeLimit | None = None,
 ) -> CompareOutcome:
-    """Compare ``tst`` against ``ref``; see the ``mcp-server`` spec."""
+    """Compare ``tst`` against ``ref``; see the ``mcp-server`` spec.
+
+    With a ``limit``, comparisons start only while time remains and a
+    running one is stopped at the deadline; that comparison and all later
+    ones are reported as not completed (rows cover completed comparisons
+    only). A cancelled ``limit.cancel`` raises ``funnel.ComparisonCancelled``.
+    """
     if max_intervals < 0:
         raise CompareArgumentError("max_intervals must be >= 0")
     if max_rows < 1:
@@ -370,14 +412,15 @@ def run_compare(
 
     problems = {c: _column_problem(c, ref, tst) for c in selected}
     valid = [c for c in selected if problems[c] is None]
-    ref_frame = _frame(ref, valid)
-    tst_frame = _frame(tst, valid)
-    t_ref = ref.time
+    t_ref = np.asarray(ref.time, dtype=np.float64)
+    t_tst = np.asarray(tst.time, dtype=np.float64)
     ref_span, tst_span = _span(ref), _span(tst)
     coverage = _coverage_problems(ref_span, tst_span, lo, hi)
 
     set_out: list[ToleranceSetOut] = []
     records: list[RowRecord] = []
+    not_completed: list[tuple[str, str]] = []
+    stopped = False
     for spec, label in zip(sets, labels, strict=True):
         base = spec.given()
         set_out.append(
@@ -386,17 +429,6 @@ def run_compare(
         default_opts = make_options(base, lo, hi)
         per_col_given = {c: compose_override(base, overrides.get(c)) for c in valid}
         per_col_opts = {c: make_options(per_col_given[c], lo, hi) for c in valid if c in overrides}
-        results = (
-            funnel.compare_dataframes(
-                ref_frame,
-                tst_frame,
-                time_column=_TIME_KEY,
-                default_options=default_opts,
-                option_overrides=per_col_opts,
-            )
-            if valid
-            else {}
-        )
         for c in selected:
             problem = problems[c]
             if problem is not None:
@@ -416,11 +448,28 @@ def run_compare(
                     )
                 )
                 continue
+            if stopped:
+                not_completed.append((c, label))
+                continue
             opts = per_col_opts.get(c, default_opts)
-            code = int(results[c].status)
-            summary = funnel.summarize(results[c], t_ref, opts)
+            try:
+                res = funnel.compare(
+                    t_ref,
+                    np.asarray(ref.values[c], dtype=np.float64),
+                    t_tst,
+                    np.asarray(tst.values[c], dtype=np.float64),
+                    opts,
+                    timeout=None if limit is None else limit.remaining(),
+                    cancel=None if limit is None else limit.cancel,
+                )
+            except funnel.ComparisonTimeout:
+                stopped = True
+                not_completed.append((c, label))
+                continue
+            code = int(res.status)
+            summary = funnel.summarize(res, t_ref, opts)
             row = _library_row(
-                c, label, results[c], summary, c in overrides, max_intervals,
+                c, label, res, summary, c in overrides, max_intervals,
                 coverage.get(code),
             )
             records.append(
@@ -428,7 +477,7 @@ def run_compare(
                     row=row,
                     given=per_col_given[c],
                     from_library=True,
-                    library=(results[c], summary),
+                    library=(res, summary),
                 )
             )
 
@@ -446,11 +495,27 @@ def run_compare(
                 "to compare only the overlap"
             )
 
+    pending_out: list[NotCompleted] | None = None
+    pending_omitted: int | None = None
+    if not_completed:
+        assert limit is not None
+        total = len(records) + len(not_completed)
+        notes.append(
+            f"time limit of {limit.describe()} reached: {len(not_completed)} of {total} "
+            "comparisons not completed (listed in not_completed); pass a larger time_limit, "
+            "fewer columns or a narrower x_range"
+        )
+        pending_out = [
+            NotCompleted(column=c, tolerance_set=label) for c, label in not_completed[:max_rows]
+        ]
+        pending_omitted = max(0, len(not_completed) - max_rows) or None
+
     totals = Totals(
         rows=len(records),
         passed=sum(r.row.verdict == "pass" for r in records),
         failed=sum(r.row.verdict == "fail" for r in records),
         errors=sum(r.row.verdict == "error" for r in records),
+        not_completed=len(not_completed) or None,
     )
     ordered = sorted(records, key=lambda r: _VERDICT_ORDER[r.row.verdict])
     shown = ordered[:max_rows]
@@ -474,6 +539,11 @@ def run_compare(
         columns_only_in_reference_count=only_ref_count,
         columns_only_in_test=only_tst_list,
         columns_only_in_test_count=only_tst_count,
+        time_limit_reached=True if not_completed else None,
+        not_completed=pending_out,
+        not_completed_omitted=pending_omitted,
         notes=notes,
     )
-    return CompareOutcome(result=result, records=ordered, x_range=(lo, hi))
+    return CompareOutcome(
+        result=result, records=ordered, x_range=(lo, hi), not_completed=not_completed
+    )

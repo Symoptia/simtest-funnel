@@ -151,7 +151,10 @@ def render_compare(c: CompareResult, digits: int = MIN_TIME_DIGITS) -> str:
     for s in c.tolerance_sets:
         lines.append(f"tolerance set {s.label}: {_coefficients(s.resolved)}")
     t = c.totals
-    lines.append(f"result: {t.failed} fail, {t.errors} error, {t.passed} pass ({t.rows} rows)")
+    pending = f", {t.not_completed} not completed (time limit)" if t.not_completed else ""
+    lines.append(
+        f"result: {t.failed} fail, {t.errors} error, {t.passed} pass ({t.rows} rows){pending}"
+    )
     passing: dict[str, list[str]] = {}
     for r in c.rows:
         if r.verdict == "pass":
@@ -164,6 +167,13 @@ def render_compare(c: CompareResult, digits: int = MIN_TIME_DIGITS) -> str:
         lines.append(f"PASS [{label}]: {', '.join(cols)}")
     if c.rows_omitted:
         lines.append(f"{c.rows_omitted} row(s) omitted (raise max_rows to see them)")
+    if c.not_completed:
+        more = f" (+{c.not_completed_omitted} more)" if c.not_completed_omitted else ""
+        lines.append(
+            "NOT COMPLETED (time limit): "
+            + ", ".join(f"{p.column} [{p.tolerance_set}]" for p in c.not_completed)
+            + more
+        )
     if c.columns_only_in_reference:
         lines.append(
             f"only in reference ({c.columns_only_in_reference_count}): "

@@ -173,8 +173,12 @@ fn build_bounds_vec(
     let mut hx_norm: Vec<f64> = half_x.to_vec();
     normalize(&mut x_norm, mag_x);
     normalize(&mut hx_norm, mag_x);
-    let (mut lx, mut ly) = build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Lower);
-    let (mut ux, mut uy) = build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Upper);
+    let (mut lx, mut ly) = never_cancelled(|cp| {
+        build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Lower, cp)
+    });
+    let (mut ux, mut uy) = never_cancelled(|cp| {
+        build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Upper, cp)
+    });
     remove_loop_vec(&mut lx, &mut ly, Curve::Lower);
     remove_loop_vec(&mut ux, &mut uy, Curve::Upper);
     denormalize(&mut lx, mag_x);

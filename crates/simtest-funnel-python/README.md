@@ -36,6 +36,12 @@ axis (an axis with no coefficient given gets `rtol = 2e-3`, an axis with
 at least one given uses `0.0` for the rest; explicit `0.0` counts as
 given) — see the package README for details.
 
+`compare` releases the interpreter lock while it runs, accepts
+`timeout=` (seconds, raises `ComparisonTimeout`) and `cancel=` (a
+`CancelToken` another thread can `cancel()`, raises
+`ComparisonCancelled`), and Ctrl-C interrupts it with
+`KeyboardInterrupt`.
+
 For DataFrame-based comparisons and the package-level API reference
 see the package README in
 [`python/simtest/funnel/README.md`](python/simtest/funnel/README.md).

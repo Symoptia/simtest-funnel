@@ -1684,19 +1684,23 @@ name = "simtest-funnel-mcp"
 version = "1.0.0b14"
 source = { editable = "python/simtest-funnel-mcp" }
 dependencies = [
+    { name = "anyio" },
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pillow" },
     { name = "simtest-funnel" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.1" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pandas", specifier = ">=2" },
+    { name = "pillow", specifier = ">=9" },
     { name = "simtest-funnel", editable = "crates/simtest-funnel-python" },
 ]
 

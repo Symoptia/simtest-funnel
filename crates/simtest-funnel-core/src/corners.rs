@@ -7,6 +7,10 @@
 //! and upper curves match the C output bit-for-bit (modulo
 //! floating-point ordering).
 
+#[cfg(test)]
+use crate::cancel::never_cancelled;
+use crate::cancel::{Cancelled, Checkpoint};
+
 /// Curve-indicator used by `removeLoop`: `+1` for upper, `-1` for
 /// lower.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,44 +53,80 @@ fn denormalize(arr: &mut [f64], mag: f64) {
     }
 }
 
+/// Lower and upper tube curves `(lower_x, lower_y, upper_x, upper_y)`.
+pub(crate) type Bounds = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
 /// Build lower + upper tube curves from a reference trajectory and
-/// per-point half-widths. Returns `(lower_x, lower_y, upper_x,
-/// upper_y)`.
+/// per-point half-widths (not cancellable; tests only).
+#[cfg(test)]
 pub(crate) fn build_bounds(
     t_ref: &[f64],
     y_ref: &[f64],
     half_x: &[f64],
     half_y: &[f64],
     mag_x: f64,
-) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+) -> Bounds {
+    never_cancelled(|cp| build_bounds_checked(t_ref, y_ref, half_x, half_y, mag_x, cp))
+}
+
+/// Build lower + upper tube curves from a reference trajectory and
+/// per-point half-widths, consulting `cp` between the steps and inside
+/// the loop removal. Returns `(lower_x, lower_y, upper_x, upper_y)`.
+pub(crate) fn build_bounds_checked<C: FnMut() -> Result<(), Cancelled>>(
+    t_ref: &[f64],
+    y_ref: &[f64],
+    half_x: &[f64],
+    half_y: &[f64],
+    mag_x: f64,
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<Bounds, Cancelled> {
     // Work on normalized x copies.
-    let mut x_norm: Vec<f64> = t_ref.to_vec();
-    let mut hx_norm: Vec<f64> = half_x.to_vec();
-    normalize(&mut x_norm, mag_x);
-    normalize(&mut hx_norm, mag_x);
+    let x_norm = normalized_copy(t_ref, mag_x, cp)?;
+    let hx_norm = normalized_copy(half_x, mag_x, cp)?;
 
-    let (mut lx, mut ly) = build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Lower);
-    let (mut ux, mut uy) = build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Upper);
+    let (mut lx, mut ly) = build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Lower, cp)?;
+    cp.now()?;
+    let (mut ux, mut uy) = build_corner_curve(&x_norm, y_ref, &hx_norm, half_y, Curve::Upper, cp)?;
+    cp.now()?;
 
-    remove_loop(&mut lx, &mut ly, Curve::Lower);
-    remove_loop(&mut ux, &mut uy, Curve::Upper);
+    remove_loop_checked(&mut lx, &mut ly, Curve::Lower, cp)?;
+    cp.now()?;
+    remove_loop_checked(&mut ux, &mut uy, Curve::Upper, cp)?;
+    cp.now()?;
 
-    denormalize(&mut lx, mag_x);
-    denormalize(&mut ux, mag_x);
+    cp.chunks(lx.len(), |r| denormalize(&mut lx[r], mag_x))?;
+    cp.chunks(ux.len(), |r| denormalize(&mut ux[r], mag_x))?;
 
-    (lx, ly, ux, uy)
+    Ok((lx, ly, ux, uy))
+}
+
+/// `src / mag` (see [`normalize`]), consulting `cp` every
+/// [`CHECK_INTERVAL`](crate::cancel::CHECK_INTERVAL) elements.
+fn normalized_copy<C: FnMut() -> Result<(), Cancelled>>(
+    src: &[f64],
+    mag: f64,
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<Vec<f64>, Cancelled> {
+    let mut out = Vec::with_capacity(src.len());
+    cp.chunks(src.len(), |r| {
+        let start = out.len();
+        out.extend_from_slice(&src[r]);
+        normalize(&mut out[start..], mag);
+    })?;
+    Ok(out)
 }
 
 /// Enumerate corners for either the lower (`sgn=-1`) or upper
 /// (`sgn=+1`) curve. Mirrors `getLower`/`getUpper` from the C
 /// reference.
-fn build_corner_curve(
+fn build_corner_curve<C: FnMut() -> Result<(), Cancelled>>(
     x_norm: &[f64],
     y_ref: &[f64],
     hx_norm: &[f64],
     hy: &[f64],
     curve: Curve,
-) -> (Vec<f64>, Vec<f64>) {
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<(Vec<f64>, Vec<f64>), Cancelled> {
     let n = x_norm.len();
     // sign of y-offset for this curve: lower -> -1, upper -> +1.
     let y_sgn: f64 = match curve {
@@ -134,6 +174,8 @@ fn build_corner_curve(
         // ----- 1.2 iterate -----
         let mut i = b + 1;
         while i < n.saturating_sub(1) {
+            // Linear in `n`: one unit of work per reference point.
+            cp.tick(1)?;
             // ignore identical points
             if equ(x_norm[i], x_norm[i + 1]) && equ(y_ref[i], y_ref[i + 1]) {
                 i += 1;
@@ -233,7 +275,7 @@ fn build_corner_curve(
     cx.push(x_norm[n - 1] + hx_norm[n - 1]);
     cy.push(y_ref[n - 1] + y_sgn * hy[n - 1]);
 
-    (cx, cy)
+    Ok((cx, cy))
 }
 
 /// A polyline edited in place as a gap buffer over its `x` / `y` vectors.
@@ -349,21 +391,42 @@ impl Drop for GapPolyline<'_> {
     }
 }
 
+/// Remove backward-going segments, inserting intersection points (not
+/// cancellable; tests only).
+#[cfg(test)]
+fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
+    never_cancelled(|cp| remove_loop_checked(x, y, curve, cp));
+}
+
 /// Remove backward-going segments, inserting intersection points.
 /// Direct port of `removeLoop`; edits through a [`GapPolyline`] so each
 /// loop removal costs time proportional to the loop, not to the curve.
-fn remove_loop(x: &mut Vec<f64>, y: &mut Vec<f64>, curve: Curve) {
+/// On cancellation the curve is left in an unspecified (but valid) state.
+fn remove_loop_checked<C: FnMut() -> Result<(), Cancelled>>(
+    x: &mut Vec<f64>,
+    y: &mut Vec<f64>,
+    curve: Curve,
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<(), Cancelled> {
     let mut p = GapPolyline::new(x, y);
-    remove_loop_gap(&mut p, curve);
+    remove_loop_gap(&mut p, curve, cp)
 }
 
-fn remove_loop_gap(p: &mut GapPolyline, curve: Curve) {
+fn remove_loop_gap<C: FnMut() -> Result<(), Cancelled>>(
+    p: &mut GapPolyline,
+    curve: Curve,
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<(), Cancelled> {
     let cur_ind: i32 = match curve {
         Curve::Lower => -1,
         Curve::Upper => 1,
     };
     let mut j: usize = 1;
     while j + 2 < p.len() {
+        // Checkpoint: one step per outer iteration; a loop removal adds
+        // the points it scanned below. Bounds the time between checks
+        // even when single loops span many points (wide x tolerance).
+        cp.tick(1)?;
         if p.x(j + 1) < p.x(j) {
             // ===== 1. find i, k =====
             let mut i: usize = j;
@@ -379,6 +442,10 @@ fn remove_loop_gap(p: &mut GapPolyline, curve: Curve) {
             while k_max < p.len() - 1 && p.x(k_max) < x_j {
                 k_max += 1;
             }
+
+            // The scans above and the edits below are bounded by the
+            // points between `i` and `k_max`.
+            cp.tick(k_max - i)?;
 
             let mut k: usize = j + 1;
             // `y_intp` is the interpolated y at X[k] on segment (i-1, i)
@@ -513,6 +580,7 @@ fn remove_loop_gap(p: &mut GapPolyline, curve: Curve) {
         }
         j += 1;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -579,6 +647,121 @@ mod tests {
         }
         for w in lx.windows(2) {
             assert!(w[0] <= w[1] + 1e-12, "lower x not monotone: {:?}", lx);
+        }
+    }
+
+    /// Logical contents of a gap polyline, as bits.
+    fn gap_bits(p: &GapPolyline<'_>) -> Vec<(u64, u64)> {
+        (0..p.len())
+            .map(|i| (p.x(i).to_bits(), p.y(i).to_bits()))
+            .collect()
+    }
+
+    fn model_bits(x: &[f64], y: &[f64]) -> Vec<(u64, u64)> {
+        x.iter()
+            .zip(y)
+            .map(|(a, b)| (a.to_bits(), b.to_bits()))
+            .collect()
+    }
+
+    /// `GapPolyline` against a plain `Vec` model: random inserts (also at
+    /// the end and without a preceding delete), deletes (also empty ones,
+    /// at any position including the end) and appends, compared bit for
+    /// bit after every operation and after `Drop`. Runs of inserts exhaust
+    /// the gap so it is regrown several times, also mid-curve.
+    #[test]
+    fn gap_polyline_matches_vec_model() {
+        let mut s: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move |m: usize| -> usize {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            (s % m as u64) as usize
+        };
+        for case in 0..40usize {
+            let n0 = [0usize, 1, 2, 7, 100, 1000][case % 6];
+            let mut x: Vec<f64> = (0..n0).map(|i| i as f64 * 0.5 + case as f64).collect();
+            let mut y: Vec<f64> = (0..n0).map(|i| -(i as f64) * 0.25).collect();
+            let (mut mx, mut my) = (x.clone(), y.clone());
+            let mut grows = 0usize;
+            let mut value = 1e6 * case as f64;
+            {
+                let mut p = GapPolyline::new(&mut x, &mut y);
+                for step in 0..1500usize {
+                    let len = p.len();
+                    // Mostly inserts in the bursts (exhaust the gap), a mix
+                    // otherwise.
+                    let burst = (step / 150) % 3 == 1;
+                    let op = if burst { next(10).min(1) } else { next(4) };
+                    value += 1.0;
+                    match op {
+                        // insert anywhere, also at len (append)
+                        0 => {
+                            let i = next(len + 1);
+                            if p.gap_start == p.gap_end {
+                                grows += 1;
+                            }
+                            p.insert(i, value, -value);
+                            mx.insert(i, value);
+                            my.insert(i, -value);
+                        }
+                        // append explicitly
+                        1 => {
+                            if p.gap_start == p.gap_end {
+                                grows += 1;
+                            }
+                            p.insert(len, value, value * 0.5);
+                            mx.push(value);
+                            my.push(value * 0.5);
+                        }
+                        // delete a range, possibly empty, possibly at len
+                        2 => {
+                            let a = next(len + 1);
+                            let b = a + next((len - a).min(20) + 1);
+                            p.delete(a, b);
+                            mx.drain(a..b);
+                            my.drain(a..b);
+                        }
+                        // empty delete exactly at the end, then insert there
+                        _ => {
+                            p.delete(len, len);
+                            let i = next(len + 1);
+                            p.delete(i, i);
+                            if p.gap_start == p.gap_end {
+                                grows += 1;
+                            }
+                            p.insert(i, value, 0.0);
+                            mx.insert(i, value);
+                            my.insert(i, 0.0);
+                        }
+                    }
+                    assert_eq!(
+                        gap_bits(&p),
+                        model_bits(&mx, &my),
+                        "case {case} step {step}"
+                    );
+                }
+                // Exhaust and regrow the gap twice more, inserting mid-curve.
+                let target = grows + 2;
+                while grows < target {
+                    let i = next(p.len() + 1);
+                    if p.gap_start == p.gap_end {
+                        grows += 1;
+                    }
+                    value += 1.0;
+                    p.insert(i, value, value);
+                    mx.insert(i, value);
+                    my.insert(i, value);
+                    assert_eq!(gap_bits(&p), model_bits(&mx, &my), "case {case} regrow");
+                }
+            }
+            // Drop closed the gap: the vectors hold exactly the model.
+            assert_eq!(
+                model_bits(&x, &y),
+                model_bits(&mx, &my),
+                "case {case} after drop"
+            );
+            assert!(grows >= 2, "case {case}: gap regrown {grows} times");
         }
     }
 }

@@ -12,6 +12,12 @@
 //! with [`PartialTolerances`] and resolved per axis by
 //! [`PartialTolerances::resolve`]; every front end uses that rule.
 //!
+//! Cancellation: [`compare()`] cannot be interrupted;
+//! [`compare_cancellable`] (with a [`CancelToken`]: shared flag plus
+//! optional deadline) and [`compare_with_check`] (caller-supplied check)
+//! stop a running comparison and return `Err(`[`Cancelled`]`)`. See the
+//! [`cancel`] module.
+//!
 //! Output downsampling for plots and reports (never applied to comparison
 //! inputs) is provided by [`downsample_min_max`].
 //!
@@ -19,6 +25,7 @@
 
 #![warn(missing_docs)]
 
+pub mod cancel;
 pub mod compare;
 pub(crate) mod corners;
 pub mod downsample;
@@ -30,7 +37,11 @@ pub mod status;
 pub mod summary;
 pub(crate) mod tube;
 
-pub use compare::{compare, compare_into, estimate_capacities, Capacities, CompareResult, Outputs};
+pub use cancel::{CancelToken, Cancelled};
+pub use compare::{
+    compare, compare_cancellable, compare_into, compare_with_check, estimate_capacities,
+    Capacities, CompareResult, Outputs,
+};
 pub use downsample::{downsample_min_max, DownsampleError, Downsampled};
 pub use options::{Options, PartialTolerances, Range, Tolerances};
 pub use status::{message as status_message, Status};

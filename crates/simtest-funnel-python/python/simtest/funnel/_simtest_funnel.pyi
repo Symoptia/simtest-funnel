@@ -25,6 +25,27 @@ STATUS_BUFFER_TOO_SMALL: int
 STATUS_INSUFFICIENT_DATA: int
 
 
+class CancelToken:
+    """Thread-safe cancellation token (see ``simtest.funnel.CancelToken``)."""
+
+    def __init__(self) -> None: ...
+    def cancel(self) -> None:
+        """Request cancellation (thread-safe, idempotent)."""
+        ...
+    @property
+    def cancelled(self) -> bool:
+        """Whether ``cancel()`` has been called."""
+        ...
+
+
+class ComparisonCancelled(Exception):
+    """A comparison was stopped by its ``CancelToken``."""
+
+
+class ComparisonTimeout(ComparisonCancelled):
+    """A comparison exceeded its time limit."""
+
+
 def version() -> str:
     """Return the crate version string."""
     ...
@@ -55,8 +76,17 @@ def compare(
     t_test: NDArray[np.float64],
     y_test: NDArray[np.float64],
     options: dict[str, Any] | None = ...,
+    *,
+    timeout: float | None = ...,
+    cancel: CancelToken | None = ...,
 ) -> dict[str, Any]:
     """Core compare. Takes four contiguous ``float64`` 1-D arrays.
+
+    Runs with the GIL released. ``timeout`` (seconds, finite, ``>= 0``)
+    raises ``ComparisonTimeout`` when exceeded; a cancelled ``cancel``
+    token raises ``ComparisonCancelled``; in the main thread a signal
+    handler's exception (Ctrl-C: ``KeyboardInterrupt``) propagates. A
+    negative or non-finite ``timeout`` raises ``ValueError``.
 
     ``options`` is ``{"tolerances": {...}, "x_range": {...}}`` or ``None``.
     A tolerance key that is missing or ``None`` is "not given"; the given

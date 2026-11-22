@@ -103,6 +103,18 @@ fn main() {
 }
 ```
 
+### Stopping a long comparison
+
+Comparisons are fast (a million noisy samples in a fraction of a second),
+but some inputs (nearly noise-free signals with a wide tube in x) grow
+quadratically. Rust callers can use `compare_cancellable` with a
+`CancelToken` (cancel from another thread and/or a deadline) or
+`compare_with_check`; Python's `compare` releases the interpreter lock,
+accepts `timeout=` and `cancel=` and is interrupted by Ctrl-C. See the
+[core README](crates/simtest-funnel-core/README.md#cancellation) and the
+[Python package README](crates/simtest-funnel-python/python/simtest/funnel/README.md#time-limits-cancellation-and-ctrl-c).
+The TypeScript API has no cancellation yet.
+
 ---
 
 ## Differences from LBNL Funnel
@@ -192,6 +204,9 @@ file for documents; it is the only tool that writes, only the file it is
 asked for, and only inside a workspace root declared by the client (Claude
 Code) or an output directory configured with `--output-dir DIR` /
 `SIMTEST_FUNNEL_MCP_OUTPUT_DIR` (needed for Claude Desktop).
+Comparisons run off the server's event loop and are limited to `time_limit`
+seconds per call (default 60); on timeout `compare_signals` returns the
+finished columns and lists the rest as not completed.
 
 ```bash
 claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # once published to PyPI

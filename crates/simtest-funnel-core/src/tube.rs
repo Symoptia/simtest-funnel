@@ -4,6 +4,9 @@
 //! [`set_tube_size`](/home/iakovn/projects/funnel/src/tubeSize.c)
 //! from the LBNL Funnel C reference.
 
+#[cfg(test)]
+use crate::cancel::never_cancelled;
+use crate::cancel::{Cancelled, Checkpoint};
 use crate::options::Tolerances;
 
 /// Small non-zero floor applied to the half-widths so the corner
@@ -19,33 +22,48 @@ pub(crate) struct DataChar {
     pub mag_y: f64,
 }
 
-/// Compute span/magnitude statistics over a slice.
+/// Compute span/magnitude statistics over a slice (tests only).
+#[cfg(test)]
 pub(crate) fn get_data_char(x: &[f64], y: &[f64]) -> DataChar {
+    never_cancelled(|cp| get_data_char_checked(x, y, cp))
+}
+
+/// Compute span/magnitude statistics over a slice, consulting `cp`
+/// every [`CHECK_INTERVAL`](crate::cancel::CHECK_INTERVAL) elements.
+pub(crate) fn get_data_char_checked<C: FnMut() -> Result<(), Cancelled>>(
+    x: &[f64],
+    y: &[f64],
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<DataChar, Cancelled> {
     debug_assert!(!x.is_empty() && x.len() == y.len());
     let (mut mnx, mut mxx) = (x[0], x[0]);
     let (mut mny, mut mxy) = (y[0], y[0]);
-    for &v in x {
-        if v < mnx {
-            mnx = v;
+    cp.chunks(x.len(), |r| {
+        for &v in &x[r] {
+            if v < mnx {
+                mnx = v;
+            }
+            if v > mxx {
+                mxx = v;
+            }
         }
-        if v > mxx {
-            mxx = v;
+    })?;
+    cp.chunks(y.len(), |r| {
+        for &v in &y[r] {
+            if v < mny {
+                mny = v;
+            }
+            if v > mxy {
+                mxy = v;
+            }
         }
-    }
-    for &v in y {
-        if v < mny {
-            mny = v;
-        }
-        if v > mxy {
-            mxy = v;
-        }
-    }
-    DataChar {
+    })?;
+    Ok(DataChar {
         range_x: mxx - mnx,
         range_y: mxy - mny,
         mag_x: mxx.max(mnx.abs()),
         mag_y: mxy.max(mny.abs()),
-    }
+    })
 }
 
 /// C reference `equ(a, 0)` — treat `|v| < 1e-10` as zero.
@@ -58,46 +76,61 @@ fn eq_zero(v: f64) -> bool {
 /// trajectory using the same formula as the C reference's
 /// `set_tube_size`. Falls back to `rtol*mag` when the range-based
 /// computation yields (effectively) zero, then to the hard floor
-/// `HALFWIDTH_FLOOR`.
+/// `HALFWIDTH_FLOOR` (tests only).
+#[cfg(test)]
 pub(crate) fn tube_halfwidths(
     t_ref: &[f64],
     y_ref: &[f64],
     dc: DataChar,
     tol: &Tolerances,
 ) -> (Vec<f64>, Vec<f64>) {
+    never_cancelled(|cp| tube_halfwidths_checked(t_ref, y_ref, dc, tol, cp))
+}
+
+/// The half-widths of `tube_halfwidths`, consulting `cp` every
+/// [`CHECK_INTERVAL`](crate::cancel::CHECK_INTERVAL) points.
+pub(crate) fn tube_halfwidths_checked<C: FnMut() -> Result<(), Cancelled>>(
+    t_ref: &[f64],
+    y_ref: &[f64],
+    dc: DataChar,
+    tol: &Tolerances,
+    cp: &mut Checkpoint<'_, C>,
+) -> Result<(Vec<f64>, Vec<f64>), Cancelled> {
     debug_assert_eq!(t_ref.len(), y_ref.len());
     let n = t_ref.len();
     let mut half_x = Vec::with_capacity(n);
     let mut half_y = Vec::with_capacity(n);
-    for i in 0..n {
-        let mut hx = tol
-            .atolx
-            .max(tol.rtolx * dc.range_x)
-            .max(tol.ltolx * t_ref[i].abs());
-        if eq_zero(hx) {
-            if !eq_zero(tol.rtolx) {
-                hx = hx.max(tol.rtolx * dc.mag_x);
-            }
+    cp.chunks(n, |r| {
+        for i in r {
+            let mut hx = tol
+                .atolx
+                .max(tol.rtolx * dc.range_x)
+                .max(tol.ltolx * t_ref[i].abs());
             if eq_zero(hx) {
-                hx = hx.max(HALFWIDTH_FLOOR);
+                if !eq_zero(tol.rtolx) {
+                    hx = hx.max(tol.rtolx * dc.mag_x);
+                }
+                if eq_zero(hx) {
+                    hx = hx.max(HALFWIDTH_FLOOR);
+                }
             }
-        }
-        let mut hy = tol
-            .atoly
-            .max(tol.rtoly * dc.range_y)
-            .max(tol.ltoly * y_ref[i].abs());
-        if eq_zero(hy) {
-            if !eq_zero(tol.rtoly) {
-                hy = hy.max(tol.rtoly * dc.mag_y);
-            }
+            let mut hy = tol
+                .atoly
+                .max(tol.rtoly * dc.range_y)
+                .max(tol.ltoly * y_ref[i].abs());
             if eq_zero(hy) {
-                hy = hy.max(HALFWIDTH_FLOOR);
+                if !eq_zero(tol.rtoly) {
+                    hy = hy.max(tol.rtoly * dc.mag_y);
+                }
+                if eq_zero(hy) {
+                    hy = hy.max(HALFWIDTH_FLOOR);
+                }
             }
+            half_x.push(hx);
+            half_y.push(hy);
         }
-        half_x.push(hx);
-        half_y.push(hy);
-    }
-    (half_x, half_y)
+    })?;
+    Ok((half_x, half_y))
 }
 
 #[cfg(test)]
