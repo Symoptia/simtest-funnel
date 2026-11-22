@@ -61,13 +61,7 @@ export interface Place {
   id: number;
   name: string;
   admin1?: string;
-  /** Second-level region, e.g. "Uppsala Municipality". */
-  admin2?: string;
   country?: string;
-  /** GeoNames feature code, e.g. "PPLA" (town) or "AIRP" (airport). */
-  featureCode?: string;
-  /** Population when GeoNames has it (> 0). */
-  population?: number;
   latitude: number;
   longitude: number;
 }
