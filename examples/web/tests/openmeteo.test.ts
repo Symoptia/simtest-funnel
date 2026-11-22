@@ -107,6 +107,43 @@ describe('parsePlaces', () => {
     ]);
   });
 
+  it('keeps admin2, feature code and a positive population', () => {
+    const [city, airport] = parsePlaces({
+      results: [
+        {
+          id: 2666199,
+          name: 'Uppsala',
+          latitude: 59.85882,
+          longitude: 17.63889,
+          elevation: 20.0,
+          feature_code: 'PPLA',
+          population: 177074,
+          country: 'Sweden',
+          admin1: 'Uppsala County',
+          admin2: 'Uppsala Municipality',
+        },
+        {
+          id: 2666225,
+          name: 'Uppsala',
+          latitude: 59.9,
+          longitude: 17.58333,
+          feature_code: 'AIRP',
+          population: 0,
+          country: 'Sweden',
+          admin1: 'Uppsala County',
+          admin2: 'Uppsala Municipality',
+        },
+      ],
+    });
+    expect(city).toMatchObject({
+      admin2: 'Uppsala Municipality',
+      featureCode: 'PPLA',
+      population: 177074,
+    });
+    expect(airport.featureCode).toBe('AIRP');
+    expect(airport.population).toBeUndefined();
+  });
+
   it('treats a missing results key as no place', () => {
     expect(parsePlaces({ generationtime_ms: 0.1 })).toEqual([]);
   });

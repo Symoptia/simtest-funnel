@@ -321,12 +321,114 @@ export interface CreateFunnelPlotInputs {
   result: CompareResult;
 }
 
+/** Layout keys whose objects {@link createFunnelPlot} merges with its defaults. */
+const MERGED_LAYOUT_KEYS = [
+  'title',
+  'xaxis',
+  'yaxis',
+  'yaxis2',
+  'legend',
+  'margin',
+] as const;
+
+/** Layout keys whose `title` may be given as a plain string. */
+const AXIS_KEYS = ['xaxis', 'yaxis', 'yaxis2'] as const;
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Plotly 3 ignores string titles: turn `'t'` into `{ text: 't' }`. */
+function titleObject(title: unknown): unknown {
+  return typeof title === 'string' ? { text: title } : title;
+}
+
+/**
+ * The layout {@link createFunnelPlot} passes to Plotly: its defaults with
+ * `layout` merged in. Exported for tests and for callers who render the
+ * traces themselves.
+ *
+ * - Titles (`title`, `xaxis.title`, `yaxis.title`, `yaxis2.title`) may be
+ *   given as strings; they are turned into the `{ text }` objects Plotly 3
+ *   requires (Plotly 3 does not display string titles).
+ * - `title`, `xaxis`, `yaxis`, `yaxis2`, `legend` and `margin` are merged
+ *   one level deep, so e.g. `{ yaxis2: { range: [0, 1] } }` keeps the
+ *   error axis on the right; `{ text: ... }` replaces the default title
+ *   text but keeps its position. Every other key replaces the default.
+ * - Defaults: title "Funnel comparison" at the top left (clear of
+ *   Plotly's toolbar at the top right), axes `value` and
+ *   `|error|` (right, from zero, no grid) with automatic margins for tick
+ *   labels and axis titles, and a horizontal legend across the bottom of
+ *   the figure, so the plot keeps its full width on narrow screens.
+ */
+export function funnelPlotLayout(
+  layout?: Record<string, unknown>,
+): Record<string, unknown> {
+  const defaults: Record<string, Record<string, unknown>> = {
+    title: {
+      text: 'Funnel comparison',
+      x: 0,
+      xref: 'container',
+      xanchor: 'left',
+      y: 1,
+      yref: 'container',
+      yanchor: 'top',
+      pad: { t: 12 },
+    },
+    xaxis: { automargin: true },
+    yaxis: { title: { text: 'value' }, automargin: true },
+    yaxis2: {
+      title: { text: '|error|' },
+      overlaying: 'y',
+      side: 'right',
+      rangemode: 'tozero',
+      showgrid: false,
+      automargin: true,
+    },
+    legend: {
+      orientation: 'h',
+      x: 0,
+      xref: 'container',
+      xanchor: 'left',
+      y: 0,
+      yref: 'container',
+      yanchor: 'bottom',
+      // Plotly wraps a horizontal legend within the plot-area width; at 11 px
+      // two entries share a row even on a phone.
+      font: { size: 11 },
+    },
+    margin: { t: 48, r: 8, b: 8, l: 8 },
+  };
+  const given: Record<string, unknown> = { ...(layout ?? {}) };
+  if ('title' in given) {
+    given.title = titleObject(given.title);
+  }
+  for (const key of AXIS_KEYS) {
+    const axis = given[key];
+    if (isPlainObject(axis) && 'title' in axis) {
+      given[key] = { ...axis, title: titleObject(axis.title) };
+    }
+  }
+  const merged: Record<string, unknown> = { ...defaults, ...given };
+  for (const key of MERGED_LAYOUT_KEYS) {
+    const value = given[key];
+    if (isPlainObject(value)) {
+      merged[key] = { ...defaults[key], ...value };
+    }
+  }
+  return merged;
+}
+
 /**
  * Render a funnel plot into `el`: reference, test, both tube bounds and the
- * absolute deviations. For a comparison with an `xRange` the bounds cover
- * the window plus the extension the tube was built from and the deviations
- * are `0` outside the window; pass e.g. `{ xaxis: { range: [lo, hi] } }` as
- * `layout` to show only the window.
+ * absolute deviations (on a second y axis on the right). For a comparison
+ * with an `xRange` the bounds cover the window plus the extension the tube
+ * was built from and the deviations are `0` outside the window; pass e.g.
+ * `{ xaxis: { range: [lo, hi] } }` as `layout` to show only the window.
+ *
+ * `layout` is merged with the defaults as described in
+ * {@link funnelPlotLayout}; titles may be plain strings, e.g.
+ * `{ title: 'Signal x', xaxis: { title: 'time' } }`.
  */
 export async function createFunnelPlot(
   plotly: PlotlyLike,
@@ -374,11 +476,5 @@ export async function createFunnelPlot(
       yaxis: 'y2',
     },
   ];
-  const finalLayout = {
-    title: 'Funnel comparison',
-    yaxis: { title: 'value' },
-    yaxis2: { title: '|error|', overlaying: 'y', side: 'right' },
-    ...(layout ?? {}),
-  };
-  return plotly.newPlot(el, traces, finalLayout);
+  return plotly.newPlot(el, traces, funnelPlotLayout(layout));
 }

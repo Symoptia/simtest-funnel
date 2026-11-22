@@ -3,7 +3,7 @@
 
 import { Status, type StatusCode } from '@simtest-js/funnel';
 import type { AgeRow } from './compare';
-import type { WeatherTolerances } from './model';
+import { type Place, placeLabel, type WeatherTolerances } from './model';
 
 const MONTHS = [
   'Jan',
@@ -169,4 +169,51 @@ export function attributionLines(
         ],
   );
   return lines;
+}
+
+/** Words for GeoNames feature codes that are not plain towns or villages. */
+const FEATURE_KINDS: Record<string, string> = {
+  PPLC: 'capital',
+  PPLX: 'part of a town',
+  AIRP: 'airport',
+  ADM1: 'administrative area',
+  ADM2: 'administrative area',
+  ADM3: 'administrative area',
+  ADM4: 'administrative area',
+  ADM5: 'administrative area',
+  ADMD: 'administrative area',
+  PCLI: 'country',
+  ISL: 'island',
+  MT: 'mountain',
+  LK: 'lake',
+  RSTN: 'railway station',
+  PRT: 'port',
+};
+
+/**
+ * Extra words that tell a search result apart from others with the same
+ * name, region and country, all from the one geocoding answer: the kind of
+ * place (e.g. "airport"; nothing for an ordinary town), the second-level
+ * region when it differs between such look-alikes, and the population.
+ */
+export function placeDetails(
+  place: Place,
+  results: readonly Place[],
+): string[] {
+  const parts: string[] = [];
+  const kind = place.featureCode ? FEATURE_KINDS[place.featureCode] : undefined;
+  if (kind) {
+    parts.push(kind);
+  }
+  const label = placeLabel(place);
+  const lookAlikes = results.filter(
+    (p) => p !== place && placeLabel(p) === label,
+  );
+  if (place.admin2 && lookAlikes.some((p) => p.admin2 !== place.admin2)) {
+    parts.push(place.admin2);
+  }
+  if (place.population !== undefined) {
+    parts.push(`pop. ${place.population.toLocaleString('en-US')}`);
+  }
+  return parts;
 }

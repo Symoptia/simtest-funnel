@@ -160,22 +160,24 @@
       [role='option'] {
         padding: 0.35rem 0.6rem;
         cursor: pointer;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0 0.5rem;
-        align-items: baseline;
       }
       [role='option'][aria-selected='true'],
       [role='option']:hover {
         background: #e8f1fb;
       }
+      [role='option'] .place-line,
+      [role='option'] .place-meta {
+        display: block;
+      }
       [role='option'] .region {
         color: #52606d;
       }
-      [role='option'] .coords {
+      [role='option'] .place-meta {
         color: #7b8794;
         font-size: 0.8rem;
-        margin-left: auto;
+      }
+      [role='option'] .coords {
+        white-space: nowrap;
       }
       .search-status {
         min-height: 1.2em;
@@ -297,10 +299,12 @@
       }
       @media (max-width: 40rem) {
         .weather-controls .row {
-          grid-template-columns: max-content minmax(0, 1fr);
+          /* Long labels wrap so the selects keep room for their text. */
+          grid-template-columns: fit-content(7.5rem) minmax(0, 1fr);
         }
-        [role='option'] .coords {
-          margin-left: 0;
+        /* The legend wraps into more rows here; keep the plot area tall. */
+        .weather-results .plot {
+          height: 460px;
         }
       }
     </style>

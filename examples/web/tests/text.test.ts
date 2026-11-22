@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AgeRow } from '../src/weather/compare';
+import type { Place } from '../src/weather/model';
 import {
   answerLine,
   attributionLines,
   formatDateRange,
   formatPercent,
   formatTolerances,
+  placeDetails,
 } from '../src/weather/text';
 
 function text(lines: ReturnType<typeof attributionLines>): string {
@@ -118,5 +120,46 @@ describe('attribution', () => {
     expect(all).not.toContain('GeoNames');
     expect(all).toContain('Live search is not available on this site');
     expect(all).toContain('Weather data by Open-Meteo.com');
+  });
+});
+
+describe('placeDetails', () => {
+  const base: Place = {
+    id: 1,
+    name: 'Uppsala',
+    admin1: 'Uppsala County',
+    country: 'Sweden',
+    latitude: 59.86,
+    longitude: 17.64,
+  };
+
+  it('tells a town and an airport with the same label apart', () => {
+    const city: Place = {
+      ...base,
+      featureCode: 'PPLA',
+      population: 177074,
+      admin2: 'Uppsala Municipality',
+    };
+    const airport: Place = {
+      ...base,
+      id: 2,
+      featureCode: 'AIRP',
+      admin2: 'Uppsala Municipality',
+    };
+    const all = [city, airport];
+    expect(placeDetails(city, all)).toEqual(['pop. 177,074']);
+    expect(placeDetails(airport, all)).toEqual(['airport']);
+  });
+
+  it('adds the second-level region only when look-alikes differ in it', () => {
+    const a: Place = { ...base, featureCode: 'PPL', admin2: 'Askersund' };
+    const b: Place = { ...base, id: 2, featureCode: 'PPL', admin2: 'Markaryd' };
+    const other: Place = { ...base, id: 3, admin1: 'Kronoberg County' };
+    expect(placeDetails(a, [a, b, other])).toEqual(['Askersund']);
+    expect(placeDetails(a, [a, other])).toEqual([]);
+  });
+
+  it('gives nothing for a place without extra fields', () => {
+    expect(placeDetails(base, [base])).toEqual([]);
   });
 });

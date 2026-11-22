@@ -25,6 +25,7 @@ import {
   formatDateRange,
   formatPercent,
   formatTolerances,
+  placeDetails,
   statusName,
 } from './text';
 
@@ -289,13 +290,21 @@ class WeatherView {
       places = state.places;
       places.forEach((place, i) => {
         const region = [place.admin1, place.country].filter(Boolean).join(', ');
+        const details = placeDetails(place, places);
         const li = el(
           'li',
           { role: 'option', id: `w-place-${i}`, 'aria-selected': 'false' },
           [
-            el('strong', {}, [place.name]),
-            region ? el('span', { class: 'region' }, [region]) : '',
-            el('span', { class: 'coords' }, [coords(place)]),
+            el('span', { class: 'place-line' }, [
+              el('strong', {}, [place.name]),
+              ...(region
+                ? [' ', el('span', { class: 'region' }, [region])]
+                : []),
+            ]),
+            el('span', { class: 'place-meta' }, [
+              ...details.map((d) => `${d} · `),
+              el('span', { class: 'coords' }, [coords(place)]),
+            ]),
           ],
         );
         // mousedown keeps focus in the input; click picks.
@@ -642,24 +651,18 @@ class WeatherView {
           },
         },
         {
-          // The answer line above states place, age and tolerances.
+          // The answer line above states place, age and tolerances, so no
+          // title; the top margin only leaves room for Plotly's toolbar.
           title: { text: '' },
           xaxis: {
             type: 'date',
-            title: { text: 'time (UTC)' },
+            title: 'time (UTC)',
             tickformat: '%-d %b',
             hoverformat: '%-d %b %Y %H:%M UTC',
           },
-          yaxis: { title: { text: `${variable.label}, ${unit}` } },
-          yaxis2: {
-            title: { text: `|error|, ${unit}` },
-            overlaying: 'y',
-            side: 'right',
-            rangemode: 'tozero',
-            showgrid: false,
-          },
-          legend: { orientation: 'h', x: 0, y: 1.02, yanchor: 'bottom' },
-          margin: { t: 24, r: 64, b: 48, l: 64 },
+          yaxis: { title: `${variable.label}, ${unit}` },
+          yaxis2: { title: `|error|, ${unit}` },
+          margin: { t: 40 },
         },
       );
     } catch (err) {
