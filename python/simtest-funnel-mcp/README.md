@@ -24,7 +24,9 @@ Transport: stdio.
 `uvx simtest-funnel-mcp` installs prebuilt wheels there. Elsewhere the
 `simtest-funnel` library is built from source, which needs a Rust
 toolchain (on musl-based Linux such as Alpine the library has wheels, but
-some of the server's dependencies may not).
+some of the server's dependencies may not). On Windows ARM64 use an x64
+Python, which is what uv installs there by default: with a native ARM64
+Python the `cryptography` dependency of the MCP SDK has no prebuilt wheel.
 
 ## Tools
 

@@ -152,7 +152,11 @@ jobs:
           - { name: macos-x86_64, runner: macos-15-intel, mcp: true }
           - { name: macos-arm64, runner: macos-15, mcp: true }
           - { name: windows-x64, runner: windows-2025, mcp: true }
-          - { name: windows-arm64, runner: windows-11-arm, mcp: true }
+          # Library only: with a native arm64 Python the MCP server cannot be
+          # installed from wheels, because `cryptography` (needed by the mcp
+          # SDK) publishes no win_arm64 wheel. uv's default Python on Windows
+          # arm64 is the emulated x64 one, which the windows-x64 row covers.
+          - { name: windows-arm64, runner: windows-11-arm }
     steps:
       - uses: actions/checkout@v6
         with:
