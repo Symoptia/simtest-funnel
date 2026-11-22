@@ -1,3 +1,15 @@
+# [1.0.0-beta.18](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.17...v1.0.0-beta.18) (2026-11-22)
+
+
+### Bug Fixes
+
+* **core:** build the tube from the reference beyond the x-range window ([b8b6825](https://github.com/Symoptia/simtest-funnel/commit/b8b68258132a73aa7002fb641b4f1bd4b44989ca))
+
+
+### Features
+
+* **mcp:** read input files from https URLs and add an Open-Meteo example ([c0ae6fc](https://github.com/Symoptia/simtest-funnel/commit/c0ae6fc451d5ca4ee92666bb6d0f81975da42fb0))
+
 # [1.0.0-beta.17](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.16...v1.0.0-beta.17) (2026-11-22)
 
 
