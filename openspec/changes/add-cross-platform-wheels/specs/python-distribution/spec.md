@@ -51,10 +51,16 @@ and Windows x64 and ARM64. `simtest-funnel-mcp` SHALL stay a pure-Python
 wheel that installs wherever its dependencies do.
 
 #### Scenario: Desktop platforms
-- **WHEN** a user on macOS (Intel or Apple silicon) or Windows (x64 or ARM64)
-  runs `uvx simtest-funnel-mcp`
+- **WHEN** a user on macOS (Intel or Apple silicon) or Windows x64, or on
+  Windows ARM64 with an x64 Python, runs `uvx simtest-funnel-mcp`
 - **THEN** uv installs prebuilt wheels only, without compiling anything, and
   the server starts
+
+#### Scenario: Native Python on Windows ARM64
+- **WHEN** a user installs `simtest-funnel` with a native ARM64 Python on
+  Windows
+- **THEN** the library installs from its prebuilt wheel; the MCP server is
+  not covered there, because one of its dependencies has no such wheel
 
 #### Scenario: Older Linux distribution
 - **WHEN** a user on a Linux distribution with glibc 2.28 installs
