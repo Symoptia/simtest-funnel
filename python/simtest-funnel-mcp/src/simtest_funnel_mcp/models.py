@@ -260,11 +260,13 @@ class DrawnPoints(BaseModel):
 
     reference: int
     test: int
-    tube_lower: int
-    tube_upper: int
+    tube_lower: int = Field(description="Points drawn for the tube's lower bound (reduced).")
+    tube_upper: int = Field(description="Points drawn for the tube's upper bound (reduced).")
     violation_markers: int
     violation_regions: int
-    buckets: int = Field(description="Min/max buckets used to reduce reference and test.")
+    buckets: int = Field(
+        description="Min/max buckets used to reduce reference, test and tube bounds."
+    )
 
 
 class PlotResult(BaseModel):

@@ -188,8 +188,10 @@ Claude Code or Claude Desktop run funnel comparisons on local CSV files with
 explicit tolerances, without the samples entering the model's context.
 `plot_signals` draws one comparison (reference, test, tube, violations), returns
 a small PNG preview the model can look at, and optionally writes an SVG or PNG
-file for documents; it is the only tool that writes, and only the file it is
-asked for.
+file for documents; it is the only tool that writes, only the file it is
+asked for, and only inside a workspace root declared by the client (Claude
+Code) or an output directory configured with `--output-dir DIR` /
+`SIMTEST_FUNNEL_MCP_OUTPUT_DIR` (needed for Claude Desktop).
 
 ```bash
 claude mcp add simtest-funnel -- uvx simtest-funnel-mcp      # once published to PyPI
@@ -198,7 +200,8 @@ claude mcp add simtest-funnel -- uv run --directory "$PWD" --quiet simtest-funne
 
 This repository ships a [`.mcp.json`](.mcp.json) that starts the server from
 the workspace with `uv run`. See the [package README](python/simtest-funnel-mcp/README.md)
-for the tools, the tolerance coefficients and Claude Desktop configuration.
+for the tools, the tolerance coefficients, where plot files may be written,
+and Claude Desktop configuration.
 
 ---
 

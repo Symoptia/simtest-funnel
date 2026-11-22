@@ -7,6 +7,7 @@ import base64
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,75 @@ def test_stdio_end_to_end(demo_reference: Path, demo_test: Path, tmp_path: Path)
     assert out["plot_outside"].is_error
     assert "outside the client's workspace roots" in out["plot_outside"].content[0].text
     assert not Path("/tmp/simtest-funnel-should-not-exist.svg").exists()
+
+
+def test_stdio_output_dir_without_roots(demo_reference: Path, demo_test: Path,
+                                        tmp_path: Path) -> None:
+    """A client without roots: writing needs --output-dir or the env variable."""
+    cli_dir = tmp_path / "cli"
+    env_dir = tmp_path / "env"
+    cli_dir.mkdir()
+    env_dir.mkdir()
+    args = {
+        "reference_path": str(demo_reference),
+        "test_path": str(demo_test),
+        "column": "z",
+    }
+
+    async def script(client: Client) -> dict[str, Any]:
+        return {
+            "relative": await client.call_tool("plot_signals", {**args, "output_path": "z.svg"}),
+            "env": await client.call_tool(
+                "plot_signals", {**args, "output_path": str(env_dir / "z.svg")}
+            ),
+            "outside": await client.call_tool(
+                "plot_signals", {**args, "output_path": str(tmp_path / "z.svg")}
+            ),
+        }
+
+    env = {**os.environ, "SIMTEST_FUNNEL_MCP_OUTPUT_DIR": str(env_dir)}
+    params = StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "simtest_funnel_mcp", "--output-dir", str(cli_dir)],
+        cwd=str(tmp_path),
+        env=env,
+    )
+    out = _session(params, None, script)
+    assert not out["relative"].is_error, out["relative"].content
+    assert out["relative"].structured_content["file"]["path"] == str((cli_dir / "z.svg").resolve())
+    assert not out["env"].is_error, out["env"].content
+    assert (env_dir / "z.svg").read_bytes().startswith(b"<?xml")
+    assert out["outside"].is_error
+    assert "outside the configured output directories" in out["outside"].content[0].text
+    assert not (tmp_path / "z.svg").exists()
+
+    # Neither roots nor an output directory: no file, but the preview works.
+    env.pop("SIMTEST_FUNNEL_MCP_OUTPUT_DIR")
+    bare = StdioServerParameters(
+        command=sys.executable, args=["-m", "simtest_funnel_mcp"], cwd=str(tmp_path), env=env
+    )
+
+    async def bare_script(client: Client) -> dict[str, Any]:
+        return {
+            "write": await client.call_tool("plot_signals", {**args, "output_path": "y.svg"}),
+            "preview": await client.call_tool("plot_signals", args),
+        }
+
+    out = _session(bare, None, bare_script)
+    assert out["write"].is_error
+    assert "--output-dir" in out["write"].content[0].text
+    assert not (tmp_path / "y.svg").exists()
+    assert not out["preview"].is_error
+    assert out["preview"].content[1].mime_type == "image/png"
+
+
+def test_stdio_start_up_rejects_missing_output_dir(tmp_path: Path) -> None:
+    proc = subprocess.run(
+        [sys.executable, "-m", "simtest_funnel_mcp", "--output-dir", str(tmp_path / "nope")],
+        capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+    )
+    assert proc.returncode == 2
+    assert "does not exist" in proc.stderr and "--output-dir" in proc.stderr
 
 
 def test_checked_in_mcp_json_starts_the_server() -> None:

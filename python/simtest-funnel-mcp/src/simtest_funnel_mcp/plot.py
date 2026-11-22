@@ -3,9 +3,11 @@
 The comparison itself is :func:`simtest_funnel_mcp.compare.run_compare` on
 the full-resolution data, so the verdict and the summary row are exactly
 those of ``compare_signals`` with the same arguments. Only the drawing is
-reduced: reference and test with :func:`simtest.funnel.downsample_min_max`
-(the ``worst_x`` of every violation interval pinned), tube bounds as the
-library returns them.
+reduced, with :func:`simtest.funnel.downsample_min_max`: reference and test
+(the ``worst_x`` of every violation interval pinned) and the tube bounds,
+to which the exact bound value is added at the x of drawn test points where
+needed (see :func:`reduce_bound`), so every drawn test point lies inside or
+outside the drawn tube exactly as the comparison judged it.
 
 matplotlib is imported lazily inside :func:`render` so that it does not
 slow down server start-up.
@@ -27,9 +29,9 @@ from simtest_funnel_mcp.csvio import SignalFile
 from simtest_funnel_mcp.models import COEFFICIENTS, Coefficients, ToleranceSet, XRange
 from simtest_funnel_mcp.selection import is_pattern
 
-#: Min/max buckets for reference and test: at most ~2 points per bucket, so
-#: about 2000 points per series, more than the horizontal pixels of any
-#: rendering (1600 px PNG file) while keeping the SVG small.
+#: Min/max buckets for reference, test and tube bounds: at most ~2 points
+#: per bucket, so about 2000 points per series, more than the horizontal
+#: pixels of any rendering (1600 px PNG file) while keeping the SVG small.
 DEFAULT_BUCKETS = 1000
 #: Figure size in inches (SVG document size 576 x 324 pt).
 FIGURE_SIZE_IN = (8.0, 4.5)
@@ -41,13 +43,9 @@ PNG_FILE_DPI = 200
 #: (centred) so a single-sample violation stays visible (~3 px at 800 px).
 MIN_REGION_FRACTION = 0.004
 
-#: Above this many tube points (lower + upper) the grey band between the
-#: bounds is rasterized in SVG output (at :data:`SVG_RASTER_DPI`): a filled
-#: polygon is never simplified by the renderer, so a 200k-point tube would
-#: otherwise make a ~10 MB SVG. The bound lines themselves stay vector.
-TUBE_VECTOR_MAX_POINTS = 20_000
-#: Resolution of rasterized parts of an SVG (the tube band only).
-SVG_RASTER_DPI = 200
+#: Bound segments shorter than this in x are evaluated as their left end,
+#: exactly as the library's interpolation does (``errors.rs``).
+_LIBRARY_DEGENERATE_DX = 1e-10
 
 #: SVG ``id`` of the artists; tests and users can find them in the file.
 GID_REFERENCE = "reference"
@@ -170,6 +168,149 @@ def widen_and_merge(
     return tuple(out)
 
 
+def bound_at(
+    bx: NDArray[np.float64], by: NDArray[np.float64], x: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Evaluate a tube bound at ``x`` exactly as the library does.
+
+    Same arithmetic as ``interpolate_clamped`` in the core's ``errors.rs``
+    (linear interpolation on the segment ending at the first vertex with
+    ``bx >= x``, left value on segments shorter than 1e-10, clamped to the
+    end values outside the bound), so the values are bit-identical to the
+    bounds the comparison judged each test point against. ``bx`` must be
+    non-decreasing.
+
+    Returns ``(values, keys)``: ``keys`` is a fractional vertex index
+    (``j - 0.5`` for a point on the segment ``(j - 1, j)``), used to merge
+    the points into the bound polyline in order.
+    """
+    n = bx.shape[0]
+    if n == 1:
+        return np.full(x.shape, by[0]), np.where(x <= bx[0], -0.5, 0.5)
+    j = np.clip(np.searchsorted(bx, x, side="left"), 1, n - 1)
+    x0, x1, y0, y1 = bx[j - 1], bx[j], by[j - 1], by[j]
+    dx = x1 - x0
+    degenerate = np.abs(dx) < _LIBRARY_DEGENERATE_DX
+    with np.errstate(divide="ignore", invalid="ignore"):
+        val = y0 + (y1 - y0) * (x - x0) / np.where(degenerate, 1.0, dx)
+    val = np.where(degenerate, y0, val)
+    key = j.astype(np.float64) - 0.5
+    after, before = x >= bx[-1], x <= bx[0]
+    val = np.where(after, by[-1], val)
+    key = np.where(after, n - 0.5, key)
+    val = np.where(before, by[0], val)
+    key = np.where(before, -0.5, key)
+    return val, key
+
+
+def polyline_extent_at(
+    px: NDArray[np.float64], py: NDArray[np.float64], x: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Lowest and highest value of the drawn polyline ``(px, py)`` at ``x``.
+
+    ``px`` must be non-decreasing. At an x with vertices (possibly several,
+    a vertical segment) the extent covers all of them; between vertices it
+    is the linear interpolation; outside the polyline it is empty
+    (``lo = +inf``, ``hi = -inf``).
+    """
+    n = px.shape[0]
+    lo = np.full(x.shape, np.inf)
+    hi = np.full(x.shape, -np.inf)
+    if n == 0:
+        return lo, hi
+    a = np.searchsorted(px, x, side="left")
+    b = np.searchsorted(px, x, side="right")
+    at = b > a
+    if at.any():
+        start = np.ones(n, dtype=bool)
+        start[1:] = px[1:] != px[:-1]
+        starts = np.flatnonzero(start)
+        run = np.cumsum(start) - 1
+        r = run[a[at]]
+        lo[at] = np.minimum.reduceat(py, starts)[r]
+        hi[at] = np.maximum.reduceat(py, starts)[r]
+    mid = ~at & (a > 0) & (a < n)
+    i = a[mid]
+    x0, x1, y0, y1 = px[i - 1], px[i], py[i - 1], py[i]
+    val = y0 + (y1 - y0) * (x[mid] - x0) / (x1 - x0)
+    lo[mid] = val
+    hi[mid] = val
+    return lo, hi
+
+
+def reduce_bound(
+    bx: NDArray[np.float64],
+    by: NDArray[np.float64],
+    *,
+    upper: bool,
+    view: tuple[float, float],
+    buckets: int,
+    test_x: NDArray[np.float64],
+    test_y: NDArray[np.float64],
+    judged: NDArray[np.bool_],
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """The tube bound to draw: min/max reduction plus exact points.
+
+    The bound vertices in the view (plus one neighbour on each side) are
+    reduced with :func:`simtest.funnel.downsample_min_max`, which keeps the
+    bound's lowest and highest vertex per bucket (outward and inward
+    excursions alike). Then, for every drawn test point ``(test_x, test_y)``
+    the comparison judges (``judged``), the drawn bound must agree with the
+    library's bound value ``b`` at that x (:func:`bound_at`):
+
+    * a point on the inner side (``y <= b`` for the upper bound, ``y >= b``
+      for the lower) must also be on the inner side of the whole drawn bound
+      at that x (:func:`polyline_extent_at`);
+    * a point outside the bound must be at least as far outside the drawn
+      bound as outside the true one (drawn bound at that x not wider than
+      ``b``).
+
+    Where a point fails (or the drawn polyline does not reach its x), the
+    exact point ``(x, b)`` is inserted into the
+    drawn polyline; this repeats until no point fails (an exact point
+    satisfies both rules, so at most one insertion per drawn test point).
+    A bound whose x decreases somewhere (not produced by the library in
+    practice) cannot be reduced and is drawn with all its points in the
+    view.
+    """
+    if bx.shape[0] == 0:
+        return bx, by
+    if np.any(np.diff(bx) < 0):  # pragma: no cover - library returns monotonic bounds
+        w0, w1 = _index_window(bx, *view)
+        return bx[w0:w1], by[w0:w1]
+    w0 = max(int(np.searchsorted(bx, view[0], side="left")) - 1, 0)
+    w1 = min(int(np.searchsorted(bx, view[1], side="right")) + 1, bx.shape[0])
+    ds = funnel.downsample_min_max(bx[w0:w1], by[w0:w1], buckets)
+    xs, ys = ds.x, ds.y
+    keys = (ds.indices + w0).astype(np.float64)
+
+    tx, ty = test_x[judged], test_y[judged]
+    true_y, true_key = bound_at(bx, by, tx)
+    # Signed so that "inner side" is <= 0 for both bounds.
+    sign = 1.0 if upper else -1.0
+    inner = sign * (ty - true_y) <= 0.0
+    inserted = np.zeros(tx.shape[0], dtype=bool)
+    while True:
+        lo, hi = polyline_extent_at(xs, ys, tx)
+        drawn = hi if upper else lo  # the outermost drawn value at x
+        # Not covered by the drawn polyline at all also counts as failing.
+        bad = (
+            np.where(inner, sign * (ty - drawn) > 0.0, sign * (drawn - true_y) > 0.0)
+            | ~np.isfinite(drawn)
+        ) & ~inserted
+        if not bad.any():
+            break
+        inserted |= bad
+        xs = np.concatenate([xs, tx[bad]])
+        ys = np.concatenate([ys, true_y[bad]])
+        keys = np.concatenate([keys, true_key[bad]])
+        order = np.lexsort((xs, keys))
+        xs, ys, keys = xs[order], ys[order], keys[order]
+    keep = np.ones(xs.shape[0], dtype=bool)
+    keep[1:] = (xs[1:] != xs[:-1]) | (ys[1:] != ys[:-1])
+    return xs[keep], ys[keep]
+
+
 def prepare_plot(
     ref: SignalFile,
     tst: SignalFile,
@@ -237,8 +378,14 @@ def prepare_plot(
     drawn_violating = violating[t0 + tst_ds.indices]
 
     (lx, ly), (ux, uy) = res.lower, res.upper
-    l0, l1 = _index_window(lx, v_lo, v_hi)
-    u0, u1 = _index_window(ux, v_lo, v_hi)
+    lx, ly, ux, uy = (np.asarray(a, dtype=np.float64) for a in (lx, ly, ux, uy))
+    drawn_judged = ((tst_ds.x >= eff_lo) & (tst_ds.x <= eff_hi))
+    bound_args: dict[str, Any] = {
+        "view": (v_lo, v_hi), "buckets": buckets, "test_x": tst_ds.x, "test_y": tst_ds.y,
+        "judged": drawn_judged,
+    }
+    lower_x, lower_y = reduce_bound(lx, ly, upper=False, **bound_args)
+    upper_x, upper_y = reduce_bound(ux, uy, upper=True, **bound_args)
 
     span = v_hi - v_lo
     regions = widen_and_merge(
@@ -265,10 +412,10 @@ def prepare_plot(
         ref_y=ref_ds.y,
         test_x=tst_ds.x,
         test_y=tst_ds.y,
-        lower_x=lx[l0:l1],
-        lower_y=ly[l0:l1],
-        upper_x=ux[u0:u1],
-        upper_y=uy[u0:u1],
+        lower_x=lower_x,
+        lower_y=lower_y,
+        upper_x=upper_x,
+        upper_y=upper_y,
         marker_x=tst_ds.x[drawn_violating],
         marker_y=tst_ds.y[drawn_violating],
         regions=regions,
@@ -313,7 +460,7 @@ def render(data: PlotData, fmt: Literal["svg", "png"], dpi: float = PREVIEW_DPI)
         band_y = np.concatenate([data.lower_y, data.upper_y[::-1]])
         if band_x.shape[0]:
             # A collection, not ax.fill: patch limits iterate Bezier segments
-            # in Python (seconds for 400k vertices).
+            # in Python (slow for long bounds).
             band = PolyCollection(
                 [np.column_stack([band_x, band_y])],
                 facecolors=_TUBE,
@@ -322,7 +469,6 @@ def render(data: PlotData, fmt: Literal["svg", "png"], dpi: float = PREVIEW_DPI)
                 zorder=1,
             )
             band.set_gid(GID_TUBE)
-            band.set_rasterized(band_x.shape[0] > TUBE_VECTOR_MAX_POINTS)
             ax.add_collection(band, autolim=True)
         ax.plot(data.lower_x, data.lower_y, color=_TUBE, linewidth=0.8, zorder=1.1)
         ax.plot(data.upper_x, data.upper_y, color=_TUBE, linewidth=0.8, zorder=1.1)
@@ -372,7 +518,7 @@ def render(data: PlotData, fmt: Literal["svg", "png"], dpi: float = PREVIEW_DPI)
         buf = io.BytesIO()
         if fmt == "svg":
             fig.savefig(
-                buf, format="svg", dpi=SVG_RASTER_DPI,
+                buf, format="svg",
                 metadata={"Date": None, "Creator": "simtest-funnel-mcp"},
             )
         else:

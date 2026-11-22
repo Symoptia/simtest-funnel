@@ -213,8 +213,8 @@ def render_plot(p: PlotResult, digits: int = MIN_TIME_DIGITS) -> str:
     lines.append(f"preview: inline PNG {v.width_px}x{v.height_px} ({_kb(v.bytes)})")
     d = p.drawn
     lines.append(
-        f"drawn: reference {d.reference} / test {d.test} points (min/max of {d.buckets} "
-        f"buckets), tube {d.tube_lower}+{d.tube_upper} points, {d.violation_markers} "
+        f"drawn: reference {d.reference} / test {d.test} / tube {d.tube_lower}+{d.tube_upper} "
+        f"points (min/max of {d.buckets} buckets), {d.violation_markers} "
         f"violation marker(s), {d.violation_regions} shaded region(s); "
         f"time {tg(p.view.lo, digits)} .. {tg(p.view.hi, digits)}"
     )

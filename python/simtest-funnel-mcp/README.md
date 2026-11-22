@@ -10,7 +10,10 @@ The server reads the files itself, so raw samples never enter the model's
 context. It is stateless: every call names the files it reads, and no
 network connection is opened. `describe_signals` and `compare_signals` are
 read-only; `plot_signals` writes exactly the plot file it is given (and
-nothing at all without `output_path`). Transport: stdio.
+nothing at all without `output_path`), and only inside a workspace root
+declared by the client or an output directory configured at start-up (see
+[Where plot files may be written](#where-plot-files-may-be-written)).
+Transport: stdio.
 
 > **Platform note:** `simtest-funnel` is currently published to PyPI only
 > as a Linux x86-64 / CPython 3.12 wheel, so `uvx simtest-funnel-mcp`
@@ -71,7 +74,7 @@ look at it. SVG is never returned inline (it would reach the model as text).
 | `column` | required | The one signal column to plot (exact name, no glob patterns) |
 | `tolerance` | library default | One tolerance set: optional `label` plus any of the six coefficients (one entry of `compare_signals` `tolerances`) |
 | `x_range` | unbounded | As in `compare_signals`; also the time window shown (zoom) |
-| `output_path` | none | Write the plot here: `.svg` (document) or `.png` (1600 x 900 px). Omit for the preview only |
+| `output_path` | none | Write the plot here: `.svg` (document) or `.png` (1600 x 900 px), inside a workspace root or a configured output directory. Omit for the preview only |
 | `overwrite` | false | Replace `output_path` if it exists (refused otherwise) |
 | `max_intervals` | 5 | Violation intervals listed in the result row (all are drawn) |
 
@@ -87,21 +90,25 @@ pages (on a dark page they appear as a light card).
 The comparison runs on the full data with exactly the semantics of
 `compare_signals`; the result carries the same summary row (plus the file
 written, the preview size and how many points were drawn), never sample
-values. For drawing, reference and test are reduced to the min/max of 1000
-time buckets, keeping the worst point of every violation interval, so a plot
-never hides a violation: every violation interval is shaded (at least ~3 px
-wide, even for a single sample) and contains a marked test point. Tube
-bounds are drawn with all their points; for tubes above 20 000 points the
-grey band (not the bound lines) is embedded in the SVG as a 200 dpi image to
-keep the file small. A column that cannot be compared (missing, bad data,
-differing time spans, non-monotonic time) is an error and nothing is
-written.
+values. For drawing, reference, test and both tube bounds are reduced to
+the min/max of 1000 time buckets (the test keeping the worst point of every
+violation interval), so the SVG stays fully vector and small (a few hundred
+kB at most for 200 000 samples). Where needed, the exact bound value at a
+drawn test point is added to the drawn bound, so a plot never contradicts
+the verdict: every drawn test point lies inside or outside the drawn tube
+exactly as the comparison judged it (violating points at least as far
+outside as their deviation), every violation interval is shaded (at least
+~3 px wide, even for a single sample) and contains a marked test point, and
+in a passing plot no drawn test point lies outside the drawn tube. A column
+that cannot be compared (missing, bad data, differing time spans,
+non-monotonic time) is an error and nothing is written.
 
-Output files: the directory must already exist (none is created); the file
-must lie inside the client's workspace roots, or, when the client declares
-no roots, inside the server's working directory; a symbolic link must point
-to a file with the same extension; an existing file is refused unless
-`overwrite=true`. The file is written only after rendering succeeded, so a
+Output files: the file must lie inside a workspace root or a configured
+output directory (below); a relative `output_path` is taken relative to the
+first workspace root, else the first output directory; the directory must
+already exist (none is created); a symbolic link must point to a file with
+the same extension; an existing file is refused unless `overwrite=true`.
+These checks run before any CSV file is read. The file is written only after rendering succeeded, so a
 failed call writes nothing. Output is deterministic: the same input gives
 byte-identical SVG and PNG files (with the same matplotlib version), so
 plots can be kept in a repository and diffed. SVG text is embedded as
@@ -224,11 +231,84 @@ the server refuses paths outside them and resolves relative paths against
 the first root. Only local `file://` roots (empty host or `localhost`)
 are used; other roots are ignored with a note in the result.
 
+### Where plot files may be written
+
+`plot_signals` writes a file only
+
+1. inside a workspace root declared by the client (Claude Code declares the
+   project directory), or
+2. inside an output directory configured when the server is started:
+   `--output-dir DIR` (repeatable) and/or the environment variable
+   `SIMTEST_FUNNEL_MCP_OUTPUT_DIR` (several directories separated by `:`,
+   `;` on Windows).
+
+When both exist, a path inside either is allowed. With neither (e.g. a
+client that declares no roots and no configured directory), every
+`output_path` is refused with an error saying how to enable writing;
+`plot_signals` without `output_path` still returns the inline preview. The
+server's working directory is never used as a fallback. Each configured
+directory must already exist (use an absolute path; `~` is expanded); the
+server refuses to start otherwise, with a message naming the entry.
+
+Claude Code needs nothing for plots inside the project. To also allow a
+directory outside it, add the option to the command:
+
+```bash
+claude mcp add simtest-funnel -- uvx simtest-funnel-mcp --output-dir /home/me/plots
+```
+
+or, in a project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "simtest-funnel": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["simtest-funnel-mcp", "--output-dir", "/home/me/plots"]
+    }
+  }
+}
+```
+
+Clients that declare no workspace roots (Claude Desktop, at the time of
+writing) need an output directory to save plots
+(`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "simtest-funnel": {
+      "command": "uvx",
+      "args": ["simtest-funnel-mcp", "--output-dir", "/Users/me/Documents/plots"]
+    }
+  }
+}
+```
+
+or with the environment variable:
+
+```json
+{
+  "mcpServers": {
+    "simtest-funnel": {
+      "command": "uvx",
+      "args": ["simtest-funnel-mcp"],
+      "env": { "SIMTEST_FUNNEL_MCP_OUTPUT_DIR": "/Users/me/Documents/plots" }
+    }
+  }
+}
+```
+
+From a checkout, append the option after the command in the same way:
+`"args": ["run", "--directory", "/path/to/simtest-funnel", "--quiet",
+"simtest-funnel-mcp", "--output-dir", "/Users/me/Documents/plots"]`.
+
 ## Development
 
 ```bash
 make build          # builds the native simtest-funnel module
 make test-python    # includes python/simtest-funnel-mcp/tests (incl. stdio end-to-end)
 make lint-python    # mypy --strict
-uv run simtest-funnel-mcp   # start the server on stdio
+uv run simtest-funnel-mcp   # start the server on stdio (--help for options)
 ```

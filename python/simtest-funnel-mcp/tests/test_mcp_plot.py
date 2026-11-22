@@ -16,19 +16,23 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import TextContent
 from numpy.typing import NDArray
 
+import simtest.funnel as funnel
 from simtest_funnel_mcp.csvio import load_csv
 from simtest_funnel_mcp.models import ToleranceSet, XRange
 from simtest_funnel_mcp.plot import (
+    DEFAULT_BUCKETS,
     GID_VIOLATION_MARKERS,
     GID_VIOLATION_REGIONS,
     PlotData,
     PlotOutcome,
+    bound_at,
     png_size,
     prepare_plot,
     render,
     widen_and_merge,
 )
 from simtest_funnel_mcp.server import (
+    NO_WRITE_LOCATION,
     compare_signals_impl,
     plot_signals_impl,
     resolve_output_path,
@@ -66,10 +70,72 @@ def edge_files(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     return _write_signal(d / "ref.csv", t, y), _write_signal(d / "test.csv", t, yt)
 
 
+@pytest.fixture(scope="module")
+def noisy_files(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    """50 000 noisy samples: tube bounds with ~30k-67k zig-zag vertices."""
+    d = tmp_path_factory.mktemp("noisy")
+    n = 50_000
+    t = np.linspace(0.0, 100.0, n)
+    rng = np.random.default_rng(7)
+    y = np.sin(t / 5.0) + 0.05 * rng.standard_normal(n)
+    yt = y + 0.03 * rng.standard_normal(n)
+    return _write_signal(d / "ref.csv", t, y), _write_signal(d / "test.csv", t, yt)
+
+
 def _prepare(ref: Path, tst: Path, column: str, tol: ToleranceSet | None,
-             x_range: XRange | None = None) -> PlotOutcome:
+             x_range: XRange | None = None, buckets: int = DEFAULT_BUCKETS) -> PlotOutcome:
     return prepare_plot(load_csv(ref), load_csv(tst), column=column, tolerance=tol,
-                        x_range=x_range, max_intervals=5)
+                        x_range=x_range, max_intervals=5, buckets=buckets)
+
+
+def _drawn_extent(px: NDArray[np.float64], py: NDArray[np.float64],
+                  x: float) -> tuple[float, float] | None:
+    """Range of the drawn polyline at ``x`` (all vertices at x, else linear
+    interpolation between the neighbouring vertices); None if not covered.
+    Deliberately naive, independent of the implementation."""
+    at = py[px == x]
+    if at.shape[0]:
+        return float(at.min()), float(at.max())
+    left = np.flatnonzero(px < x)
+    right = np.flatnonzero(px > x)
+    if not left.shape[0] or not right.shape[0]:
+        return None
+    i, k = int(left[-1]), int(right[0])
+    v = float(py[i] + (py[k] - py[i]) * (x - px[i]) / (px[k] - px[i]))
+    return v, v
+
+
+def _outside_drawn_tube(data: PlotData, x: float, y: float) -> bool:
+    """True when (x, y) lies outside the drawn tube polygon at x."""
+    lower = _drawn_extent(data.lower_x, data.lower_y, x)
+    upper = _drawn_extent(data.upper_x, data.upper_y, x)
+    if lower is None or upper is None:
+        return True
+    return y > upper[1] or y < lower[0]
+
+
+def _judged_drawn_test_points(outcome: PlotOutcome) -> NDArray[np.bool_]:
+    """Drawn test points the comparison judges (x_range ∩ reference span)."""
+    data = outcome.data
+    lo, hi = outcome.compare.x_range
+    ref = outcome.compare.result.reference
+    assert ref.time_start is not None and ref.time_end is not None
+    eff_lo = max(-np.inf if lo is None else lo, ref.time_start)
+    eff_hi = min(np.inf if hi is None else hi, ref.time_end)
+    return (data.test_x >= eff_lo) & (data.test_x <= eff_hi)
+
+
+def _assert_drawn_tube_agrees(outcome: PlotOutcome) -> None:
+    """Every marker lies outside the drawn tube; every other judged drawn
+    test point lies inside it."""
+    data = outcome.data
+    for x, y in zip(data.marker_x, data.marker_y, strict=True):
+        assert _outside_drawn_tube(data, float(x), float(y)), (x, y)
+    marked = set(zip(data.marker_x.tolist(), data.marker_y.tolist(), strict=True))
+    judged = _judged_drawn_test_points(outcome)
+    for x, y, j in zip(data.test_x, data.test_y, judged, strict=True):
+        if j and (float(x), float(y)) not in marked:
+            assert not _outside_drawn_tube(data, float(x), float(y)), (x, y)
 
 
 def _assert_every_interval_marked(outcome: PlotOutcome) -> None:
@@ -159,6 +225,120 @@ def test_x_range_restricts_and_zooms(demo_reference: Path, demo_test: Path) -> N
     _assert_every_interval_marked(outcome)
 
 
+# --------------------------------------------------------------------------
+# Tube bounds reduced for drawing, never contradicting the verdict
+# --------------------------------------------------------------------------
+
+
+def test_bound_at_reproduces_the_library_judgement(spike_files: tuple[Path, Path],
+                                                   noisy_files: tuple[Path, Path]) -> None:
+    # bound_at must give bit-identical bounds: same points outside, same deviations.
+    for (ref_p, tst_p), tol in ((spike_files, funnel.Tolerances(atolx=0.01, atoly=0.05)),
+                                (noisy_files, funnel.Tolerances(atolx=0.005, atoly=0.08))):
+        ref, tst = load_csv(ref_p), load_csv(tst_p)
+        res = funnel.compare(ref.time, ref.values["y"], tst.time, tst.values["y"],
+                             funnel.Options(tolerances=tol))
+        lo, _ = bound_at(*res.lower, tst.time)
+        up, _ = bound_at(*res.upper, tst.time)
+        y = tst.values["y"]
+        dev = np.where(y > up, y - up, np.where(y < lo, y - lo, 0.0))
+        assert np.count_nonzero(dev) > 0
+        assert np.array_equal(dev, res.errors[1])
+
+
+@pytest.mark.parametrize(
+    ("case", "column", "tol", "buckets"),
+    [
+        ("spike", "y", ToleranceSet(atolx=0.01, atoly=0.05), DEFAULT_BUCKETS),
+        ("edge", "y", ToleranceSet(atolx=0.01, atoly=0.05), DEFAULT_BUCKETS),
+        ("noisy", "y", ToleranceSet(atolx=0.005, atoly=0.08), DEFAULT_BUCKETS),
+        ("noisy", "y", ToleranceSet(atolx=0, atoly=0.08), DEFAULT_BUCKETS),
+        ("demo", "z", LOOSE, DEFAULT_BUCKETS),
+        ("demo", "y", ToleranceSet(atolx=0, atoly=0.01), DEFAULT_BUCKETS),
+        ("demo", "y", ToleranceSet(atolx=0, atoly=0.01), 5),  # hard reduction
+        ("demo", "z", LOOSE, 5),
+    ],
+)
+def test_failing_markers_lie_outside_the_drawn_tube(
+    request: pytest.FixtureRequest, case: str, column: str, tol: ToleranceSet, buckets: int,
+) -> None:
+    files: tuple[Path, Path] = (
+        (request.getfixturevalue("demo_reference"), request.getfixturevalue("demo_test"))
+        if case == "demo" else request.getfixturevalue(f"{case}_files")
+    )
+    outcome = _prepare(files[0], files[1], column, tol, buckets=buckets)
+    assert outcome.record.row.verdict == "fail"
+    assert outcome.data.marker_x.shape[0] >= len(outcome.data.regions) >= 1
+    _assert_every_interval_marked(outcome)
+    _assert_drawn_tube_agrees(outcome)
+
+
+@pytest.mark.parametrize(
+    ("case", "column", "tol", "buckets"),
+    [
+        ("spike", "y", ToleranceSet(atolx=0.01, atoly=3.5), DEFAULT_BUCKETS),
+        ("noisy", "y", ToleranceSet(atolx=0.005, atoly=0.12), DEFAULT_BUCKETS),
+        ("noisy", "y", ToleranceSet(atolx=0, atoly=0.2), DEFAULT_BUCKETS),
+        ("noisy", "y", ToleranceSet(atolx=0, atoly=0.2), 50),
+        ("demo", "x", LOOSE, DEFAULT_BUCKETS),
+        ("demo", "x", LOOSE, 5),
+    ],
+)
+def test_passing_points_lie_inside_the_drawn_tube(
+    request: pytest.FixtureRequest, case: str, column: str, tol: ToleranceSet, buckets: int,
+) -> None:
+    files: tuple[Path, Path] = (
+        (request.getfixturevalue("demo_reference"), request.getfixturevalue("demo_test"))
+        if case == "demo" else request.getfixturevalue(f"{case}_files")
+    )
+    outcome = _prepare(files[0], files[1], column, tol, buckets=buckets)
+    assert outcome.record.row.verdict == "pass"
+    assert outcome.data.marker_x.shape[0] == 0
+    _assert_drawn_tube_agrees(outcome)
+
+
+def test_tube_bounds_are_reduced(spike_files: tuple[Path, Path],
+                                 noisy_files: tuple[Path, Path]) -> None:
+    for files, tol in ((spike_files, ToleranceSet(atolx=0.01, atoly=0.05)),
+                       (noisy_files, ToleranceSet(atolx=0, atoly=0.08))):
+        outcome = _prepare(*files, "y", tol)
+        assert outcome.record.library is not None
+        full = outcome.record.library[0]
+        assert full.lower[0].shape[0] > 40_000  # the library's bounds are long here
+        data = outcome.data
+        # min/max of 1000 buckets (+ first/last) plus exact points where needed,
+        # which are at most one per drawn test point.
+        for n in (data.lower_x.shape[0], data.upper_x.shape[0]):
+            assert n <= 2 * data.buckets + 2 + data.test_x.shape[0]
+            assert n < 3_000
+        assert np.all(np.diff(data.lower_x) >= 0) and np.all(np.diff(data.upper_x) >= 0)
+
+
+def test_short_bounds_are_drawn_unchanged(demo_reference: Path, demo_test: Path) -> None:
+    # Fewer vertices than 2 * buckets: the drawn bounds are the library's
+    # vertices in the view plus one neighbour on each side, nothing added.
+    outcome = _prepare(demo_reference, demo_test, "z", LOOSE)
+    assert outcome.record.library is not None
+    data = outcome.data
+    lib = outcome.record.library[0]
+    for (bx, by), (dx, dy) in ((lib.lower, (data.lower_x, data.lower_y)),
+                               (lib.upper, (data.upper_x, data.upper_y))):
+        inside = np.flatnonzero((bx >= data.view[0]) & (bx <= data.view[1]))
+        i0, i1 = max(inside[0] - 1, 0), min(inside[-1] + 2, bx.shape[0])
+        assert np.array_equal(dx, bx[i0:i1]) and np.array_equal(dy, by[i0:i1])
+
+
+def test_zoom_between_bound_vertices_still_draws_the_tube(edge_files: tuple[Path, Path]) -> None:
+    # The step's bounds have 4 vertices; none lies in this window.
+    outcome = _prepare(*edge_files, "y", ToleranceSet(atolx=0.01, atoly=0.05),
+                       XRange(lo=0.2, hi=0.3))
+    data = outcome.data
+    assert outcome.record.row.verdict == "pass"
+    assert data.lower_x.min() <= 0.2 and data.lower_x.max() >= 0.3
+    assert data.upper_x.min() <= 0.2 and data.upper_x.max() >= 0.3
+    _assert_drawn_tube_agrees(outcome)
+
+
 def test_widen_and_merge() -> None:
     merged = widen_and_merge([(1.0, 1.0), (1.05, 1.05), (5.0, 6.0)], 0.2)
     assert len(merged) == 2
@@ -202,13 +382,13 @@ def test_png_is_well_formed_and_deterministic(demo_fail_data: PlotData) -> None:
     assert png_size(render(demo_fail_data, "png", 200)) == (1600, 900)
 
 
-def test_large_tube_band_is_rasterized_in_svg(spike_files: tuple[Path, Path]) -> None:
+def test_large_tube_svg_is_vector_and_small(spike_files: tuple[Path, Path]) -> None:
     data = _prepare(*spike_files, "y", ToleranceSet(atolx=0.01, atoly=0.05)).data
-    assert data.lower_x.shape[0] > 100_000  # the library's bounds are not compact here
     svg = render(data, "svg")
-    assert len(svg) < 300_000
-    assert b"<image" in svg
+    assert len(svg) < 250_000
+    assert b"<image" not in svg  # fully vector, no raster fallback
     ET.fromstring(svg)
+    assert render(data, "svg") == svg
 
 
 def test_png_size_rejects_other_data() -> None:
@@ -236,13 +416,49 @@ def test_output_path_outside_roots(tmp_path: Path) -> None:
         resolve_output_path(str(root / ".." / "a.svg"), [root.resolve()], False)
 
 
-def test_output_path_without_roots_must_be_under_cwd(tmp_path: Path, monkeypatch: Any) -> None:
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
-    monkeypatch.chdir(cwd)
-    assert resolve_output_path("a.svg", [], False)[0] == cwd.resolve() / "a.svg"
-    with pytest.raises(ToolError, match="outside the server's working directory"):
-        resolve_output_path(str(tmp_path / "a.svg"), [], False)
+def test_output_path_without_roots_or_output_dir_is_refused(tmp_path: Path,
+                                                            monkeypatch: Any) -> None:
+    # Not even inside the working directory: launched from "/" that would be anywhere.
+    monkeypatch.chdir(tmp_path)
+    for raw in ("a.svg", str(tmp_path / "a.svg")):
+        with pytest.raises(ToolError) as info:
+            resolve_output_path(raw, [], False)
+        message = str(info.value)
+        assert message == NO_WRITE_LOCATION
+        assert "workspace roots" in message and "--output-dir" in message
+        assert "SIMTEST_FUNNEL_MCP_OUTPUT_DIR" in message and "Omit output_path" in message
+    assert not (tmp_path / "a.svg").exists()
+
+
+def test_output_path_inside_configured_output_dir(tmp_path: Path) -> None:
+    out = (tmp_path / "plots").resolve()
+    out.mkdir()
+    assert resolve_output_path("a.svg", [], False, [out]) == (out / "a.svg", "svg")
+    assert resolve_output_path(str(out / "b.png"), [], False, [out])[0] == out / "b.png"
+    with pytest.raises(ToolError, match=r"outside the configured output directories"):
+        resolve_output_path(str(tmp_path / "a.svg"), [], False, [out])
+    with pytest.raises(ToolError, match="outside"):
+        resolve_output_path(str(out / ".." / "a.svg"), [], False, [out])
+    # Symlink escape out of the output directory.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    os.symlink(elsewhere, out / "link")
+    with pytest.raises(ToolError, match="outside"):
+        resolve_output_path(str(out / "link" / "a.svg"), [], False, [out])
+
+
+def test_output_path_roots_and_output_dir(tmp_path: Path) -> None:
+    root = (tmp_path / "root").resolve()
+    out = (tmp_path / "out").resolve()
+    root.mkdir()
+    out.mkdir()
+    # Inside either is allowed; relative paths go to the first root.
+    assert resolve_output_path("a.svg", [root], False, [out])[0] == root / "a.svg"
+    assert resolve_output_path(str(out / "a.svg"), [root], False, [out])[0] == out / "a.svg"
+    with pytest.raises(ToolError) as info:
+        resolve_output_path(str(tmp_path / "a.svg"), [root], False, [out])
+    assert "outside the client's workspace roots" in str(info.value)
+    assert "and the configured output directories" in str(info.value)
 
 
 def test_output_path_missing_directory_is_not_created(tmp_path: Path) -> None:
@@ -275,9 +491,11 @@ def test_output_path_symlink_to_other_extension(tmp_path: Path) -> None:
         resolve_output_path(str(tmp_path / "plot.svg"), [tmp_path], True)
 
 
-def test_output_path_empty() -> None:
+def test_output_path_empty(tmp_path: Path) -> None:
     with pytest.raises(ToolError, match="empty"):
         resolve_output_path("  ", [], False)
+    with pytest.raises(ToolError, match="empty"):
+        resolve_output_path("  ", [tmp_path], False, [tmp_path])
 
 
 # --------------------------------------------------------------------------
@@ -367,6 +585,29 @@ def test_bad_output_path_fails_before_reading(tmp_path: Path) -> None:
     with pytest.raises(ToolError, match="must end in"):
         plot_signals_impl(str(tmp_path / "missing.csv"), str(tmp_path / "missing.csv"),
                           [tmp_path], column="a", output_path=str(tmp_path / "a.jpg"))
+    with pytest.raises(ToolError, match="cannot write output_path"):
+        plot_signals_impl(str(tmp_path / "missing.csv"), str(tmp_path / "missing.csv"),
+                          [], column="a", output_path=str(tmp_path / "a.svg"))
+
+
+def test_without_write_location_preview_still_works(demo_reference: Path, demo_test: Path,
+                                                    tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ToolError, match="--output-dir"):
+        _plot(demo_reference, demo_test, [], column="z", output_path="z.svg")
+    assert list(tmp_path.iterdir()) == []
+    result = _plot(demo_reference, demo_test, [], column="z")
+    assert "file" not in structured(result)
+    assert result.content[1].mime_type == "image/png"
+
+
+def test_plot_writes_into_configured_output_dir(demo_reference: Path, demo_test: Path,
+                                                tmp_path: Path) -> None:
+    out = tmp_path.resolve()
+    d = structured(_plot(demo_reference, demo_test, [], column="z", output_path="z.svg",
+                         output_dirs=[out]))
+    assert d["file"]["path"] == str(out / "z.svg")
+    assert (out / "z.svg").read_bytes().startswith(b"<?xml")
 
 
 def test_large_input_structured_result_stays_small(spike_files: tuple[Path, Path],

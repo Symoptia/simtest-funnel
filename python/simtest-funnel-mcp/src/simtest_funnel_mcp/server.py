@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import io
+import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
@@ -70,7 +73,10 @@ sampling and value ranges; choose tolerances; compare_signals; plot_signals
 to look at one column (inline PNG preview) and optionally save the plot as
 an SVG or PNG file for a document. Use absolute paths. Stateless: pass the
 paths on every call. Only plot_signals writes, and only the output_path
-it is given (never an existing file unless overwrite=true)."""
+it is given (never an existing file unless overwrite=true), which must lie
+inside a workspace root declared by the client or an output directory
+configured when the server was started; with neither, omit output_path
+and use the inline preview."""
 
 CSV_HELP = (
     "CSV dialect: comma-separated, one header row, lines whose first non-blank character "
@@ -163,10 +169,13 @@ The result carries the same summary row as compare_signals, never sample values.
 
 output_path (optional): write the plot to this file - SVG (for documents; white
 background, fonts embedded as paths, byte-identical for identical input) when it
-ends in .svg, PNG (1600x900) when it ends in .png. The directory must already exist;
-it must lie inside the client's workspace roots (without roots: inside the server's
-working directory); an existing file is refused unless overwrite=true. Omit it to
-get only the inline preview (nothing is written). SVG is never returned inline.
+ends in .svg, PNG (1600x900) when it ends in .png. The directory must already exist.
+The file must lie inside a workspace root declared by the client or inside an output
+directory configured when the server was started (--output-dir /
+SIMTEST_FUNNEL_MCP_OUTPUT_DIR); with neither, writing is refused. A relative path is
+taken relative to the first workspace root, else the first output directory. An
+existing file is refused unless overwrite=true. Omit output_path to get only the
+inline preview (nothing is written). SVG is never returned inline.
 
 x_range restricts the comparison exactly as in compare_signals (rtol bases are
 computed within it) and is also the time window shown, so it doubles as zoom.
@@ -247,23 +256,54 @@ def resolve_path(raw: str, roots: list[Path]) -> Path:
     return resolved
 
 
+#: Environment variable naming output directories for plot files (several
+#: separated by ``os.pathsep``), in addition to ``--output-dir``.
+OUTPUT_DIR_ENV = "SIMTEST_FUNNEL_MCP_OUTPUT_DIR"
+
+#: Output directories configured at start-up (:func:`main`); empty unless
+#: the user configured one explicitly.
+_output_dirs: list[Path] = []
+
+
+def configured_output_dirs() -> list[Path]:
+    """The output directories configured when the server was started."""
+    return list(_output_dirs)
+
+
+NO_WRITE_LOCATION = (
+    "plot_signals cannot write output_path: the client declared no workspace roots "
+    "and the server was started without an output directory. To enable writing, "
+    "either use a client that declares workspace roots (e.g. Claude Code), or start "
+    "the server with --output-dir DIR (or the environment variable "
+    f"{OUTPUT_DIR_ENV}=DIR) naming an existing directory. Omit output_path to get "
+    "only the inline preview."
+)
+
+
 def resolve_output_path(
-    raw: str, roots: list[Path], overwrite: bool
+    raw: str,
+    roots: list[Path],
+    overwrite: bool,
+    output_dirs: Sequence[Path] = (),
 ) -> tuple[Path, Literal["svg", "png"]]:
     """Check a plot output path (a write) and return ``(resolved path, format)``.
 
-    Stricter than :func:`resolve_path`: the extension must be ``.svg`` or
-    ``.png`` (also after following a symbolic link), the directory must
-    already exist, and without workspace roots the file must lie inside the
-    server's working directory. An existing file is refused unless
-    ``overwrite``; a directory or other non-regular file always is.
+    Stricter than :func:`resolve_path`: the file must lie inside a workspace
+    root or a configured output directory (``output_dirs``); with neither,
+    writing is refused. A relative path is taken relative to the first root,
+    else the first output directory. The extension must be ``.svg`` or
+    ``.png`` (also after following a symbolic link) and the directory must
+    already exist. An existing file is refused unless ``overwrite``; a
+    directory or other non-regular file always is.
     """
     if not raw.strip():
         raise ToolError("output_path is empty")
+    allowed = [*roots, *output_dirs]
+    if not allowed:
+        raise ToolError(NO_WRITE_LOCATION)
     p = Path(raw).expanduser()
-    base = roots[0] if roots else Path.cwd().resolve()
     if not p.is_absolute():
-        p = base / p
+        p = allowed[0] / p
     fmt = _PLOT_FORMATS.get(p.suffix.lower())
     if fmt is None:
         raise ToolError(f"output_path {p} must end in .svg or .png")
@@ -274,11 +314,15 @@ def resolve_output_path(
             f"directory {parent} {what}; the server does not create directories"
         )
     target = (parent.resolve(strict=True) / p.name).resolve()
-    allowed = roots if roots else [Path.cwd().resolve()]
     if not any(target.is_relative_to(r) for r in allowed):
-        listed = ", ".join(str(r) for r in allowed)
-        scope = "the client's workspace roots" if roots else "the server's working directory"
-        raise ToolError(f"{target} is outside {scope} ({listed}); not written")
+        scopes = []
+        if roots:
+            scopes.append(f"the client's workspace roots ({', '.join(map(str, roots))})")
+        if output_dirs:
+            scopes.append(
+                f"the configured output directories ({', '.join(map(str, output_dirs))})"
+            )
+        raise ToolError(f"{target} is outside {' and '.join(scopes)}; not written")
     if _PLOT_FORMATS.get(target.suffix.lower()) != fmt:
         raise ToolError(f"output_path {p} resolves to {target}, which is not a .{fmt} file")
     if target.exists():
@@ -441,13 +485,20 @@ def plot_signals_impl(
     overwrite: bool = False,
     max_intervals: int = DEFAULT_MAX_INTERVALS,
     root_notes: list[str] | None = None,
+    output_dirs: Sequence[Path] = (),
 ) -> CallToolResult:
-    """Plot one comparison; see :data:`PLOT_DESCRIPTION`."""
+    """Plot one comparison; see :data:`PLOT_DESCRIPTION`.
+
+    ``output_dirs`` are the configured output directories (the tool passes
+    :func:`configured_output_dirs`).
+    """
     if max_intervals < 0:
         raise ToolError("max_intervals must be >= 0")
     # Check the output path before any work, write only after rendering.
     target = (
-        resolve_output_path(output_path, roots, overwrite) if output_path is not None else None
+        resolve_output_path(output_path, roots, overwrite, output_dirs)
+        if output_path is not None
+        else None
     )
     ref = _load(reference_path, roots)
     tst = _load(test_path, roots)
@@ -653,8 +704,9 @@ def plot_signals(
         str | None,
         Field(
             description=(
-                "File to write: '.svg' (document) or '.png'. The directory must exist. Omit "
-                "for the inline preview only."
+                "File to write: '.svg' (document) or '.png', inside a workspace root or the "
+                "server's configured output directory. The directory must exist. Omit for "
+                "the inline preview only."
             )
         ),
     ] = None,
@@ -678,11 +730,69 @@ def plot_signals(
         overwrite=overwrite,
         max_intervals=max_intervals,
         root_notes=ignored,
+        output_dirs=configured_output_dirs(),
     )
 
 
-def main() -> None:
-    """Console-script entry point: serve over stdio."""
+def _arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="simtest-funnel-mcp",
+        description=(
+            "Local MCP server (stdio) for funnel comparison of signals in CSV files. "
+            "Reads are allowed anywhere (inside the client's workspace roots when it "
+            "declares any); plot_signals writes plot files only inside the client's "
+            "workspace roots or an output directory given here."
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help=(
+            "Existing directory in which plot_signals may write plot files (repeatable). "
+            f"Also read from ${OUTPUT_DIR_ENV} (several separated by {os.pathsep!r}). "
+            "Needed for writing only when the client declares no workspace roots."
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser
+
+
+def parse_output_dirs(cli: Sequence[str], env: str | None) -> list[Path]:
+    """Resolve and validate the configured output directories.
+
+    ``cli`` are the ``--output-dir`` values, ``env`` the value of
+    :data:`OUTPUT_DIR_ENV`. Relative paths are resolved against the current
+    directory. Raises ``ValueError`` naming the first entry that is not an
+    existing directory.
+    """
+    raw = [*cli, *([e for e in env.split(os.pathsep) if e.strip()] if env else [])]
+    out: list[Path] = []
+    for entry in raw:
+        if not entry.strip():
+            raise ValueError("output directory is empty")
+        p = Path(entry).expanduser().resolve()
+        if not p.is_dir():
+            what = "is not a directory" if p.exists() else "does not exist"
+            raise ValueError(
+                f"output directory {entry!r} ({p}) {what}; create it first or fix the "
+                f"--output-dir / {OUTPUT_DIR_ENV} setting"
+            )
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Console-script entry point: parse options, then serve over stdio."""
+    parser = _arg_parser()
+    args = parser.parse_args(argv)
+    try:
+        dirs = parse_output_dirs(args.output_dir, os.environ.get(OUTPUT_DIR_ENV))
+    except ValueError as exc:
+        parser.error(str(exc))
+    _output_dirs[:] = dirs
     mcp.run("stdio")
 
 
