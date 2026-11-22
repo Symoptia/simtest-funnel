@@ -1,13 +1,12 @@
-# Spec Delta
+# mcp-plots Specification
 
 ## Purpose
-
 A plot tool on the local MCP server that draws one funnel comparison (one
 signal column, one tolerance set) as an inline PNG preview the agent can look
 at and, on request, as an SVG or PNG file for documents, never contradicting
 the comparison's verdict.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Plot tool on the local server
 
@@ -78,18 +77,50 @@ point marked as outside the tube. A passing plot SHALL show no violation.
   narrow violation at the edge
 - **THEN** every violation interval contains a marked drawn test point
 
+### Requirement: Drawn tube agrees with the comparison
+
+At every drawn test point the comparison judges, the point SHALL lie outside
+the drawn tube if and only if the comparison found it outside the tube, and
+then on the same side and at least as far outside as the comparison's
+deviation. The drawn tube at an x is the range from the lowest drawn
+lower-bound value to the highest drawn upper-bound value at that x, with
+linear interpolation between drawn bound points.
+
+#### Scenario: Violation markers lie outside the drawn tube
+- **WHEN** a failing comparison is plotted (a single-sample spike in a long
+  signal, a steep edge, a noisy signal, or the demo files)
+- **THEN** every violation marker lies outside the drawn tube at the marker's
+  x
+
+#### Scenario: Passing plot stays inside the drawn tube
+- **WHEN** a passing comparison is plotted
+- **THEN** no drawn test point lies outside the drawn tube at its x
+
 ### Requirement: Drawing is bounded independently of the input length
 
-Reference and test SHALL be reduced for drawing to the minimum and maximum
-of a fixed number of equal-width time buckets, keeping the worst point of
-every violation interval; tube bounds SHALL be drawn with all their points.
-The result SHALL state how many points of each series were drawn.
+Reference, test and both tube bounds SHALL be reduced for drawing to the
+minimum and maximum of a fixed number of equal-width time buckets, keeping
+the worst point of every violation interval in the test; a tube bound MAY
+additionally contain the exact bound value at the x of a drawn test point, at
+most one per drawn test point. The comparison and the summary SHALL use the
+full-resolution data. The result SHALL state how many points of each series,
+including each tube bound, were drawn.
 
 #### Scenario: Large input
 - **WHEN** two files of 200 000 samples are plotted
 - **THEN** at most about two points per bucket are drawn for reference and
-  test, the result states the drawn counts, and the structured result stays
-  a few kilobytes
+  test, each tube bound has at most two points per bucket plus one per drawn
+  test point, the result states the drawn counts, and the structured result
+  stays a few kilobytes
+
+### Requirement: SVG output is fully vector
+
+SVG output SHALL contain no embedded raster image, whatever the input length.
+
+#### Scenario: SVG of a long smooth signal
+- **WHEN** a 200 000-sample smooth signal, whose tube bounds have about one
+  point per sample, is plotted to SVG
+- **THEN** the file contains no raster image and stays below 250 kB
 
 ### Requirement: Inline PNG preview
 
@@ -104,7 +135,8 @@ structured content. SVG SHALL never be returned inline.
 
 ### Requirement: Plot file output
 
-When an output path is given, the server SHALL write the plot to it: SVG when
+When an output path is given and writing is permitted (see output path
+safety), the server SHALL write the plot to it: SVG when
 the path ends in `.svg`, PNG when it ends in `.png` (case-insensitive); any
 other extension SHALL fail the call. Without an output path nothing SHALL be
 written. The server SHALL write no file other than the requested one.
@@ -126,14 +158,53 @@ written. The server SHALL write no file other than the requested one.
 - **WHEN** no output path is given
 - **THEN** only the inline preview is returned and no file is created
 
+### Requirement: Plot files only in roots or a configured output directory
+
+A plot file SHALL be written only inside a workspace root declared by the
+client or inside an output directory the user configured explicitly when
+starting the server (command-line option or environment variable); a path
+inside either SHALL be allowed. With neither, every output path SHALL be
+refused with an error that explains both ways to enable writing, while calls
+without an output path SHALL still return the inline preview.
+
+#### Scenario: No roots and no output directory
+- **WHEN** the client declares no workspace roots, the server was started
+  without an output directory, and an agent passes an output path (even one
+  inside the server's working directory)
+- **THEN** the call fails with an error explaining that a client with
+  workspace roots or `--output-dir` / `SIMTEST_FUNNEL_MCP_OUTPUT_DIR` enables
+  writing, and nothing is written
+
+#### Scenario: Preview without a write location
+- **WHEN** the client declares no workspace roots, no output directory is
+  configured, and no output path is given
+- **THEN** the call succeeds with the inline preview
+
+#### Scenario: Configured output directory
+- **WHEN** the server was started with `--output-dir /home/me/plots`, the
+  client declares no roots, and the output path is `z.svg`
+- **THEN** the plot is written to `/home/me/plots/z.svg`, and an output path
+  outside `/home/me/plots` is refused
+
+#### Scenario: Roots and an output directory
+- **WHEN** the client declares a root and an output directory is configured
+- **THEN** an output path inside either is written and one outside both is
+  refused with an error naming both
+
+#### Scenario: Missing output directory at start-up
+- **WHEN** the server is started with an output directory (option or
+  environment variable) that does not exist or is not a directory
+- **THEN** the server exits with an error naming the directory instead of
+  serving
+
 ### Requirement: Output path safety
 
-The output path SHALL be resolved like input paths (relative paths against
-the first workspace root, else the working directory) and SHALL be refused
-when its resolved location is outside the workspace roots or, without
-roots, outside the server's working directory; when its directory does not
-exist (no directory is created); or when it exists and is not a regular
-file.
+A relative output path SHALL be resolved against the first workspace root,
+else the first configured output directory. The output path SHALL be refused
+when its resolved location (directory and any symbolic link resolved) is
+outside the allowed directories; when its directory does not exist (no
+directory is created); or when it exists and is not a regular file. All
+output path checks SHALL happen before any CSV file is read.
 
 #### Scenario: Outside the roots
 - **WHEN** the client declares the root `/work/project` and the output path is

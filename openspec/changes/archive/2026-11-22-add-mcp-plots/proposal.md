@@ -23,14 +23,22 @@ can be dropped into a document.
     returned inline, because it reaches the model as text rather than as
     an image.
   - A PNG file can also be written when the output path asks for one.
-- Signals are reduced for drawing with the min/max-per-bucket
-  downsampling from `add-signal-downsampling`, pinning the worst point
-  of every violation interval. The comparison behind the plot always
-  runs on the full-resolution data.
+- Signals and tube bounds are reduced for drawing with the min/max-per-
+  bucket downsampling from `add-signal-downsampling`, pinning the worst
+  point of every violation interval in the test and adding the exact
+  bound value where a drawn test point needs it; the SVG stays fully
+  vector and a few hundred kB at most for 200k-sample inputs. The
+  comparison behind the plot always runs on the full-resolution data.
 - A rendered plot must not contradict the verdict: where the full data
-  violates the tube, the plot shows a violation.
+  violates the tube, the plot shows a violation, every violation marker
+  lies outside the drawn tube, and in a passing plot no drawn test point
+  lies outside it.
 - With this tool the server is no longer strictly read-only: it writes
-  the requested plot file, and nothing else.
+  the requested plot file, and nothing else, and only inside a workspace
+  root declared by the client or an output directory the user configured
+  when starting the server (`--output-dir` /
+  `SIMTEST_FUNNEL_MCP_OUTPUT_DIR`). With neither, it only returns the
+  inline preview.
 
 Explicitly out of scope:
 
@@ -52,8 +60,9 @@ Explicitly out of scope:
 
 ## Impact
 
-- MCP server package: new tool and a plotting dependency (to be chosen
-  in design).
+- MCP server package: new tool, a plotting dependency (to be chosen in
+  design), and a start-up option / environment variable for the output
+  directory.
 - Depends on `add-violation-summary` (violating regions),
   `add-signal-downsampling` (drawing large signals) and
   `add-mcp-server-local` (the server the tool is added to).
