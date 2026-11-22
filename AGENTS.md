@@ -73,6 +73,7 @@ All targets are defined in the `Makefile`:
 | `make test-python` | `pytest tests/python/` + the `simtest-funnel-mcp` tests |
 | `make test-js` | vitest (JavaScript/TypeScript) |
 | `make docs-python` | Build the pdoc Python API reference (`target/doc/python`) |
+| `make browser-setup` | Install a headless Chromium on demand (~350 MB in `~/.cache`) for driving the demo in a browser |
 | `make docs-js` | Build the typedoc TypeScript API reference (`target/doc/js`) |
 | `make lint` | Run all linters |
 | `make lint-rust` | Clippy + `cargo fmt` check |

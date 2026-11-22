@@ -1,4 +1,4 @@
-.PHONY: build build-sdk check-secrets clean demo demo-serve docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-python lint-rust \
+.PHONY: browser-setup build build-sdk check-secrets clean demo demo-serve docs-js docs-python fmt fmt-js fmt-rust help lint lint-js lint-python lint-rust \
         test test-docs test-js test-python test-rust
 
 help:  ## Show this help message (all targets, alphabetical)
@@ -17,6 +17,21 @@ check-secrets:  ## Validate .env vars and GitHub Secrets are configured
 clean:  ## Remove all build artifacts
 	cargo clean
 	cd packages/sdk && rm -rf dist node_modules src/wasm
+
+# Headless browser for driving the demo (not needed for build, test or lint).
+# The devcontainer image has the shared libraries; the browser is downloaded
+# here on demand so the image stays small.
+BROWSER_DIR ?= $(HOME)/.cache/simtest-funnel-browser
+PLAYWRIGHT_VERSION ?= 1.56.1
+
+browser-setup:  ## Install a headless Chromium on demand (~350 MB in ~/.cache) for driving the demo in a browser
+	mkdir -p $(BROWSER_DIR)
+	cd $(BROWSER_DIR) && { [ -f package.json ] || npm init -y >/dev/null; } && \
+		npm install --no-fund --no-audit playwright@$(PLAYWRIGHT_VERSION) && \
+		PLAYWRIGHT_BROWSERS_PATH=$(BROWSER_DIR)/browsers npx playwright install chromium-headless-shell
+	@echo "Browser ready. In the directory of a Playwright script:"
+	@echo "  ln -sfn $(BROWSER_DIR)/node_modules node_modules"
+	@echo "  PLAYWRIGHT_BROWSERS_PATH=$(BROWSER_DIR)/browsers node script.mjs"
 
 build-sdk:  ## Build the @simtest-js/funnel SDK (wasm glue + dist)
 	cd packages/sdk && pnpm install && pnpm build
