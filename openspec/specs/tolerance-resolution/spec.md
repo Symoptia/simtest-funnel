@@ -10,21 +10,32 @@ the Rust, Python, TypeScript and command-line interfaces.
 
 ### Requirement: Default tolerances
 When no tolerance coefficient is given at all, the comparison SHALL use
-`rtolx = rtoly = 2e-3` with `atolx`, `atoly`, `ltolx` and `ltoly` equal
-to zero. Omitting the options entirely, or giving options without
-tolerances, SHALL be equivalent to giving no coefficient.
+`rtoly = 2e-3` with `atolx`, `atoly`, `ltolx`, `ltoly` and `rtolx` equal
+to zero, so there is no tolerance in x. Omitting the options entirely,
+or giving options without tolerances, SHALL be equivalent to giving no
+coefficient. Zero x tolerance SHALL mean the x half-width is the
+minimum half-width floor, so a test point is judged only against the y
+band around the reference at the same x.
 
 #### Scenario: Options omitted
 - **WHEN** a comparison is run without options in any interface
-- **THEN** the effective tolerances are `rtolx = rtoly = 2e-3` and every other coefficient is `0`
+- **THEN** the effective tolerances are `rtoly = 2e-3` and every other coefficient is `0`
 
 #### Scenario: Options given without tolerances
 - **WHEN** a comparison is run with options that set only an x-range
-- **THEN** the effective tolerances are `rtolx = rtoly = 2e-3` and every other coefficient is `0`
+- **THEN** the effective tolerances are `rtoly = 2e-3` and every other coefficient is `0`
 
 #### Scenario: Reported defaults agree with behaviour
 - **WHEN** a caller reads the default options reported by an interface and passes them back explicitly
 - **THEN** the comparison verdict and bounds are identical to running with options omitted
+
+#### Scenario: Time-shifted steep edge with default tolerances
+- **WHEN** the test is the reference's steep step delayed by a small fraction of the x range (a step from 0 to 1 over x 0.49 to 0.50 on x 0 to 1, delayed by 0.001) and options are omitted
+- **THEN** the status is fail
+
+#### Scenario: Time-shifted steep edge with an explicit x tolerance
+- **WHEN** the same trajectories are compared with `atolx = 0.002` (or `rtolx = 2e-3`) given
+- **THEN** the status is pass
 
 ### Requirement: Per-axis resolution
 Tolerances SHALL be resolved independently for the x axis (`atolx`,
@@ -36,7 +47,7 @@ not given.
 
 #### Scenario: Only a y coefficient given
 - **WHEN** a caller gives only `atoly = 0.05`
-- **THEN** the effective tolerances are `atolx = 0`, `ltolx = 0`, `rtolx = 2e-3`, `atoly = 0.05`, `ltoly = 0`, `rtoly = 0`
+- **THEN** the effective tolerances are `atoly = 0.05` and every other coefficient is `0`
 
 #### Scenario: Only an x coefficient given
 - **WHEN** a caller gives only `ltolx = 0.01`
@@ -90,7 +101,7 @@ missing tolerance key is resolved per axis rather than meaning zero.
 
 #### Scenario: Flag only on the y axis
 - **WHEN** the tool is run with `--atoly 0.05` and no other tolerance flag or parameter file
-- **THEN** it compares with `atoly = 0.05`, `rtoly = 0`, `ltoly = 0` and the x-axis default `rtolx = 2e-3`
+- **THEN** it compares with `atoly = 0.05` and every other coefficient `0` (no x tolerance)
 
 #### Scenario: Parameter file without tolerance keys
 - **WHEN** the tool is run with a parameter file that names the trajectories but contains no tolerance keys, and no tolerance flags
@@ -111,8 +122,8 @@ resolution, never the partial input.
 
 #### Scenario: Summary of a partially specified comparison
 - **WHEN** a violation summary is produced for options that give only `atoly = 0.2`
-- **THEN** the summary reports `atoly = 0.2`, `rtolx = 2e-3` and every other coefficient `0`
+- **THEN** the summary reports `atoly = 0.2` and every other coefficient `0`
 
 #### Scenario: Summary with options omitted
 - **WHEN** a violation summary is produced with options omitted
-- **THEN** the summary reports `rtolx = rtoly = 2e-3` and every other coefficient `0`
+- **THEN** the summary reports `rtoly = 2e-3` and every other coefficient `0`
