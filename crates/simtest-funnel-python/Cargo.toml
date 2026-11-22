@@ -9,7 +9,11 @@ description = "Python bindings for simtest-funnel (PyO3 + maturin)"
 
 [dependencies]
 simtest-funnel-core = { path = "../simtest-funnel-core" }
-pyo3 = { version = "0.30", features = ["extension-module"] }
+# abi3-py311: one wheel per platform for CPython 3.11 and later (stable ABI);
+# keep in step with `requires-python` in pyproject.toml. (On Windows, PyO3
+# 0.30 links python3.dll with raw-dylib, so no Python installation or import
+# library for the target is needed to build.)
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py311"] }
 numpy = "0.30"
 
 [lib]

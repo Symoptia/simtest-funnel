@@ -4,7 +4,7 @@ Python bindings for the [simtest-funnel](https://github.com/Symoptia/simtest-fun
 trajectory comparison library, built with PyO3 and maturin.
 
 See the workspace
-[`README.md`](../../README.md#differences-from-lbnl-funnel) for how
+[`README.md`](https://github.com/Symoptia/simtest-funnel#differences-from-lbnl-funnel) for how
 this library differs from LBNL Funnel.
 
 ## Install
@@ -12,6 +12,14 @@ this library differs from LBNL Funnel.
 ```bash
 pip install simtest-funnel
 ```
+
+Requires Python 3.11 or later. Prebuilt wheels (one stable-ABI wheel per
+platform, for CPython 3.11 and every later version): Linux x86-64 and
+ARM64 (manylinux, glibc 2.17+; musllinux 1.2), macOS x86-64 and Apple
+silicon, Windows x64 and ARM64. On other platforms pip builds the source
+distribution, which needs a Rust toolchain (`rustup`). `numpy` is
+installed as a dependency; `pandas` is needed only for
+`compare_dataframes`.
 
 ## Quick start
 

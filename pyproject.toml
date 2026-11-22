@@ -1,7 +1,7 @@
 [project]
 name = "simtest-funnel-workspace"
 version = "0.0.0"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "simtest-funnel",
     "simtest-funnel-mcp",
@@ -14,7 +14,10 @@ testpaths = ["tests/python", "python/simtest-funnel-mcp/tests"]
 addopts = "-v"
 
 [tool.mypy]
-python_version = "3.12"
+# No python_version: mypy checks against the interpreter of the environment
+# it runs in, together with the dependency stubs resolved for it (numpy 2.5's
+# stubs use 3.12 syntax and give false errors when checked as 3.11). CI runs
+# it on the lowest and the newest supported Python (ci.yml, python-test).
 strict = true
 mypy_path = [
     "crates/simtest-funnel-python/python",

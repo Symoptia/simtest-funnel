@@ -14,7 +14,7 @@ All secrets must be configured in the repository settings at
 
 | Registry | URL | Secret Name | Package / Project | Notes |
 |----------|-----|-------------|-------------------|-------|
-| PyPI | https://pypi.org | `PYPI_API_TOKEN` | `simtest-funnel` | Project-scoped token |
+| PyPI | https://pypi.org | `PYPI_API_TOKEN` | `simtest-funnel`, `simtest-funnel-mcp` | Token valid for both projects |
 | crates.io | https://crates.io | `CARGO_REGISTRY_TOKEN` | `simtest-funnel-core` | API token |
 | NPM | https://www.npmjs.com | `NPM_TOKEN` | `@simtest-js/funnel` | Automation token with org publish |
 | Cloudflare Pages | https://dash.cloudflare.com | `CLOUDFLARE_API_TOKEN` | `simtest-funnel` | Pages Edit API token |
@@ -23,8 +23,10 @@ All secrets must be configured in the repository settings at
 
 ### PYPI_API_TOKEN
 
-- **Purpose:** Publish Python wheel to PyPI as `simtest-funnel`.
-- **Source:** https://pypi.org/manage/account/token/ → create project-scoped token for `simtest-funnel`.
+- **Purpose:** Publish the Python distributions to PyPI as `simtest-funnel`
+  and `simtest-funnel-mcp` (one upload step in `release.yml`).
+- **Source:** https://pypi.org/manage/account/token/ → create a token that
+  can upload to both projects (a project-scoped token covers only one).
 - **Set:**
   ```bash
   gh secret set PYPI_API_TOKEN --body "pypi-..." --repo Symoptia/simtest-funnel
@@ -173,6 +175,35 @@ This is idempotent — safe to run multiple times.
    - Publish to PyPI, crates.io, NPM
    - Deploy docs to Cloudflare Pages
 
+### Python wheels
+
+Every release (from `beta` and `main`) builds all Python distributions
+from the release tag in `.github/workflows/python-wheels.yml`: abi3 wheels
+(CPython 3.11+) for manylinux and musllinux x86-64/aarch64, macOS
+x86-64/arm64 and Windows x64/arm64, the `simtest-funnel` sdist and the
+`simtest-funnel-mcp` wheel and sdist. Each wheel is smoke-tested on its
+own platform (`scripts/wheel_smoke.py`). The `publish-pypi` job uploads
+everything in one step, and only if every build and smoke job passed.
+
+To exercise the builds without publishing, run the workflow by hand
+(`gh workflow run python-wheels.yml --repo Symoptia/simtest-funnel --ref beta`)
+and download the `dist-*` / `mcp-dist` artifacts from the run. Pull
+requests that change the packaging files run it too.
+
+**If a wheel build, a smoke test or the upload fails**, the tag, the
+GitHub Release, the npm package and (in its own job) the crates.io crate
+already exist for that version, and nothing of it is on PyPI (or, for an
+interrupted upload, only some files):
+
+- Transient failure (runner, network, PyPI outage): re-run the failed jobs
+  of the same run (`gh run rerun <RUN_ID> --failed --repo Symoptia/simtest-funnel`).
+  The jobs build from the tag, so the result is identical; the upload uses
+  `--skip-existing` and completes a partial upload.
+- Real defect: fix it on `beta` with a `fix:` commit. The next release
+  publishes everything under a new version; the failed version is simply
+  absent from PyPI (its MCP server pins it exactly, so nothing on PyPI
+  depends on it).
+
 ---
 
 ## Secrets Rotation
@@ -191,7 +222,8 @@ Rotate all secrets every **90 days**. Procedure:
 
 ### PyPI publish fails
 
-- Verify token scope: must be project-scoped for `simtest-funnel`.
+- Verify token scope: it must be allowed to upload to both `simtest-funnel`
+  and `simtest-funnel-mcp`.
 - Check token hasn't expired: re-create at https://pypi.org/manage/account/token/.
 - Ensure the package name isn't taken by another owner.
 
