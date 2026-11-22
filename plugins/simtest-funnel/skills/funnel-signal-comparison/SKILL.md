@@ -115,15 +115,17 @@ For a **fail**, explain it from the row:
 - **How much**: `points_outside` of `points_compared`, and the share of the
   time span outside. Both shares agree on uniform sampling; when they
   differ, the span share is the better "how much of the time".
-- **How far and which way**: the worst deviation is measured from the tube's
-  edge, not from the reference: positive means above the tube, negative
-  below. The gap to the reference is roughly the deviation plus
-  `tube_half_width_y`.
+- **How far and which way**: `deviation` is measured from the tube's edge,
+  not from the reference: positive means above the tube, negative below.
+  How far the test is from the reference there is `difference` (test minus
+  reference; `worst_difference` per interval). Report both: "0.9 °C beyond
+  the band, 3 °C below the reference".
 - **Where**: the violation intervals, largest first (`interval_count` gives
   the total). One cluster points to an event, all intervals in one direction
   to a bias, misses only at steep edges without a time tolerance to timing.
-- **Notes**: the server adds hints (no time tolerance given, time spans
-  differ); pass them on when they matter.
+- **Notes**: the server adds hints (no time tolerance given, failures at
+  the first or last sample despite a time tolerance, time spans differ);
+  pass them on when they matter.
 
 Then answer in this shape: verdict and tolerance, how much and where, the
 direction and size of the worst miss, what it likely means, and what you

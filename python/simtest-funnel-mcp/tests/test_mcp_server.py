@@ -63,7 +63,7 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
     assert set(tools["plot_signals"].input_schema["required"]) == {
         "reference_path", "column",
     }
-    description = tools["compare_signals"].description or ""
+    description = _flat(tools["compare_signals"].description)
     for needle in (
         "atolx", "atoly", "ltolx", "ltoly", "rtolx", "rtoly",
         "half_x = max(atolx, rtolx * time_span_ref, ltolx * |t|)",
@@ -71,8 +71,6 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
         '"1 % in y, 0.5 s in x": {"rtoly": 0.01, "atolx": 0.5}',
         "rtoly = 0.002",
         "x: all 0 (NO time tolerance)",
-        "X_RANGE: only test points inside x_range are judged",
-        "built\nfrom the reference extended beyond x_range",
     ):
         assert needle in description, needle
     assert set(tools["describe_signals"].input_schema["properties"]) == {
@@ -192,12 +190,18 @@ def test_non_local_root_is_ignored_with_a_note(demo_reference: Path) -> None:
     assert any("fileserver" in n for n in result.structured_content["notes"])
 
 
+def _flat(text: str | None) -> str:
+    """``text`` with every run of whitespace folded into one space."""
+    return " ".join((text or "").split())
+
+
 def test_description_states_constant_reference_fallback() -> None:
     from simtest_funnel_mcp.server import COMPARE_DESCRIPTION
 
-    assert "falls back\nto rtol * max|reference value|" in COMPARE_DESCRIPTION
-    assert "give atoly explicitly" in COMPARE_DESCRIPTION
-    assert "within\nx_range, both files cover the same time span" in COMPARE_DESCRIPTION
+    text = _flat(COMPARE_DESCRIPTION)
+    assert "falls back to rtol * max|reference value|" in text
+    assert "give atoly explicitly" in text
+    assert "within x_range, both files cover the same time span" in text
 
 
 def test_non_finite_x_range_is_rejected_over_the_protocol(
@@ -321,8 +325,8 @@ def test_x_range_argument_descriptions_agree() -> None:
         assert "only test points inside it are judged" in text, name
         assert "the tube of the whole reference there" in text, name
         assert "extended beyond the window as far as needed" in text, name
-    plot = tools["plot_signals"].description or ""
-    assert "built from the\nreference extended beyond it as far as needed" in plot
+    plot = _flat(tools["plot_signals"].description)
+    assert "x_range also sets the time window shown" in plot
 
 
 def test_schemas_list_the_new_arguments() -> None:
@@ -380,27 +384,32 @@ def test_descriptions_explain_pairs_header_line_and_date_axis() -> None:
         PLOT_DESCRIPTION,
     )
 
+    compare = _flat(COMPARE_DESCRIPTION)
     for needle in (
-        '"within 2 °C and 3 hours": {"atoly": 2, "atolx":\n10800}',
-        "'pairs' instead compares a reference column with a differently named",
+        '"within 2 °C and 3 hours": {"atoly": 2, "atolx": 10800}',
+        "'pairs' compares differently named columns",
+        '"test": "temperature_2m_previous_day1 (°C)"',
         "row key",
-        "label, else its test column",
-        "test_path is optional with\npairs",
+        "label, else the test column",
+        "test_path is optional with pairs",
         "test_header_line",
-        "A non-zero ltolx is refused",
+        "ltolx is refused",
         "time_tolerance",
         '{"lo": "2026-11-05T00:00", "hi": "2026-11-10T00:00"}',
-        "tolerances are seconds",
+        "x is seconds since 1970-01-01 UTC",
+        "describe_signals",
     ):
-        assert needle in COMPARE_DESCRIPTION, needle
+        assert needle in compare, needle
     for needle in (
         "HEADER LINE: header_line", "suggests the header_line to pass",
-        "seconds since 1970-01-01 UTC", "read as UTC", "both without time zone",
+        "seconds since 1970-01-01 UTC", "read as UTC", "both without time zone", "UTF-8",
     ):
         assert needle in CSV_HELP, needle
-    assert CSV_HELP in COMPARE_DESCRIPTION and CSV_HELP in DESCRIBE_DESCRIPTION
-    assert CSV_HELP in PLOT_DESCRIPTION
-    assert "test_column" in PLOT_DESCRIPTION and "(no\ntime zone)" in PLOT_DESCRIPTION
+    # The CSV rules are stated once, in describe_signals (the first call).
+    assert CSV_HELP in DESCRIBE_DESCRIPTION
+    assert CSV_HELP not in COMPARE_DESCRIPTION and CSV_HELP not in PLOT_DESCRIPTION
+    plot = _flat(PLOT_DESCRIPTION)
+    assert "test_column" in plot and "(no time zone)" in plot
     assert "header_line" in INSTRUCTIONS and "'pairs'" in INSTRUCTIONS
     assert "atolx 10800" in INSTRUCTIONS
     # Fields the descriptions promise exist in the output schemas.

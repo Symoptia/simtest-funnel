@@ -528,6 +528,23 @@ def test_plot_notes_missing_x_tolerance_on_failure(edge_files: tuple[Path, Path]
     assert not any("had no x (time) tolerance" in n for n in given["notes"])
 
 
+def test_plot_reports_the_difference_and_the_record_edge_note(tmp_path: Path) -> None:
+    t = np.round(np.arange(201) * 0.05, 10)
+    ref = _write_signal(tmp_path / "ref.csv", t, np.sin(t))
+    tst = _write_signal(tmp_path / "tst.csv", t, np.sin(t - 0.1))
+    result = plot_signals_impl(
+        str(ref), str(tst), [], column="y", tolerance=ToleranceSet(atoly=0.06, atolx=0.15)
+    )
+    d = structured(result)
+    worst = d["row"]["worst"]
+    assert worst["x"] == 0.0 and worst["deviation"] < 0
+    assert worst["difference"] == pytest.approx(np.sin(-0.1), abs=1e-9)
+    assert d["row"]["intervals"][0]["worst_difference"] == pytest.approx(np.sin(-0.1), abs=1e-9)
+    assert any("of the first or last reference sample" in n for n in d["notes"])
+    text = result.content[0].text  # type: ignore[union-attr]
+    assert "test - reference -0.09983" in text
+
+
 def test_plot_result_matches_compare_row(demo_reference: Path, demo_test: Path) -> None:
     root = demo_reference.parent.resolve()
     compared = structured(compare_signals_impl(

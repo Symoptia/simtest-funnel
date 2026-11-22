@@ -63,10 +63,33 @@ by exact name or glob pattern (`*`, `?`, `[...]`), e.g.
 
 The result has one row per (column, tolerance set) with verdict
 (`pass` / `fail` / `error`), the library status code, points outside the
-tube, fractions of points and span outside, the worst deviation and, for
+tube, fractions of points and span outside, the worst point and, for
 failures only, the violation intervals. Missing columns, bad data and
 other per-column problems are reported in their rows instead of failing
-the call. Both structured content and a short text rendering are returned.
+the call.
+
+At the worst point (`worst`) and at the worst point of each interval:
+
+- `deviation` / `worst_deviation`: the distance of the test point
+  **outside** the tube, not test minus reference: test minus the upper edge
+  when above (positive), test minus the lower edge when below (negative);
+- `difference` / `worst_difference`: test minus reference at the same time
+  (the reference interpolated linearly, as the library does), i.e. how far
+  the test is from the reference there;
+- `tube_half_width_y` (worst point only): the tube's vertical half-width
+  there, wider than `atoly` where an x tolerance widens the tube.
+
+Notes point out a failing row without an x tolerance, failures within one
+x half-width of the first or last reference sample (where the tube cannot
+be widened in time: there is no reference before or after to shift
+against), files covering different time spans (also when the overlap
+fails) and a reached time limit.
+
+Argument names are checked: an unknown or misspelt argument, also inside a
+tolerance set, pair, `x_range` or override, fails the call naming it and the
+closest valid name (`unknown argument 'header_lin'; did you mean
+'header_line'?`); the published input schemas say the same
+(`additionalProperties: false`). Both structured content and a short text rendering are returned.
 Time values are never rounded in the structured content; the text prints
 them with enough digits to tell adjacent samples apart.
 
@@ -240,7 +263,10 @@ bounds are written as epoch seconds with the ISO form in a comment.
 
 ## CSV dialect
 
-Comma-separated, one header row (UTF-8, optional BOM). Lines whose first
+Comma-separated, one header row, UTF-8 (optional BOM; CRLF line ends are
+fine). Other encodings are refused with the line and bytes at fault and how
+to convert the file: a file saved with Excel's plain "CSV" format on
+Windows is Windows-1252; save it as "CSV UTF-8" instead. Lines whose first
 non-blank character is `#` and blank lines are ignored; a `#` anywhere
 else is data (e.g. a column `a#1`). A data row with more fields than the
 header is an error naming the row and line; a trailing delimiter on every
@@ -652,8 +678,9 @@ are used; other roots are ignored with a note in the result.
    project directory), or
 2. inside an output directory configured when the server is started:
    `--output-dir DIR` (repeatable) and/or the environment variable
-   `SIMTEST_FUNNEL_MCP_OUTPUT_DIR` (several directories separated by `:`,
-   `;` on Windows).
+   `SIMTEST_FUNNEL_MCP_OUTPUT_DIR` (several directories separated by the
+   platform's path-list separator: `;` on Windows, `:` on Linux and macOS;
+   `--help` shows the one in effect).
 
 When both exist, a path inside either is allowed. With neither (e.g. a
 client that declares no roots and no configured directory), every

@@ -492,6 +492,12 @@ def downsample_min_max(
 
 
 def version() -> str:
+    """Version of the compiled Rust core, in SemVer form (e.g. ``1.0.0-beta.21``),
+    the same string as the Rust crate's and the TypeScript SDK's ``version()``.
+
+    The Python distribution's version is the same release in PEP 440 form
+    (``importlib.metadata.version("simtest-funnel")``, e.g. ``1.0.0b21``).
+    """
     return str(_ext.version())
 
 

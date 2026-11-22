@@ -56,7 +56,7 @@ def test_pass_and_fail_on_demo(demo_reference: Path, demo_test: Path) -> None:
     assert z["points_compared"] == 1001
     assert z["points_outside"] > 0
     assert 0 < z["fraction_of_points_outside"] < 1
-    assert set(z["worst"]) == {"x", "deviation", "tube_half_width_y"}
+    assert set(z["worst"]) == {"x", "deviation", "difference", "tube_half_width_y"}
     assert d["totals"] == {"rows": 3, "passed": 2, "failed": 1, "errors": 0}
     # Passing rows carry only the headline: no zero counts, no intervals.
     assert rows[("x", "loose")] == {
@@ -83,7 +83,8 @@ def test_intervals_worst_first_and_capped(demo_reference: Path, demo_test: Path)
     assert devs == sorted(devs, reverse=True)
     assert abs(y["worst"]["deviation"]) == pytest.approx(devs[0])
     assert set(y["intervals"][0]) == {
-        "start_x", "end_x", "direction", "point_count", "worst_deviation", "worst_x"
+        "start_x", "end_x", "direction", "point_count", "worst_deviation", "worst_x",
+        "worst_difference",
     }
     text = compare_signals_impl(
         str(demo_reference), str(demo_test), [], tolerances=[NOXTOL], columns=["y"],
@@ -978,3 +979,158 @@ def test_x_range_window_edges_cases(write_csv: WriteCsv) -> None:
     # Wholly outside the data, even within the tolerance of its end.
     outside = _window(ref, tst, end + HOUR / 2, end + 2 * HOUR)
     assert outside["verdict"] == "error"
+
+
+# --------------------------------------------------------------------------
+# Test minus reference at the worst points; notes on record edges and spans
+# --------------------------------------------------------------------------
+
+
+def _signal_csv(t: np.ndarray, y: np.ndarray) -> str:
+    return "time,value\n" + "".join(f"{float(a)!r},{float(b)!r}\n" for a, b in zip(t, y, strict=True))
+
+
+def test_difference_on_the_open_meteo_sample() -> None:
+    from conftest import OPEN_METEO_SAMPLE
+
+    if not OPEN_METEO_SAMPLE.is_file():
+        pytest.skip("the bundled sample (repository examples/) is not present")
+    day3 = "temperature_2m_previous_day3 (°C)"
+    d = structured(compare_signals_impl(
+        str(OPEN_METEO_SAMPLE), None, [], header_line=4,
+        pairs=[ColumnPair(reference=OPEN_METEO_REF, test=day3, label="day3")],
+        tolerances=[ToleranceSet(label="2C_3h", atoly=2, atolx=10800)],
+    ))
+    row = d["rows"][0]
+    worst = row["worst"]
+    assert worst["x_iso"] == "2026-11-19T04:00:00"
+    assert worst["deviation"] == -0.9 and worst["tube_half_width_y"] == 2.15
+    # Independent: both columns share the hourly time column, so the
+    # difference is the plain difference of the two cells in that row.
+    import csv
+
+    with OPEN_METEO_SAMPLE.open(encoding="utf-8") as fh:
+        lines = fh.read().splitlines()[3:]
+    table = list(csv.DictReader(lines))
+    cells = {r["time"]: r for r in table}
+    for x_iso, diff in [(worst["x_iso"], worst["difference"])] + [
+        (iv["worst_x_iso"], iv["worst_difference"]) for iv in row["intervals"]
+    ]:
+        r = cells[x_iso[:16]]
+        assert diff == pytest.approx(float(r[day3]) - float(r[OPEN_METEO_REF]), abs=1e-9)
+    assert worst["difference"] == pytest.approx(-3.0)
+    # deviation (outside the tube) and half-width bracket the difference.
+    assert abs(worst["difference"]) <= abs(worst["deviation"]) + worst["tube_half_width_y"] + 1e-9
+    text = compare_signals_impl(
+        str(OPEN_METEO_SAMPLE), None, [], header_line=4,
+        pairs=[ColumnPair(reference=OPEN_METEO_REF, test=day3, label="day3")],
+        tolerances=[ToleranceSet(label="2C_3h", atoly=2, atolx=10800)],
+    ).content[0].text  # type: ignore[union-attr]
+    assert (
+        "worst -0.9 outside the tube at t=2026-11-19T04:00:00 (test - reference -3, "
+        "tube half-width 2.15)"
+    ) in text
+    assert "(6 pts, worst -0.9 at t=2026-11-19T04:00:00, test - reference -3)" in text
+
+
+def test_difference_interpolates_the_reference_like_the_library(write_csv: WriteCsv) -> None:
+    # Reference on integer times with a step at t=3 (repeated time), test
+    # half a step later: the reference is interpolated at the test's x.
+    t_ref = np.array([0.0, 1.0, 2.0, 3.0, 3.0, 4.0, 5.0])
+    y_ref = np.array([0.0, 1.0, 2.0, 3.0, 10.0, 10.0, 10.0])
+    t_tst = np.array([0.0, 0.5, 1.5, 2.5, 3.0, 3.5, 4.5, 5.0])
+    y_tst = np.array([0.0, 0.5, 1.5, 4.0, 3.0, 10.0, 12.5, 10.0])
+    ref = write_csv("ref.csv", _signal_csv(t_ref, y_ref))
+    tst = write_csv("tst.csv", _signal_csv(t_tst, y_tst))
+    d = _compare(ref, tst, tolerances=[ToleranceSet(atoly=0.1)], max_intervals=10)
+    row = d["rows"][0]
+    expected = {2.5: 4.0 - 2.5, 4.5: 12.5 - 10.0}
+    assert row["worst"]["x"] == 4.5 and row["worst"]["difference"] == pytest.approx(2.5)
+    got = {iv["worst_x"]: iv["worst_difference"] for iv in row["intervals"]}
+    assert got == pytest.approx(expected)
+
+
+def _edge_files(write_csv: WriteCsv, shift: float, bump: bool = False) -> tuple[Path, Path]:
+    """Reference sin(t) at 0.05 from 0 to 10, test shifted by ``shift``
+    (positive: delayed), optionally with a +0.2 bump at 6 <= t <= 6.5."""
+    t = np.round(np.arange(201) * 0.05, 10)
+    y = np.sin(t - shift) + (0.2 * ((t >= 6) & (t <= 6.5)) if bump else 0.0)
+    return write_csv("ref.csv", _signal_csv(t, np.sin(t))), write_csv("tst.csv", _signal_csv(t, y))
+
+
+def _edge_note(d: dict[str, Any]) -> list[str]:
+    return [n for n in d["notes"] if "of the first or last reference sample" in n]
+
+
+def test_record_edge_note_for_a_delayed_test(write_csv: WriteCsv) -> None:
+    ref, tst = _edge_files(write_csv, 0.1)
+    d = _compare(ref, tst, tolerances=[
+        ToleranceSet(label="edge", atoly=0.06, atolx=0.15),
+        ToleranceSet(label="noxtol", atoly=0.03),
+    ])
+    rows = _rows(d)
+    edge = rows[("value", "edge")]
+    assert edge["verdict"] == "fail" and edge["points_outside"] == 1
+    assert edge["intervals"][0]["start_x"] == edge["intervals"][0]["end_x"] == 0.0
+    notes = _edge_note(d)
+    assert notes == [
+        "1 failing row(s) with an x (time) tolerance fail within one x half-width of the "
+        "first or last reference sample (value [edge]). There the tube cannot use the x "
+        "tolerance fully: the reference has no samples before its first (or after its last) "
+        "to shift against, so a delayed (or advanced) test can leave the tube at the start "
+        "(or end) of the record. If that edge is a row's only failure, exclude it with "
+        'x_range (e.g. {"lo": 0.15} for value [edge]) or accept it'
+    ]
+    # The suggested x_range removes exactly that failure.
+    windowed = _compare(ref, tst, tolerances=[ToleranceSet(label="edge", atoly=0.06, atolx=0.15)],
+                        x_range=XRange(lo=0.15))
+    assert windowed["rows"][0]["verdict"] == "pass" and not _edge_note(windowed)
+
+
+def test_record_edge_note_at_the_end_for_an_advanced_test(write_csv: WriteCsv) -> None:
+    ref, tst = _edge_files(write_csv, -0.1)
+    d = _compare(ref, tst, tolerances=[ToleranceSet(label="edge", atoly=0.06, atolx=0.15)])
+    assert d["rows"][0]["verdict"] == "fail"
+    (note,) = _edge_note(d)
+    assert '{"hi": 9.85}' in note
+
+
+def test_no_record_edge_note_for_failures_elsewhere(write_csv: WriteCsv) -> None:
+    ref, tst = _edge_files(write_csv, 0.0, bump=True)
+    d = _compare(ref, tst, tolerances=[
+        ToleranceSet(label="bump", atoly=0.05, atolx=0.1),
+        ToleranceSet(label="noxtol", atoly=0.05),
+    ])
+    rows = _rows(d)
+    assert rows[("value", "bump")]["verdict"] == "fail"
+    assert all(6 <= iv["start_x"] <= 6.5 for iv in rows[("value", "bump")]["intervals"])
+    assert _edge_note(d) == []
+
+
+def test_differing_spans_note_when_the_overlap_fails(write_csv: WriteCsv) -> None:
+    t = np.round(np.arange(201) * 0.05, 10)
+    short = t[t <= 8.0]
+    ref = write_csv("ref.csv", _signal_csv(t, np.sin(t)))
+    bad = write_csv("bad.csv", _signal_csv(short, np.sin(short) + 0.2 * (short > 4)))
+    good = write_csv("good.csv", _signal_csv(short, np.sin(short)))
+    d = _compare(ref, bad, tolerances=[ToleranceSet(label="tight", atoly=0.05)])
+    row = d["rows"][0]
+    # Verified behaviour: the library reports FAIL, not MISSING_TEST, when
+    # the overlap fails; the row alone does not show that the spans differ.
+    assert row["verdict"] == "fail" and row["status_name"] == "FAIL"
+    spans = [n for n in d["notes"] if n.startswith("time ranges differ")]
+    assert spans == [
+        "time ranges differ (reference time spans [0.0, 10.0], test time spans [0.0, 8.0]): "
+        "the reference extends beyond the test (MISSING_TEST). 1 failing row(s) (value "
+        "[tight]) were judged on the overlap only; a failure takes precedence over the "
+        "coverage error, which those rows would get if they passed there. Pass x_range "
+        '{"lo": 0.0, "hi": 8.0} to compare only the overlap, and say that the rest was not '
+        "compared"
+    ]
+    # Passing overlap: the coverage error and its note, no failure note.
+    ok = _compare(ref, good, tolerances=[ToleranceSet(label="tight", atoly=0.05)])
+    assert ok["rows"][0]["status_name"] == "MISSING_TEST"
+    assert [n for n in ok["notes"] if "failing row" in n] == []
+    # Comparing the overlap: no note at all.
+    window = _compare(ref, bad, tolerances=[ToleranceSet(atoly=0.05)], x_range=XRange(lo=0, hi=8))
+    assert not [n for n in window["notes"] if n.startswith("time ranges")]

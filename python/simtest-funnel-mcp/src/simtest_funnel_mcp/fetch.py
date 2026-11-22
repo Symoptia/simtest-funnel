@@ -810,7 +810,9 @@ class Fetcher:
         charset = params.get("charset")
         if charset is not None and charset not in _CHARSETS:
             raise FetchError(
-                f"{url.host} returned text in charset {charset}; only UTF-8 (or ASCII) is read"
+                f"{url.host} returned text in charset {charset}; only UTF-8 (or ASCII) is "
+                "read: ask the source for UTF-8, or download the file, convert it to UTF-8 "
+                "and pass its local path"
             )
         encoding = (response.getheader("Content-Encoding") or "identity").strip().lower()
         if encoding not in ("identity", "gzip"):

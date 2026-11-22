@@ -10,9 +10,22 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 
+# Versions as the installed distributions report them (PEP 440, e.g.
+# 1.0.0b21): also the MCP serverInfo.version and the --version output.
 try:
     __version__ = _dist_version("simtest-funnel-mcp")
 except PackageNotFoundError:  # pragma: no cover - running from a source tree
     __version__ = "0.0.0"
 
-__all__ = ["__version__"]
+
+def library_version() -> str:
+    """The installed ``simtest-funnel`` distribution's version (PEP 440)."""
+    try:
+        return _dist_version("simtest-funnel")
+    except PackageNotFoundError:  # pragma: no cover - library not installed as a distribution
+        import simtest.funnel as funnel
+
+        return funnel.version()
+
+
+__all__ = ["__version__", "library_version"]

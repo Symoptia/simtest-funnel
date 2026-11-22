@@ -10,10 +10,12 @@ from __future__ import annotations
 import difflib
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
 import numpy as np
+from numpy.typing import NDArray
 
 import simtest.funnel as funnel
 from simtest_funnel_mcp.csvio import SignalFile
@@ -239,6 +241,109 @@ def no_x_tolerance_hint(records: list[RowRecord], datetime_axis: bool = False) -
         "reference (e.g. at steep edges), consider an x tolerance such as atolx "
         + ("(seconds on this date-time axis, e.g. atolx = 10800 for 3 h)" if datetime_axis
            else "(time units)")
+    )
+
+
+#: Rows named in a note, at most.
+NOTE_ROWS = 3
+
+
+def _row_names(records: list[RowRecord]) -> str:
+    names = [f"{r.row.column} [{r.row.tolerance_set}]" for r in records[:NOTE_ROWS]]
+    more = len(records) - NOTE_ROWS
+    return ", ".join(names) + (f" and {more} more" if more > 0 else "")
+
+
+def half_x_at(c: funnel.Tolerances, t: float, ref_span: float) -> float:
+    """The library's x half-width at time ``t``: ``max(atolx, rtolx * span,
+    ltolx * |t|)`` with ``span`` the reference time span inside x_range."""
+    return max(c.atolx or 0.0, (c.rtolx or 0.0) * ref_span, (c.ltolx or 0.0) * abs(t))
+
+
+def record_edge_hint(
+    records: list[RowRecord], t_ref: NDArray[np.float64], ref_span: float | None
+) -> str | None:
+    """A note for failed rows whose violations lie within one x half-width
+    of the first or last reference sample while an x tolerance is in effect.
+
+    There the tube cannot use the x tolerance fully (no reference before
+    the first or after the last sample to shift against), so a delayed or
+    advanced test can leave it at the record's edge only.
+    """
+    if not t_ref.shape[0] or ref_span is None:
+        return None
+    first, last = float(t_ref[0]), float(t_ref[-1])
+    if not (math.isfinite(first) and math.isfinite(last)):
+        return None
+    hits: list[RowRecord] = []
+    example: dict[str, float] = {}
+    for r in records:
+        if r.library is None or r.row.verdict != "fail":
+            continue
+        tol = r.library[1].tolerances
+        h_first, h_last = half_x_at(tol, first, ref_span), half_x_at(tol, last, ref_span)
+        intervals = r.library[1].intervals
+        at_first = h_first > 0 and any(iv.start_x < first + h_first for iv in intervals)
+        at_last = h_last > 0 and any(iv.end_x > last - h_last for iv in intervals)
+        if not (at_first or at_last):
+            continue
+        hits.append(r)
+        if not example:
+            if at_first:
+                example["lo"] = first + h_first
+            if at_last:
+                example["hi"] = last - h_last
+    if not hits:
+        return None
+    window = "{" + ", ".join(f'"{k}": {v!r}' for k, v in example.items()) + "}"
+    return (
+        f"{len(hits)} failing row(s) with an x (time) tolerance fail within one x half-width "
+        f"of the first or last reference sample ({_row_names(hits)}). There the tube cannot "
+        "use the x tolerance fully: the reference has no samples before its first (or after "
+        "its last) to shift against, so a delayed (or advanced) test can leave the tube at "
+        "the start (or end) of the record. If that edge is a row's only failure, exclude it with x_range (e.g. "
+        f"{window} for {_row_names(hits[:1])}) or accept it"
+    )
+
+
+def differing_spans_hint(
+    records: list[RowRecord],
+    ref_span: tuple[float, float],
+    tst_span: tuple[float, float],
+    lo: float | None,
+    hi: float | None,
+    spans: str,
+) -> str | None:
+    """A note for failed rows of files that cover different time spans.
+
+    The library reports a coverage status (MISSING_REFERENCE / MISSING_TEST)
+    only when no judged point fails; a failure takes precedence, so a failed
+    row would otherwise not show that part of a file was not compared. The
+    extents are clipped to x_range as the library clips them.
+    """
+    failed = [r for r in records if r.library is not None and r.row.verdict == "fail"]
+    if not failed:
+        return None
+    lo_ = -math.inf if lo is None else lo
+    hi_ = math.inf if hi is None else hi
+    r_lo, r_hi = max(ref_span[0], lo_), min(ref_span[1], hi_)
+    t_lo, t_hi = max(tst_span[0], lo_), min(tst_span[1], hi_)
+    eps = 1e-12 * max(abs(ref_span[1]), abs(tst_span[1]))
+    beyond: list[str] = []
+    if t_hi > r_hi + eps or t_lo < r_lo - eps:
+        beyond.append("the test extends beyond the reference (MISSING_REFERENCE)")
+    if r_hi > t_hi + eps or r_lo < t_lo - eps:
+        beyond.append("the reference extends beyond the test (MISSING_TEST)")
+    if not beyond:
+        return None
+    within = "" if lo is None and hi is None else " within the requested x_range"
+    window = _overlap(ref_span, tst_span, lo, hi)
+    return (
+        f"time ranges differ{within} ({spans}): {' and '.join(beyond)}. "
+        f"{len(failed)} failing row(s) ({_row_names(failed)}) were judged on the overlap "
+        "only; a failure takes precedence over the coverage error, which those rows would "
+        f"get if they passed there. Pass x_range {_range_json(window)} to compare only the "
+        "overlap, and say that the rest was not compared"
     )
 
 
@@ -546,6 +651,62 @@ def _pair_entries(pairs: list[ColumnPair]) -> list[Entry]:
     return entries
 
 
+#: Segments shorter than this in x are evaluated as their left end, as the
+#: library's interpolation does (``interpolate_clamped`` in ``errors.rs``).
+_DEGENERATE_DX = 1e-10
+
+#: ``difference(x, deviation)``: test minus reference at a worst point.
+Difference = Callable[[float, float], "float | None"]
+
+
+def interpolate_like_library(xs: NDArray[np.float64], ys: NDArray[np.float64], x: float) -> float:
+    """``ys`` at ``x``, interpolated exactly as the library interpolates.
+
+    Linear on the segment ending at the first sample with ``xs >= x`` (so at
+    a repeated time, the first value at that time), the left value on a
+    segment shorter than 1e-10, clamped to the end values outside ``xs``.
+    ``xs`` must be non-decreasing and non-empty.
+    """
+    n = xs.shape[0]
+    if x <= xs[0]:
+        return float(ys[0])
+    if x >= xs[n - 1]:
+        return float(ys[n - 1])
+    j = int(np.searchsorted(xs, x, side="left"))
+    x0, x1, y0, y1 = float(xs[j - 1]), float(xs[j]), float(ys[j - 1]), float(ys[j])
+    if abs(x1 - x0) < _DEGENERATE_DX:
+        return y0
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+
+
+def difference_at(
+    t_ref: NDArray[np.float64],
+    y_ref: NDArray[np.float64],
+    t_tst: NDArray[np.float64],
+    y_tst: NDArray[np.float64],
+    errors: tuple[NDArray[np.float64], NDArray[np.float64]],
+) -> Difference:
+    """Test minus reference at a worst point of a library summary.
+
+    A worst point is given by its x and deviation, as the summary reports
+    it; its test sample is the first one with exactly that x and deviation
+    (test times may repeat at a step, so x alone could be ambiguous). The
+    reference is interpolated at x with :func:`interpolate_like_library`.
+    """
+    err_x, err_y = (np.asarray(a, dtype=np.float64) for a in errors)
+
+    def diff(x: float, deviation: float) -> float | None:
+        lo = int(np.searchsorted(err_x, x, side="left"))
+        hi = int(np.searchsorted(err_x, x, side="right"))
+        hits = np.flatnonzero(err_y[lo:hi] == deviation)
+        if not hits.shape[0] or not t_ref.shape[0]:  # pragma: no cover - library invariant
+            return None
+        value = float(y_tst[lo + int(hits[0])]) - interpolate_like_library(t_ref, y_ref, x)
+        return value if math.isfinite(value) else None
+
+    return diff
+
+
 def _library_row(
     column: str,
     label: str,
@@ -554,6 +715,7 @@ def _library_row(
     overridden: bool,
     max_intervals: int,
     coverage_problem: str | None,
+    difference: Difference | None = None,
 ) -> Row:
     code = int(res.status)
     verdict = _verdict(code)
@@ -588,6 +750,7 @@ def _library_row(
         row.worst = Worst(
             x=finite_or_none(s.worst.x),
             deviation=finite_or_none(s.worst.deviation),
+            difference=difference(s.worst.x, s.worst.deviation) if difference else None,
             tube_half_width_y=finite_or_none(s.worst.tube_half_width_y),
         )
     ordered = sorted(s.intervals, key=lambda iv: abs(iv.worst_deviation), reverse=True)
@@ -599,6 +762,9 @@ def _library_row(
             point_count=iv.point_count,
             worst_deviation=iv.worst_deviation,
             worst_x=iv.worst_x,
+            worst_difference=(
+                difference(iv.worst_x, iv.worst_deviation) if difference else None
+            ),
         )
         for iv in ordered[:max_intervals]
     ]
@@ -766,9 +932,12 @@ def run_compare(
                 continue
             code = int(res.status)
             summary = funnel.summarize(res, t_ref, opts)
+            y_ref = np.asarray(ref.values[e.reference], dtype=np.float64)
+            y_tst = np.asarray(tst.values[e.test], dtype=np.float64)
             row = _library_row(
                 c, label, res, summary, c in overrides, max_intervals,
                 coverage.get(code),
+                difference_at(t_ref, y_ref, t_tst, y_tst, res.errors),
             )
             row.reference_column, row.test_column = pair_cols
             if dt_axis:
@@ -794,16 +963,23 @@ def run_compare(
         )
         if ref_span[1] < tst_span[0] or tst_span[1] < ref_span[0]:
             notes.append(f"time ranges do not overlap: {spans}")
-        elif any(r.row.status in _LIBRARY_MISSING for r in records if r.from_library):
-            window = _overlap(ref_span, tst_span, lo, hi)
-            notes.append(
-                f"time ranges differ ({spans}); pass x_range {_range_json(window)} "
-                "to compare only the overlap"
-            )
+        else:
+            if any(r.row.status in _LIBRARY_MISSING for r in records if r.from_library):
+                window = _overlap(ref_span, tst_span, lo, hi)
+                notes.append(
+                    f"time ranges differ ({spans}); pass x_range {_range_json(window)} "
+                    "to compare only the overlap"
+                )
+            spans_hint = differing_spans_hint(records, ref_span, tst_span, lo, hi, spans)
+            if spans_hint is not None:
+                notes.append(spans_hint)
 
     hint = no_x_tolerance_hint(records, dt_axis)
     if hint is not None:
         notes.append(hint)
+    edge = record_edge_hint(records, t_ref, _reference_span(ref, lo, hi))
+    if edge is not None:
+        notes.append(edge)
 
     pending_out: list[NotCompleted] | None = None
     pending_omitted: int | None = None

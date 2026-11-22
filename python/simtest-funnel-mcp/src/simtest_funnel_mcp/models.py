@@ -12,6 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from simtest_funnel_mcp.arguments import StrictInput
 from simtest_funnel_mcp.reader import ISO_DATETIME
 
 COEFFICIENTS: tuple[str, ...] = ("atolx", "atoly", "ltolx", "ltoly", "rtolx", "rtoly")
@@ -26,7 +27,7 @@ _NONNEG = "Must be >= 0. Omit for 'not given'."
 # --------------------------------------------------------------------------
 
 
-class ToleranceSpec(BaseModel):
+class ToleranceSpec(StrictInput):
     """Any subset of the six tolerance coefficients (omitted = not given)."""
 
     # allow_inf_nan=False: pydantic would otherwise accept "inf"/"nan" strings.
@@ -87,7 +88,7 @@ _BOUND = (
 )
 
 
-class XRange(BaseModel):
+class XRange(StrictInput):
     """Time window to compare (inclusive); omitted bound = unbounded."""
 
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -116,10 +117,8 @@ class XRange(BaseModel):
         return number
 
 
-class ColumnPair(BaseModel):
+class ColumnPair(StrictInput):
     """A reference column compared against a differently named test column."""
-
-    model_config = ConfigDict(extra="forbid")
 
     reference: str = Field(min_length=1, description="Exact reference column name.")
     test: str = Field(min_length=1, description="Exact test column name.")
@@ -294,23 +293,50 @@ class NotCompleted(BaseModel):
     test_column: str | None = None
 
 
+#: Shared wording of the deviation and difference fields.
+DEVIATION_HELP = (
+    "Distance of the test point OUTSIDE the tube (not test minus reference): test minus "
+    "the upper edge if above (positive), test minus the lower edge if below (negative)."
+)
+DIFFERENCE_HELP = (
+    "Test value minus the reference value at the same x (reference linearly "
+    "interpolated; at a repeated reference time its first value)."
+)
+
+
 class Worst(BaseModel):
-    x: float | None = None
+    """The judged test point farthest outside the tube."""
+
+    x: float | None = Field(default=None, description="x (time) of the worst point.")
     x_iso: str | None = None
-    deviation: float | None = None
-    tube_half_width_y: float | None = None
+    deviation: float | None = Field(default=None, description=DEVIATION_HELP)
+    difference: float | None = Field(default=None, description=DIFFERENCE_HELP)
+    tube_half_width_y: float | None = Field(
+        default=None,
+        description=(
+            "Vertical half-width of the tube at x (half the distance between its edges): "
+            "wider than the y tolerance where an x tolerance widens the tube."
+        ),
+    )
 
 
 class Interval(BaseModel):
+    """A run of consecutive judged test points outside the tube on one side."""
+
     start_x: float
     start_x_iso: str | None = None
     end_x: float
     end_x_iso: str | None = None
     direction: Literal["above", "below"]
     point_count: int
-    worst_deviation: float
-    worst_x: float
+    worst_deviation: float = Field(
+        description="Deviation (see worst.deviation) with the largest magnitude in the run."
+    )
+    worst_x: float = Field(description="x of the worst point of the run.")
     worst_x_iso: str | None = None
+    worst_difference: float | None = Field(
+        default=None, description=f"At worst_x: {DIFFERENCE_HELP}"
+    )
 
 
 class Row(BaseModel):

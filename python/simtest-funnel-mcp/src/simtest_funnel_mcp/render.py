@@ -193,9 +193,11 @@ def _row_line(r: Row, digits: int) -> str:
         f"({_pct(r.fraction_of_span_outside)} of span)"
     ]
     if r.worst is not None:
+        w = r.worst
+        diff = f"test - reference {w.difference:+.4g}, " if w.difference is not None else ""
         parts.append(
-            f"worst {r.worst.deviation:+.4g} at t={tg(r.worst.x, digits, r.worst.x_iso)} "
-            f"(tube half-width {g(r.worst.tube_half_width_y)})"
+            f"worst {w.deviation:+.4g} outside the tube at t={tg(w.x, digits, w.x_iso)} "
+            f"({diff}tube half-width {g(w.tube_half_width_y)})"
         )
     parts.append(f"{r.interval_count} interval(s)")
     line = f"{head}: " + ", ".join(parts)
@@ -205,11 +207,15 @@ def _row_line(r: Row, digits: int) -> str:
             tt = r.time_tolerance
             line += f"; time tolerance {tt.seconds:g} s ({tt.duration})"
     for iv in r.intervals or []:
+        diff = (
+            f", test - reference {iv.worst_difference:+.4g}"
+            if iv.worst_difference is not None else ""
+        )
         line += (
             f"\n    {iv.direction} t={tg(iv.start_x, digits, iv.start_x_iso)}.."
             f"{tg(iv.end_x, digits, iv.end_x_iso)} "
             f"({iv.point_count} pts, worst {iv.worst_deviation:+.4g} "
-            f"at t={tg(iv.worst_x, digits, iv.worst_x_iso)})"
+            f"at t={tg(iv.worst_x, digits, iv.worst_x_iso)}{diff})"
         )
     if r.intervals is not None and r.interval_count and r.interval_count > len(r.intervals):
         line += f"\n    ... {r.interval_count - len(r.intervals)} more interval(s)"

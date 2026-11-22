@@ -131,6 +131,59 @@ def test_bom_and_crlf(write_csv: WriteCsv) -> None:
     np.testing.assert_array_equal(sf.values["a"], [1.0, 2.0])
 
 
+#: The Windows field test's file: '°' in the header, CRLF line ends.
+LEGACY_TEXT = "time,value (°C)\r\n0,1\r\n1,2\r\n"
+
+
+def test_windows_1252_file_is_refused_with_line_bytes_and_fix(tmp_path: Path) -> None:
+    path = tmp_path / "ref-cp1252.csv"
+    path.write_bytes(LEGACY_TEXT.encode("cp1252"))
+    with pytest.raises(SignalFileError) as info:
+        load_csv(path)
+    assert str(info.value) == (
+        f"{path}: not valid UTF-8, the only encoding read: line 1 has the byte(s) 0xB0 "
+        "('°' in Windows-1252) in \"time,value (\\xb0C)\". The file was probably saved "
+        "in a legacy code page such as Windows-1252 (e.g. Excel's plain \"CSV (Comma "
+        "delimited)\" format); re-save it as \"CSV UTF-8\" (in Excel: Save As, \"CSV "
+        "UTF-8 (Comma delimited)\") or convert it to UTF-8"
+    )
+    assert "codec" not in str(info.value)
+
+
+def test_line_of_a_bad_byte_counts_physical_lines(tmp_path: Path) -> None:
+    path = tmp_path / "late.csv"
+    path.write_bytes(b"# note\r\ntime,a\r\n0,1\r1,2\n2,caf\xe9\n")
+    with pytest.raises(SignalFileError, match=r"line 5 has the byte\(s\) 0xE9 \('é' in "
+                       r"Windows-1252\) in \"2,caf\\xe9\""):
+        load_csv(path)
+
+
+@pytest.mark.parametrize(
+    ("encoding", "name"), [("utf-16", "UTF-16 LE"), ("utf-16-be", "UTF-16 BE"),
+                           ("utf-32", "UTF-32 LE")],
+)
+def test_utf16_and_utf32_files_are_named_by_their_bom(
+    tmp_path: Path, encoding: str, name: str
+) -> None:
+    path = tmp_path / "u.csv"
+    data = LEGACY_TEXT.encode(encoding)
+    if encoding == "utf-16-be":
+        data = b"\xfe\xff" + data
+    path.write_bytes(data)
+    with pytest.raises(SignalFileError, match=(
+        f"not UTF-8, the only encoding read: the file starts with a {name} byte-order mark, "
+        f"so it is {name}; re-save it as \"CSV UTF-8\""
+    )):
+        load_csv(path)
+
+
+def test_utf8_with_bom_and_crlf_and_non_ascii_names_still_read(tmp_path: Path) -> None:
+    path = tmp_path / "Mätdata (°C).csv"
+    path.write_bytes(b"\xef\xbb\xbf" + LEGACY_TEXT.encode("utf-8"))
+    sf = load_csv(path)
+    assert sf.time_column == "time" and sf.signal_columns == ("value (°C)",)
+
+
 # --------------------------------------------------------------------------
 # Header line, preamble hint and ISO 8601 date-time time columns
 # --------------------------------------------------------------------------

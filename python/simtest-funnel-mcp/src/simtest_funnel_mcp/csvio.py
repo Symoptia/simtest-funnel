@@ -19,7 +19,12 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from simtest_funnel_mcp.reader import ISO_DATETIME, CsvFormatError, read_signal_columns
+from simtest_funnel_mcp.reader import (
+    ISO_DATETIME,
+    CsvEncodingError,
+    CsvFormatError,
+    read_signal_columns,
+)
 
 #: How the time column was chosen.
 RULE_NAMED = "named time"
@@ -265,6 +270,8 @@ def load_csv(
 
     try:
         table = read_signal_columns(str(path), header_line)
+    except CsvEncodingError as exc:
+        raise SignalFileError(f"{path}: {exc}") from exc
     except CsvFormatError as exc:
         raise fail(f"{path}: {exc}") from exc
     except (pd.errors.ParserError, UnicodeDecodeError, OSError) as exc:

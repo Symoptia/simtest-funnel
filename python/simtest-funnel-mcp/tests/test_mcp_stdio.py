@@ -113,8 +113,9 @@ def test_stdio_end_to_end(demo_reference: Path, demo_test: Path, tmp_path: Path)
     assert all(len(r["intervals"]) <= 2 for r in fails)
     assert d["snippet"].startswith('"""Funnel comparison reproduced')
     assert "PASS [loose]: x, y" in compare.content[0].text
-    # Raw samples never cross the wire (the snippet embeds the ~11 kB CSV reader).
-    assert len(json.dumps(d)) < 18_000
+    # Raw samples never cross the wire (the snippet embeds the ~13.5 kB CSV
+    # reader, which includes the UTF-8 check with its error message).
+    assert len(json.dumps(d)) < 22_000
 
     assert out["outside"].is_error
     assert "outside the client's workspace roots" in out["outside"].content[0].text

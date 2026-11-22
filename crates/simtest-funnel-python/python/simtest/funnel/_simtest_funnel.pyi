@@ -47,7 +47,7 @@ class ComparisonTimeout(ComparisonCancelled):
 
 
 def version() -> str:
-    """Return the crate version string."""
+    """Return the Rust core crate's version string (SemVer)."""
     ...
 
 

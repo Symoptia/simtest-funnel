@@ -205,19 +205,6 @@ def tools() -> dict[str, Any]:
     return {t.name: t for t in asyncio.run(run())}
 
 
-def strict_schema(schema: Any) -> Any:
-    """``schema`` with ``additionalProperties: false`` on every object that
-    lists properties, so an unknown (e.g. renamed) argument fails."""
-    if isinstance(schema, dict):
-        out = {k: strict_schema(v) for k, v in schema.items()}
-        if "properties" in out and "additionalProperties" not in out:
-            out["additionalProperties"] = False
-        return out
-    if isinstance(schema, list):
-        return [strict_schema(v) for v in schema]
-    return schema
-
-
 def property_names(schema: Any) -> set[str]:
     names: set[str] = set()
     if isinstance(schema, dict):
@@ -423,7 +410,9 @@ def test_tool_calls_match_the_input_schemas() -> None:
     assert {c.tool for c in calls} == set(tools()), "every tool has an example"
     for call in calls:
         assert call.tool in tools(), f"{call.block.where}: unknown tool {call.tool}"
-        schema = strict_schema(tools()[call.tool].input_schema)
+        # The input schemas refuse unknown names (additionalProperties:
+        # false), so a renamed argument in an example fails here.
+        schema = tools()[call.tool].input_schema
         errors = sorted(
             jsonschema.Draft202012Validator(schema).iter_errors(call.args), key=str
         )
@@ -436,9 +425,7 @@ def test_tool_calls_match_the_input_schemas() -> None:
 def test_inline_names_exist(path: Path) -> None:
     options = server_options()
     statuses = {s.name for s in funnel.Status}
-    tolerance_schema = strict_schema(
-        tools()["compare_signals"].input_schema["$defs"]["ToleranceSet"]
-    )
+    tolerance_schema = tools()["compare_signals"].input_schema["$defs"]["ToleranceSet"]
     for code in inline_code(path):
         where = f"{rel(path)}: `{code}`"
         if re.fullmatch(r"\w+_signals", code):
@@ -562,6 +549,17 @@ def test_results_example_matches_the_open_meteo_numbers() -> None:
     ) in flat
     assert f"up to {max(deviations):g} °C beyond the band" in flat
     assert f"up to {abs(min(deviations)):g} °C beyond the band" in flat
+    worst = day3["worst"]
+    assert worst["deviation"] == min(deviations)
+    assert (
+        f"up to {abs(worst['deviation']):g} °C beyond the band, "
+        f"{abs(worst['difference']):g} °C below the latest run at {worst['x_iso'][11:16]}"
+    ) in flat
+    skill = flatten(SKILL_MD.read_text("utf-8"))
+    assert (
+        f"\"{abs(worst['deviation']):g} °C beyond the band, {abs(worst['difference']):g} °C "
+        "below the reference\""
+    ) in skill
     sweep = rows(run_example("references/example-open-meteo.md", 2))
     assert sweep[("day3", "3C_3h")]["verdict"] == "pass" and "passes with ±3 °C and ±3 h" in flat
 

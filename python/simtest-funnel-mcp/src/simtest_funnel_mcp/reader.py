@@ -9,6 +9,8 @@
 # since the Unix epoch (a cell without offset is read as UTC). A data row with
 # more fields than the header is an error. A trailing delimiter on every line,
 # header included, is accepted: the trailing unnamed, empty column is dropped.
+# The file must be UTF-8 (a UTF-8 byte-order mark is skipped); any other
+# encoding is refused with the line and bytes at fault.
 import csv
 import io
 import re
@@ -30,6 +32,51 @@ _EOL = re.compile(rb"\r\n|\r|\n")
 
 class CsvFormatError(ValueError):
     """The file is not a usable signal CSV (message names the problem)."""
+
+
+class CsvEncodingError(CsvFormatError):
+    """The file is not UTF-8 (message names the line, the bytes and the fix)."""
+
+
+_UTF8_FIX = (
+    're-save it as "CSV UTF-8" (in Excel: Save As, "CSV UTF-8 (Comma delimited)") or '
+    "convert it to UTF-8"
+)
+_BOMS = (
+    (b"\xff\xfe\x00\x00", "UTF-32 LE"),
+    (b"\x00\x00\xfe\xff", "UTF-32 BE"),
+    (b"\xff\xfe", "UTF-16 LE"),
+    (b"\xfe\xff", "UTF-16 BE"),
+)
+
+
+def check_utf8(raw: bytes) -> None:
+    """Raise :class:`CsvEncodingError` unless ``raw`` is UTF-8."""
+    for bom, name in _BOMS:
+        if raw.startswith(bom):
+            raise CsvEncodingError(
+                f"not UTF-8, the only encoding read: the file starts with a {name} byte-order "
+                f"mark, so it is {name}; {_UTF8_FIX}"
+            )
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        start = max(raw.rfind(b"\n", 0, exc.start), raw.rfind(b"\r", 0, exc.start)) + 1
+        m = _EOL.search(raw, exc.start)
+        end = len(raw) if m is None else m.start()
+        col = exc.start - start
+        context = raw[start:end][max(0, col - 40):col + 40].decode("utf-8", "backslashreplace")
+        bad = raw[exc.start:exc.end]
+        try:
+            legacy = f" ({bad.decode('cp1252')!r} in Windows-1252)"
+        except UnicodeDecodeError:
+            legacy = ""
+        raise CsvEncodingError(
+            f"not valid UTF-8, the only encoding read: line {len(_EOL.findall(raw, 0, start)) + 1} "
+            f"has the byte(s) {' '.join(f'0x{b:02X}' for b in bad)}{legacy} in \"{context}\". "
+            "The file was probably saved in a legacy code page such as Windows-1252 (e.g. "
+            f'Excel\'s plain "CSV (Comma delimited)" format); {_UTF8_FIX}'
+        ) from None
 
 
 class SignalTable(NamedTuple):
@@ -136,6 +183,7 @@ def read_signal_columns(path: str, header_line: int = 1) -> SignalTable:
         raw = fh.read()
     if raw.startswith(b"\xef\xbb\xbf"):
         raw = raw[3:]
+    check_utf8(raw)
     start = 0
     for _ in range(header_line - 1):  # skip physical lines before header_line, unread
         m = _EOL.search(raw, start)

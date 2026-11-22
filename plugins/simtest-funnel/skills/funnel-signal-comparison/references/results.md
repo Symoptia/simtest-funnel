@@ -46,9 +46,8 @@ the call with `columns`.
 | File cannot be read | Wrong header line, not UTF-8, not comma-separated | `header_line` from the hint; ask for a UTF-8 CSV export |
 
 A coverage error is reported only when the overlap passes. If the overlap
-fails, the row is a plain `fail` and nothing in it says that the spans
-differ; that is one reason to describe both files first and compare their
-time spans yourself.
+fails, the row is a plain `fail`; a note then says that the spans differ
+and gives the `x_range` of the overlap. Say that the rest was not compared.
 
 ## Explaining a failure
 
@@ -57,11 +56,14 @@ For each failing row, say:
 1. **How much.** `points_outside` of `points_compared` and the share of the
    time span outside. With uneven sampling (dense output around events) the
    two shares differ; the span share says "how much of the time".
-2. **How far and which way.** The worst deviation is the distance beyond
-   the tube's edge at the worst point: positive = test above the tube,
-   negative = below. Add `tube_half_width_y` to get roughly how far the test
-   is from the reference there. Translate it into the user's terms: "up to
-   1.2 °C beyond the 2 °C band, so about 3.2 °C warmer than the reference".
+2. **How far and which way.** `deviation` is the distance beyond the
+   tube's edge at the worst point: positive = test above the tube,
+   negative = below. `difference` is how far the test is from the reference
+   there (test minus reference), and `worst_difference` the same at each
+   interval's worst point. `tube_half_width_y` is the band's half-width
+   there; it is wider than `atoly` where a time tolerance widens the tube.
+   Translate into the user's terms: "up to 1.2 °C beyond the band, 3.4 °C
+   warmer than the reference".
 3. **Where.** The intervals give start, end, direction, point count and
    worst deviation. Name the largest one or two with their times;
    `interval_count` says how many there are in total.
@@ -76,7 +78,7 @@ For each failing row, say:
 | All intervals in one direction, spread over the record | Offset or bias | Worst deviation is similar everywhere |
 | One long interval | An event or regime the test handles differently | Zoom with `x_range`, plot that row |
 | Many short intervals in both directions | Noise or a slightly different oscillation | Compare the value tolerance with the noise level |
-| Misses only at the start or end | Initial conditions, start-up, end effects | Ask whether that window should count |
+| Misses only at the start or end | Initial conditions, start-up, end effects; with a time tolerance, a delay the tube cannot cover at the first sample (or an advance at the last) | The edge note; ask whether that window should count, then exclude it with `x_range` |
 
 These are hypotheses. Phrase them as "likely" or "consistent with", and say
 what would confirm them.
@@ -120,6 +122,6 @@ Example, from the worked forecast comparison on the bundled weather file
 > ±3 h: 14 of 360 hourly points (3.9 % of the time) lie outside. The misses
 > are on 16 November (forecast too warm, up to 0.7 °C beyond the band) and
 > in the early hours of 19 November (too cold, up to 0.9 °C beyond the
-> band). It passes with ±3 °C and ±3 h. The reference is a model run, not a
+> band, 3 °C below the latest run at 04:00). It passes with ±3 °C and ±3 h. The reference is a model run, not a
 > measurement, so this says how much the forecast changed, not how good it
 > was.

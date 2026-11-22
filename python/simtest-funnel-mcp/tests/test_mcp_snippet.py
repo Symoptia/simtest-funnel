@@ -278,3 +278,30 @@ def test_snippet_of_two_files_with_different_header_lines(
     proc = _run_snippet(snippet, tmp_path, data_root=tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "2 passed" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("encoding", "expected"),
+    [
+        ("cp1252", "not valid UTF-8, the only encoding read: line 1 has the byte(s) 0xB0"),
+        ("utf-16", "not UTF-8, the only encoding read: the file starts with a UTF-16 LE "
+                   "byte-order mark"),
+    ],
+)
+def test_snippet_reader_refuses_a_non_utf8_file_with_the_same_message(
+    write_csv: WriteCsv, tmp_path: Path, encoding: str, expected: str
+) -> None:
+    text = "time,value (°C)\n0,1\n1,2\n2,3\n"
+    ref = write_csv("ref.csv", text)
+    tst = write_csv("tst.csv", text)
+    d = structured(
+        compare_signals_impl(str(ref), str(tst), [], tolerances=[LOOSE], include_snippet=True)
+    )
+    # The file is re-saved in a legacy code page after the snippet was made.
+    ref.write_bytes(text.encode(encoding))
+    proc = _run_snippet(d["snippet"], tmp_path)
+    assert proc.returncode != 0
+    out = proc.stdout + proc.stderr
+    assert f"{ref}: {expected}" in out
+    assert 're-save it as "CSV UTF-8"' in out
+    assert "codec can't decode" not in out

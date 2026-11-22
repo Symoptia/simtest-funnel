@@ -113,13 +113,26 @@ directory must exist. Without either, use the inline preview.
 
 ## Platform notes
 
-<!-- PLATFORM NOTES: to be completed from the Windows field test report.
-     Keep only verified facts here. -->
-
 - Prebuilt wheels exist for Linux, macOS and Windows; Python 3.11 or later
   (uv installs one if needed).
 - Windows on ARM64: the server needs an x64 Python, which is what uv
   installs there by default. With a native ARM64 Python a dependency has no
   prebuilt wheel.
 - CSV files must be UTF-8. A file saved with Excel's plain "CSV" format on
-  Windows (Windows-1252) fails to read; ask for "CSV UTF-8" instead.
+  Windows (Windows-1252) is refused with the line and byte at fault; ask
+  for "CSV UTF-8" instead. UTF-8 files with a byte-order mark and CRLF line
+  ends read correctly.
+
+Windows 11 x64 (field test with uv and Claude Code):
+
+- The server works with `uvx`. The first start took about 27 s (uv
+  downloads about 43 packages); later starts take about 2 s.
+- Paths with spaces and non-ASCII characters work, for input files and
+  output directories.
+- Claude Code in VS Code: a server added with the default local scope may
+  not appear, because the stored project path can differ from the
+  session's in the case of the drive letter (`C:` against `c:`). Adding it
+  with `--scope user` works.
+- With only the VS Code extension installed, the `claude` command may not
+  be on `PATH`; use a terminal where it is, or the CLI bundled with the
+  extension.

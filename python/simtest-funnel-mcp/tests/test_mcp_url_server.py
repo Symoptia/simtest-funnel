@@ -470,3 +470,16 @@ def test_network_off_server_matches_the_module_constants() -> None:
     assert tools["describe_signals"].description == server_module.DESCRIBE_DESCRIPTION
     assert tools["plot_signals"].description == server_module.PLOT_DESCRIPTION
     assert mcp.instructions == server_module.INSTRUCTIONS
+
+
+def test_non_utf8_url_content_gets_the_encoding_message(
+    https_server: TestServer, net: Network
+) -> None:
+    https_server.routes.routes["/legacy.csv"] = body("time,value (°C)\n0,1\n1,2\n".encode("cp1252"))
+    url = https_server.url("/legacy.csv")
+    result = _call(build_server(net), "describe_signals", {"path": url})
+    assert result.is_error
+    text = result.content[0].text
+    assert f"{url}: not valid UTF-8, the only encoding read: line 1 has the byte(s) 0xB0" in text
+    assert "Windows-1252" in text and 're-save it as "CSV UTF-8"' in text
+    assert "simtest-funnel-mcp-" not in text  # the local cache path is never shown

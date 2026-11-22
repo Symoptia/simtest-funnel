@@ -61,7 +61,10 @@ _FOOTER = '''\
 
 @functools.lru_cache(maxsize=None)
 def _columns(path: Path, header_line: int) -> dict:
-    return read_signal_columns(str(path), header_line).values
+    try:
+        return read_signal_columns(str(path), header_line).values
+    except CsvFormatError as exc:
+        raise CsvFormatError(f"{path}: {exc}") from None
 
 
 @pytest.mark.parametrize(
