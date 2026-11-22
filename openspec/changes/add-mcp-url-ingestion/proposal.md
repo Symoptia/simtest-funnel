@@ -52,12 +52,18 @@ non-commercial use only and is limited to fewer than 10,000 calls a day
   - no credentials are sent: no cookies, no `Authorization` header, no
     `.netrc`; URLs with a user name or password are refused; a generic
     `User-Agent` naming the server and its version.
-- **On-disk cache**: a fetched URL is stored in the user's cache
-  directory; repeated calls with the same URL do not fetch again, and
-  within one server session a URL always gives the same content, so
-  results are reproducible across calls. Results name the URL, when it
-  was fetched, its size and a content hash, so a verdict states exactly
-  what was compared. The cache has a size limit.
+- **Cache for the life of the server process only**: the first call
+  that uses a URL fetches it; later calls in the same server process
+  reuse that copy, so within one process a URL always gives the same
+  content and results are reproducible across calls. The copies live in
+  a private temporary directory that is removed when the server stops
+  (also on abnormal exit as far as practical). There is no cache across
+  sessions, no revalidation and no offline mode serving cached copies.
+  Results name the URL, when it was fetched, its size and its SHA-256,
+  so a verdict states exactly what was compared.
+- **Fetching counts against the per-call time limit** of
+  `add-cancellation` (60 s by default); a cancelled or timed-out call
+  leaves no partial cache entry.
 - **Network access is off by default**: a plain install keeps the
   existing "local files only" guarantee. The user enables fetching when
   starting the server with `--allow-network` or the environment variable
@@ -65,8 +71,7 @@ non-commercial use only and is limited to fewer than 10,000 calls a day
   hosts with a repeatable `--allow-host HOST` (also
   `SIMTEST_FUNNEL_MCP_ALLOW_HOSTS`, comma-separated); `--allow-host`
   implies `--allow-network`. With network access off, a URL argument is
-  refused with a message naming the option and the environment variable
-  (whether cached copies are still served then is settled in design).
+  refused with a message naming the option and the environment variable.
   The tool annotations state the server may reach the network only when
   fetching is enabled.
 - **Direct connections only**: the first version connects directly to
@@ -108,6 +113,8 @@ Explicitly out of scope:
 - Plain `http://` and `file://` URLs.
 - Proxy support (`HTTPS_PROXY` and similar); a later change may add it
   with the address check applied appropriately.
+- A persistent cache (across server processes), revalidation and an
+  offline mode serving cached copies.
 - An example gallery beyond the Open-Meteo example.
 
 ## Capabilities
@@ -126,72 +133,68 @@ Explicitly out of scope:
 ### Modified Capabilities
 
 - `mcp-server`: "Stateless file access" today forbids network
-  connections and any file write except plot files; it changes to allow
-  fetching (only when enabled at start-up) and writing the URL cache. Tool annotations
-  change from closed-world when fetching is enabled. Workspace roots
-  keep applying to local paths only. The snippet's handling of URL
-  inputs is added.
+  connections, any state between calls and any file write except plot
+  files; it changes to allow fetching (only when enabled at start-up)
+  and the process-lifetime URL cache. The tool annotations become
+  open-world when fetching is enabled. Workspace roots keep applying to
+  local paths only. The time limit covers fetching, and fetching is
+  stopped at the deadline. The snippet's handling of URL inputs is
+  added.
 - `mcp-plots`: `plot_signals` accepts URLs for its input files;
-  output-path rules unchanged.
+  output-path rules unchanged (local only, checked before any fetch);
+  annotations as for the other tools.
 
 ## Impact
 
-- `python/simtest-funnel-mcp`: a new fetch/cache module, `csvio.py`
-  (input from a fetched file), `server.py` (arguments, start-up options,
-  annotations, descriptions), `snippet.py`, README; a new HTTP client
-  dependency unless the standard library suffices (decided in design).
-- Repository: the bundled sample CSV and its attribution (location to be
-  chosen, e.g. an `examples/` folder), included in the package or only
-  in the repository.
+- `python/simtest-funnel-mcp`: a new fetch/cache module, `csvio.py` and
+  `server.py` path handling (a URL is fetched to the cache and then read
+  like a local file), `server.py` (start-up options, annotations,
+  descriptions, `describe_signals` run off the event loop), `models.py`
+  (source information), `snippet.py`, README. No new installed package:
+  the standard library does the fetching (design.md, decision 2).
+- Repository: the bundled sample in `examples/open-meteo/` with its
+  attribution, in the repository only, not in the published wheel or
+  sdist (design.md, decision 12).
 - **Depends on `add-mcp-column-mapping-and-formats`**: the Open-Meteo CSV
   has a metadata preamble, ISO 8601 times and reference/test as
   differently named columns in one file.
 - **Relation to `add-cancellation`**: that change gives `compare_signals`
   and `plot_signals` a per-call time limit (60 s by default) but leaves
-  CSV reading uncancellable. Fetch time counts toward the call, so the
-  fetch timeout must stay well below the per-call limit, and a
-  cancelled or timed-out call must not leave a partial file in the
-  cache.
+  CSV reading uncancellable. Fetch time counts toward the call and the
+  fetch is stopped at the deadline; the fetch timeout stays below the
+  default call limit; a cancelled or timed-out call leaves no partial
+  file and no entry in the cache.
 - Security posture of the server changes only when the user opts in:
   with `--allow-network` it can send GET requests chosen by the model.
   The README documents this, the option, the host allow-list (a
   model-chosen URL can carry data in its query string) and the address
   restrictions.
-- Open points for design:
-  - **Cache lifetime.** Session-pinned only (fetch once per server
-    session), or persistent across sessions with a maximum age and/or
-    conditional revalidation (`ETag` / `Last-Modified`); whether a call
-    can force a refresh; cache location and size limit.
-  - **Offline mode and the cache.** When network access is off, serve
-    URLs already in the cache or refuse every URL.
-  - **Limits.** Default size cap (for example 20 MB) and timeouts
-    (connect and total, below the 60 s call limit); redirect hop count;
-    accepted content types (`text/csv`, `text/plain`,
-    `application/csv`, `application/octet-stream`?).
-  - **Snippets for URL inputs.** Embed the URL (CI needs network and the
-    content may change), embed the URL plus the content hash and fail
-    clearly on a mismatch, or advise vendoring the file.
-  - **Sample details.** Which Open-Meteo weather model to pin (one
-    whose upstream source is CC BY 4.0, rather than the default
-    best-match blend, keeps attribution simple), `timeformat` ISO 8601
-    (exercises the date-time support) versus `unixtime`, GMT versus a
-    local time zone (Open-Meteo ignores daylight-saving changes in ISO
-    local times), and whether the bundled file is kept byte-identical to
-    the API response with the attribution in an adjacent file.
-  - **HTTP client.** Standard library versus a dependency such as
-    `httpx`, given the need to pin the connection to the checked
-    address.
+- The remaining details (limits, address check and HTTP client,
+  concurrency, snippets, interactions with `header_line` / `pairs` /
+  `output_path`, annotations, what `describe_signals` shows, sample
+  details) are worked out in design.md, each marked as a design choice
+  not yet confirmed by the owner.
 
 ## Decisions
 
-Decided by the owner:
+Decided by the owner (binding for design and specs):
 
-- **Network access off by default.** Enabled at start-up with
-  `--allow-network` / `SIMTEST_FUNNEL_MCP_ALLOW_NETWORK` (names
-  proposed), optionally restricted with a repeatable `--allow-host`.
-  With network off, URL arguments are refused with a message naming the
-  option. A plain install keeps the "local files only" guarantee.
-- **No proxies in the first version.** Direct connections only; proxy
-  environment variables are ignored; on failure the message says
-  proxies are not supported yet and suggests downloading the file and
-  passing the local path.
+1. **Network access off by default.** Enabled at start-up with
+   `--allow-network` / `SIMTEST_FUNNEL_MCP_ALLOW_NETWORK`, optionally
+   restricted with a repeatable `--allow-host`. With network off, URL
+   arguments are refused with a message naming the option. A plain
+   install keeps the "local files only" guarantee.
+2. **No proxies in the first version.** Direct connections only; proxy
+   environment variables are ignored; on failure the message says
+   proxies are not supported yet and suggests downloading the file and
+   passing the local path.
+3. **Cache for the life of the server process only.** The first use of
+   a URL fetches it; later calls in the same process reuse that copy;
+   the cache is removed when the server stops (and cleaned up on
+   abnormal exit as far as practical; design.md says what happens to
+   leftovers). No cross-session cache, no revalidation, no offline mode
+   serving cached copies. Results report the URL, fetch time, size and
+   SHA-256.
+4. **Fetching counts against the per-call `time_limit`** (60 s default)
+   of `add-cancellation`; a cancelled or timed-out call leaves no
+   partial cache entry.
