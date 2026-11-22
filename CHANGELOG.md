@@ -1,3 +1,10 @@
+# [1.0.0-beta.16](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.15...v1.0.0-beta.16) (2026-11-22)
+
+
+### Features
+
+* **core:** default to no x tolerance ([1f12013](https://github.com/Symoptia/simtest-funnel/commit/1f120135ccf22dd8e16ddc2548a0d08303247c4c))
+
 # [1.0.0-beta.15](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.14...v1.0.0-beta.15) (2026-11-22)
 
 
