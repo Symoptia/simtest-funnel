@@ -18,3 +18,4 @@ output.txt
 
 # Files for manual tests on other machines (copied out and back by hand)
 windows-handover/
+plugins/simtest-funnel/evals/results/

@@ -103,7 +103,9 @@ listing truncates):
 
 Frontmatter: `name`, `description`, `license: MIT`, `compatibility`
 ("Requires the simtest-funnel MCP server (uvx simtest-funnel-mcp)") and
-`metadata` (`version`, `repository`). Claude-Code-only keys (`when_to_use`,
+`metadata` (`version`, `repository`; `version` is added with the release
+coupling of §6, so that it cannot lag the release). The description is
+written without `: ` so that it stays a plain YAML scalar. Claude-Code-only keys (`when_to_use`,
 `allowed-tools`, `paths`) are not used, so the same folder uploads to
 claude.ai.
 

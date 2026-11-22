@@ -46,4 +46,7 @@ dev = [
     "pdoc>=14",
     # Test certificates for the local HTTPS server of the URL-fetch tests.
     "cryptography",
+    # Validates the agent skill's tool-call examples (test_mcp_skill.py);
+    # also pulled in by mcp.
+    "jsonschema>=4",
 ]
