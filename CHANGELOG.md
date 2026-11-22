@@ -1,3 +1,16 @@
+# [1.0.0-beta.19](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.18...v1.0.0-beta.19) (2026-11-22)
+
+
+### Bug Fixes
+
+* **core:** extend x-range windows until the tube provably equals the full-range one ([29e47ba](https://github.com/Symoptia/simtest-funnel/commit/29e47ba4a9cf9a649e7fcaecd49fdb8df3f9dced))
+* **mcp:** address step-9 review findings in fetching, pairs, parsing and snippets ([3432dd2](https://github.com/Symoptia/simtest-funnel/commit/3432dd280ea3251dbd5d6f3b7aea89a2c6108148))
+
+
+### Features
+
+* **demo:** add a real-weather tab comparing Open-Meteo forecasts with the latest run ([d5f772c](https://github.com/Symoptia/simtest-funnel/commit/d5f772cdcdcc88277f72859fd0074c238477bbf3))
+
 # [1.0.0-beta.18](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.17...v1.0.0-beta.18) (2026-11-22)
 
 

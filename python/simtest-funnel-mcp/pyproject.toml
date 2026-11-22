@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simtest-funnel-mcp"
-version = "1.0.0-beta.18"
+version = "1.0.0-beta.19"
 description = "Local MCP server for funnel (tolerance-tube) comparison of signals in CSV files"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Symoptia contributors" }]
 dependencies = [
     "mcp>=2.3,<3",
-    "simtest-funnel==1.0.0-beta.18",
+    "simtest-funnel==1.0.0-beta.19",
     "numpy>=1.26",
     "pandas>=2",
     "matplotlib>=3.8",
