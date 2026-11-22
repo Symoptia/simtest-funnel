@@ -8,6 +8,7 @@ import os
 import stat
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -262,3 +263,78 @@ def test_an_unused_cache_creates_nothing(tmp_path: Path, certs: Certs,
 def test_size_cap_bounds_the_total(certs: Certs) -> None:
     cfg = FetchConfig(allow_network=True, max_download_mb=1.5)
     assert UrlCache(test_fetcher(certs, cfg)).max_total_bytes == 15_000_000
+
+
+def _wait_until(cond: Callable[[], bool], timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+def test_bytes_of_a_download_in_progress_count_toward_the_bound(
+    https_server: TestServer, certs: Certs
+) -> None:
+    """The bound covers the copies plus what downloads in progress have
+    written: a cached copy is dropped before the new download completes."""
+    cache = UrlCache(test_fetcher(certs), max_total_bytes=24)
+    stop = threading.Event()
+    try:
+        https_server.routes.routes["/a.csv"] = body(CSV)  # 16 bytes
+        https_server.routes.routes["/slow.csv"] = slow(CSV2, 0.05, stop=stop)
+        a = _get(cache, https_server.url("/a.csv"))
+        t = threading.Thread(target=_get, args=(cache, https_server.url("/slow.csv")))
+        t.start()
+        # 16 cached + 9 written > 24: /a.csv goes while /slow.csv still arrives.
+        assert _wait_until(lambda: not a.entry.file.exists())
+        with cache._lock:
+            written = sum(cache._in_flight.values())
+        assert t.is_alive() and 9 <= written < len(CSV2)
+        assert cache.entries() == []
+        t.join()
+        assert [e.url.rsplit("/", 1)[1] for e in cache.entries()] == ["slow.csv"]
+    finally:
+        stop.set()
+        cache.cleanup()
+
+
+def test_downloads_at_once_are_limited(
+    https_server: TestServer, certs: Certs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import simtest_funnel_mcp.urlcache as urlcache
+
+    monkeypatch.setattr(urlcache, "MAX_IN_FLIGHT", 1)
+    cache = UrlCache(test_fetcher(certs))
+    stop = threading.Event()
+    try:
+        https_server.routes.routes["/slow.csv"] = slow(CSV, 0.02, stop=stop)
+        https_server.routes.routes["/b.csv"] = body(CSV2)
+        t = threading.Thread(target=_get, args=(cache, https_server.url("/slow.csv")))
+        t.start()
+        assert _wait_until(lambda: bool(cache._in_flight))
+        with pytest.raises(FetchError, match="other URLs are being downloaded right now"):
+            _get(cache, https_server.url("/b.csv"))
+        t.join()
+        # Afterwards the next download runs.
+        assert _get(cache, https_server.url("/b.csv")).entry.file.read_bytes() == CSV2
+    finally:
+        stop.set()
+        cache.cleanup()
+
+
+def test_remembered_hashes_are_bounded(
+    https_server: TestServer, certs: Certs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import simtest_funnel_mcp.urlcache as urlcache
+
+    monkeypatch.setattr(urlcache, "MAX_SEEN", 2)
+    cache = UrlCache(test_fetcher(certs))
+    try:
+        for name in ("a", "b", "c"):
+            https_server.routes.routes[f"/{name}.csv"] = body(CSV)
+            _get(cache, https_server.url(f"/{name}.csv"))
+        assert [u.rsplit("/", 1)[1] for u in cache._seen] == ["b.csv", "c.csv"]
+    finally:
+        cache.cleanup()

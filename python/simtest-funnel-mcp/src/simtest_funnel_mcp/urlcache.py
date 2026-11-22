@@ -12,9 +12,11 @@ The directory is created on the first fetch and removed at exit.
 - One fetch per URL at a time (single flight): a second call waits for the
   running fetch within its own time limit and cancellation, and fetches
   itself if that fetch failed.
-- The total size is bounded (10 x the size cap by default); least recently
-  used copies not in use are dropped, and their hashes remembered: a dropped
-  URL fetched again must have the same SHA-256.
+- The total size is bounded (10 x the size cap by default), counting the
+  bytes already written by downloads in progress; least recently used copies
+  not in use are dropped, and their hashes remembered (the last
+  :data:`MAX_SEEN` URLs): a dropped URL fetched again must have the same
+  SHA-256. At most :data:`MAX_IN_FLIGHT` downloads run at once.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 
 from simtest_funnel_mcp.fetch import (
     Cancellable,
@@ -49,6 +52,11 @@ DIR_PREFIX = "simtest-funnel-mcp-"
 TOTAL_FACTOR = 10
 #: How often a call waiting for another call's fetch checks its own limits.
 WAIT_SLICE = 0.1
+#: Downloads running at once at most (each at most the size cap, so together
+#: at most the default total bound).
+MAX_IN_FLIGHT = TOTAL_FACTOR
+#: URLs whose hash is remembered after their copy was dropped.
+MAX_SEEN = 4096
 
 
 @dataclass(frozen=True)
@@ -96,8 +104,12 @@ class UrlCache:
         self._index: OrderedDict[str, CacheEntry] = OrderedDict()
         self._pins: dict[str, int] = {}
         self._flights: dict[str, _Flight] = {}
-        #: Hash and fetch time of every URL ever cached (survives eviction).
-        self._seen: dict[str, tuple[str, str]] = {}
+        #: Hash and fetch time of the last :data:`MAX_SEEN` URLs cached
+        #: (survives eviction).
+        self._seen: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        #: Bytes written so far by each download in progress.
+        self._in_flight: dict[int, int] = {}
+        self._next_flight = 0
         self._dir: Path | None = None
         self._closed = False
 
@@ -229,13 +241,22 @@ class UrlCache:
         gate: AbstractContextManager[object] | None,
     ) -> CacheEntry:
         directory = self._ensure_dir()
+        with self._lock:
+            if len(self._in_flight) >= MAX_IN_FLIGHT:
+                raise FetchError(
+                    f"{len(self._in_flight)} other URLs are being downloaded right now (at most "
+                    f"{MAX_IN_FLIGHT} at once); try {url.host} again when they have finished"
+                )
+            flight = self._next_flight
+            self._next_flight += 1
+            self._in_flight[flight] = 0
         part = directory / f"{secrets.token_hex(8)}.part"
         final = directory / f"{_url_hash(url.url)}.csv"
         try:
             with open(part, "xb") as fh:
                 result = self.fetcher.fetch(
-                    url, fh, cancel=cancel, call_deadline=call_deadline,
-                    call_limit_text=call_limit_text,
+                    url, _CountedFile(fh, self, flight), cancel=cancel,
+                    call_deadline=call_deadline, call_limit_text=call_limit_text,
                 )
             with self._lock:
                 seen = self._seen.get(url.url)
@@ -267,20 +288,40 @@ class UrlCache:
                         file=final,
                     )
                     self._index[url.url] = entry
-                    self._seen[url.url] = (entry.sha256, entry.fetched_at)
+                    self._in_flight.pop(flight, None)  # now counted as an entry
+                    self._remember(url.url, entry.sha256, entry.fetched_at)
                     self._pins[url.url] = self._pins.get(url.url, 0) + 1
                     self._evict()
             return entry
         except OSError as exc:
             raise FetchError(f"cannot store the copy of {url.url}: {exc}") from None
         finally:
+            with self._lock:
+                self._in_flight.pop(flight, None)
             with contextlib.suppress(OSError):
                 part.unlink()
 
+    def _remember(self, url: str, sha256: str, fetched_at: str) -> None:
+        """Record the hash of ``url``, forgetting the oldest beyond
+        :data:`MAX_SEEN` (caller holds the lock)."""
+        self._seen[url] = (sha256, fetched_at)
+        self._seen.move_to_end(url)
+        while len(self._seen) > MAX_SEEN:
+            self._seen.popitem(last=False)
+
+    def _count(self, flight: int, n: int) -> None:
+        """``n`` more bytes written by download ``flight``; evict to stay
+        within the bound."""
+        with self._lock:
+            if flight in self._in_flight:
+                self._in_flight[flight] += n
+                self._evict()
+
     def _evict(self) -> None:
-        """Drop least recently used, unpinned copies over the size bound
-        (caller holds the lock)."""
-        total = sum(e.size for e in self._index.values())
+        """Drop least recently used, unpinned copies while the copies plus the
+        bytes of downloads in progress exceed the size bound (caller holds the
+        lock)."""
+        total = sum(e.size for e in self._index.values()) + sum(self._in_flight.values())
         for key in list(self._index):
             if total <= self.max_total_bytes:
                 break
@@ -296,6 +337,21 @@ class UrlCache:
     def entries(self) -> list[CacheEntry]:
         with self._lock:
             return list(self._index.values())
+
+
+class _CountedFile:
+    """The ``.part`` file of a download, counting what is written toward the
+    cache bound."""
+
+    def __init__(self, fh: BinaryIO, cache: UrlCache, flight: int) -> None:
+        self._fh = fh
+        self._cache = cache
+        self._flight = flight
+
+    def write(self, data: bytes, /) -> int:
+        n = self._fh.write(data)
+        self._cache._count(self._flight, len(data))
+        return n
 
 
 def _url_hash(url: str) -> str:

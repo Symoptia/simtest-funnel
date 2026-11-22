@@ -127,14 +127,17 @@ _URL_BLOCK = """\
 # DATA_ROOT, and check its SHA-256; they never use the network unless
 # {env}=1 is set, which downloads a missing copy once (then commit it).
 {name} = DATA_ROOT / {local!r}
-{name}_URL = {url!r}
+{name}_URL = {url!r}{download_comment}
+{name}_DOWNLOAD_URL = {download_url!r}
 {name}_SHA256 = {sha256!r}
 {name}_SIZE = {size!r}"""
 
 _URL_CHECK = '''
 
-# Local copies of URL inputs: (path, URL, SHA-256, size).
+# Local copies of URL inputs: (path, URL, download URL, SHA-256, size).
 DOWNLOAD_ENV = {env!r}
+# Seconds a whole opt-in download may take.
+DOWNLOAD_DEADLINE = 300
 URL_INPUTS = [{inputs}]
 
 
@@ -149,29 +152,46 @@ def _sha256(path: Path) -> str:
 
 
 def _download(path: Path, url: str, sha256: str, size: int) -> None:
-    """Opt-in ({env}=1): download a missing copy; keep it only when it is
-    exactly the data the server compared (never replaces an existing file)."""
+    """Opt-in ({env}=1): download a missing copy from ``url`` (the address the
+    server finally read) and keep it only when it is exactly the data the
+    server compared. Redirects are not followed (checking where they lead is
+    more than a few standard-library lines); the whole download must finish
+    within DOWNLOAD_DEADLINE seconds; the body is asked for uncompressed, so
+    the hash is of the bytes received; the copy is put in place with an
+    exclusive hard link (or exclusive create), never replacing a file."""
     import hashlib
+    import shutil
     import tempfile
+    import time
     import urllib.request
 
-    class HttpsOnly(urllib.request.HTTPRedirectHandler):
+    class NoRedirects(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
-            if not newurl.startswith("https://"):
-                raise AssertionError(f"{{url}} redirects to {{newurl}}, which is not https")
-            return super().redirect_request(req, fp, code, msg, headers, newurl)
+            raise AssertionError(
+                f"{{url}} redirects to {{newurl}}; redirects are not followed. Download "
+                f"the file yourself and save it as {{path}}"
+            )
 
     if not url.startswith("https://"):
         raise AssertionError(f"not downloading {{url}}: only https URLs are downloaded")
-    opener = urllib.request.build_opener(HttpsOnly)
-    request = urllib.request.Request(url, headers={{"User-Agent": "simtest-funnel-snippet"}})
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE
+    opener = urllib.request.build_opener(NoRedirects)
+    headers = {{"User-Agent": "simtest-funnel-snippet", "Accept-Encoding": "identity"}}
+    request = urllib.request.Request(url, headers=headers)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".download-", suffix=".part")
     try:
         digest = hashlib.sha256()
         got = 0
-        with os.fdopen(fd, "wb") as out, opener.open(request, timeout=60) as response:
-            while block := response.read(1 << 16):
+        with os.fdopen(fd, "wb") as out, opener.open(request, timeout=30) as response:
+            encoding = (response.headers.get("Content-Encoding") or "identity").strip().lower()
+            if encoding != "identity":
+                raise AssertionError(f"{{url}} sent Content-Encoding {{encoding}}; not saved")
+            while block := response.read1(1 << 16):  # what has arrived, so the deadline is checked
+                if time.monotonic() > deadline:
+                    raise AssertionError(
+                        f"downloading {{url}} took over {{DOWNLOAD_DEADLINE}} s; not saved"
+                    )
                 got += len(block)
                 if got > size:
                     raise AssertionError(
@@ -185,9 +205,17 @@ def _download(path: Path, url: str, sha256: str, size: int) -> None:
                 f"the data behind {{url}} differs from what was compared (sha256 "
                 f"{{sha256}} expected, {{digest.hexdigest()}} downloaded); not saved"
             )
-        if path.exists():
-            raise AssertionError(f"{{path}} appeared during the download; not replaced")
-        os.replace(tmp, path)
+        appeared = f"{{path}} appeared during the download; not replaced"
+        try:
+            os.link(tmp, path)  # fails if path exists
+        except FileExistsError:
+            raise AssertionError(appeared) from None
+        except OSError:  # no hard links on this file system: exclusive create
+            try:
+                with open(tmp, "rb") as src, open(path, "xb") as dst:
+                    shutil.copyfileobj(src, dst)
+            except FileExistsError:
+                raise AssertionError(appeared) from None
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -195,9 +223,9 @@ def _download(path: Path, url: str, sha256: str, size: int) -> None:
 
 @functools.lru_cache(maxsize=None)
 def _check_copies() -> None:
-    for path, url, sha256, size in URL_INPUTS:
+    for path, url, download_url, sha256, size in URL_INPUTS:
         if not path.is_file() and os.environ.get(DOWNLOAD_ENV) == "1":
-            _download(path, url, sha256, size)
+            _download(path, download_url, sha256, size)
         if not path.is_file():
             pytest.fail(
                 f"local copy of {{url}} is missing: expected {{path}} (sha256 {{sha256}}, "
@@ -243,14 +271,20 @@ def _local_names(ref: FileInfo, tst: FileInfo) -> dict[str, str]:
 
 
 def _url_block(name: str, src: SourceInfo, local: str) -> str:
+    final = src.final_url or src.url
+    note = "" if final == src.url else (
+        "\n# The server was redirected; the opt-in download uses the final URL and "
+        "follows no redirect."
+    )
     return _URL_BLOCK.format(
         name=name, url=src.url, fetched_at=src.fetched_at, size=src.size,
-        sha256=src.sha256, local=local, env=DOWNLOAD_ENV,
+        sha256=src.sha256, local=local, env=DOWNLOAD_ENV, download_url=final,
+        download_comment=note,
     )
 
 
 def _url_check(names: list[str]) -> str:
-    inputs = ", ".join(f"({n}, {n}_URL, {n}_SHA256, {n}_SIZE)" for n in names)
+    inputs = ", ".join(f"({n}, {n}_URL, {n}_DOWNLOAD_URL, {n}_SHA256, {n}_SIZE)" for n in names)
     return _URL_CHECK.format(env=DOWNLOAD_ENV, inputs=inputs)
 
 

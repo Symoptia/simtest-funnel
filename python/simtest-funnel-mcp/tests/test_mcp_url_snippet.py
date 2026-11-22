@@ -7,12 +7,14 @@ import hashlib
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 from conftest import OPEN_METEO_REF, open_meteo_column, open_meteo_text, structured
-from urlserver import Certs, TestServer, body, test_fetcher
+from urlserver import Certs, TestServer, body, redirect, slow, test_fetcher
 
 from simtest_funnel_mcp.fetch import FetchConfig
 from simtest_funnel_mcp.models import ColumnPair, ToleranceSet
@@ -167,7 +169,7 @@ def test_local_reference_and_url_test(
     snippet, _ = _snippet(str(tmp_path / "ref.csv"), https_server.url("/t.csv"), net)
     assert "REFERENCE = DATA_ROOT / 'ref.csv'" in snippet
     assert "TEST = DATA_ROOT / 't.csv'" in snippet
-    assert "URL_INPUTS = [(TEST, TEST_URL, TEST_SHA256, TEST_SIZE)]" in snippet
+    assert "URL_INPUTS = [(TEST, TEST_URL, TEST_DOWNLOAD_URL, TEST_SHA256, TEST_SIZE)]" in snippet
     (tmp_path / "t.csv").write_bytes(OM)
     proc = _run(snippet, tmp_path / "ci", tmp_path, block=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -246,3 +248,63 @@ def test_opt_in_never_replaces_an_existing_copy(
     assert proc.returncode == 1 and "is not the data compared" in out
     assert https_server.routes.seen == []  # no request made
     assert (data / "forecast.csv").read_bytes() == b"time,x\n0,1\n"
+
+
+def test_opt_in_asks_for_identity_and_uses_the_final_url(
+    https_server: TestServer, net: Network, certs: Certs, tmp_path: Path
+) -> None:
+    """The server followed a redirect: the snippet downloads from where it
+    ended, uncompressed, without meeting a redirect itself."""
+    https_server.routes.routes["/v1/forecast"] = body(OM)
+    https_server.routes.routes["/old"] = redirect(https_server.url("/v1/forecast", host="localhost"))
+    url = https_server.url("/old", host="localhost")
+    snippet, _ = _snippet(url, None, net)
+    assert "REFERENCE_DOWNLOAD_URL = " + repr(https_server.url("/v1/forecast", host="localhost")) in snippet
+    assert "follows no redirect" in snippet
+    data = tmp_path / "data"
+    data.mkdir()
+    https_server.routes.seen.clear()
+    proc = _run(snippet, tmp_path / "dev", data, block=False, env=_download_env(certs))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (request,) = https_server.routes.seen
+    assert request.path == "/v1/forecast" and request.headers["accept-encoding"] == "identity"
+    assert (data / "old.csv").read_bytes() == OM
+
+
+def test_opt_in_refuses_redirects(
+    https_server: TestServer, net: Network, certs: Certs, tmp_path: Path
+) -> None:
+    https_server.routes.routes["/v1/forecast"] = body(OM)
+    url = https_server.url("/v1/forecast", host="localhost")
+    snippet, _ = _snippet(url, None, net)
+    # Now the URL redirects (e.g. to an internal address): not followed.
+    https_server.routes.routes["/v1/forecast"] = redirect("https://10.0.0.5/x.csv")
+    data = tmp_path / "data"
+    data.mkdir()
+    proc = _run(snippet, tmp_path / "dev", data, block=False, env=_download_env(certs))
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1 and "redirects are not followed" in out
+    assert list(data.iterdir()) == []
+
+
+def test_opt_in_download_has_an_overall_deadline(
+    https_server: TestServer, net: Network, certs: Certs, tmp_path: Path
+) -> None:
+    https_server.routes.routes["/v1/forecast"] = body(OM)
+    url = https_server.url("/v1/forecast", host="localhost")
+    snippet, _ = _snippet(url, None, net)
+    assert "DOWNLOAD_DEADLINE = 300" in snippet
+    snippet = snippet.replace("DOWNLOAD_DEADLINE = 300", "DOWNLOAD_DEADLINE = 0.5")
+    stop = threading.Event()
+    https_server.routes.routes["/v1/forecast"] = slow(OM, 0.002, stop=stop)  # ~30 s in all
+    data = tmp_path / "data"
+    data.mkdir()
+    try:
+        start = time.monotonic()
+        proc = _run(snippet, tmp_path / "dev", data, block=False, env=_download_env(certs))
+        assert time.monotonic() - start < 20
+    finally:
+        stop.set()
+    out = proc.stdout + proc.stderr
+    assert proc.returncode == 1 and "took over 0.5 s; not saved" in out
+    assert list(data.iterdir()) == []

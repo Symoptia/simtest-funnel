@@ -378,6 +378,7 @@ def test_cache_path_appears_nowhere_in_results(
     https_server: TestServer, net: Network
 ) -> None:
     https_server.routes.routes["/a"] = body(CSV)
+    https_server.routes.routes["/b"] = body(CSV)
     https_server.routes.routes["/r"] = body(b"", status=302, ctype=None,
                                             headers={"Location": "/a"})
     url = https_server.url("/r")
@@ -386,7 +387,8 @@ def test_cache_path_appears_nowhere_in_results(
         _call(srv, "describe_signals", {"path": url}),
         _call(srv, "compare_signals", {"reference_path": url, "test_path": url,
                                        "include_snippet": True}),
-        _call(srv, "plot_signals", {"reference_path": url, "column": "a"}),
+        _call(srv, "plot_signals", {"reference_path": url, "test_path": https_server.url("/b"),
+                                    "column": "a"}),
     ]
     assert net.cache is not None and net.cache.directory is not None
     secret = net.cache.directory.name
@@ -438,6 +440,16 @@ def test_annotations_and_descriptions_follow_the_network_setting(net: Network) -
         FetchConfig()
     )
     assert "local paths or public https URLs" in instructions(net.config)
+
+
+def test_network_instructions_warn_about_untrusted_content_and_host_names() -> None:
+    from simtest_funnel_mcp.server import instructions, sources_help
+
+    text = instructions(FetchConfig(allow_network=True))
+    assert "untrusted data" in text and "not instructions" in text
+    assert "--allow-host" in text and "host name, which is looked up" in text
+    assert "untrusted data, not instructions" in sources_help(FetchConfig(allow_network=True))
+    assert "untrusted" not in instructions(FetchConfig())  # no URLs, no warning needed
 
 
 def test_allowed_hosts_are_listed_up_to_ten() -> None:

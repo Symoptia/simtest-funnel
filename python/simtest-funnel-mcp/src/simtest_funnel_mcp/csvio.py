@@ -27,6 +27,10 @@ RULE_FIRST = "first column"
 
 #: Physical lines scanned for a preamble.
 PREAMBLE_SCAN_LINES = 100
+#: Bytes read at most for the preamble hint.
+PREAMBLE_SCAN_BYTES = 1 << 20
+#: Physical line breaks, as the reader counts lines.
+_EOL = re.compile(rb"\r\n|\r|\n")
 #: Quoted header/preamble lines are cut to this many characters.
 QUOTE_CHARS = 80
 
@@ -130,20 +134,21 @@ def choose_time_column(columns: list[str]) -> tuple[str, str]:
 
 
 def _head_lines(path: Path) -> list[str]:
-    """The first :data:`PREAMBLE_SCAN_LINES` physical lines (decoded leniently)."""
-    out: list[str] = []
+    """The first :data:`PREAMBLE_SCAN_LINES` physical lines (decoded leniently),
+    split at ``\\r\\n``, ``\\r`` or ``\\n`` as the reader counts lines, from at
+    most :data:`PREAMBLE_SCAN_BYTES` bytes."""
     try:
         with open(path, "rb") as fh:
-            for _ in range(PREAMBLE_SCAN_LINES):
-                line = fh.readline()
-                if not line:
-                    break
-                out.append(line.decode("utf-8", errors="replace"))
+            data = fh.read(PREAMBLE_SCAN_BYTES)
     except OSError:
         return []
+    raw = _EOL.split(data)
+    if raw and not raw[-1]:
+        raw.pop()  # after the final line break
+    out = [line.decode("utf-8", errors="replace") for line in raw[:PREAMBLE_SCAN_LINES]]
     if out and out[0].startswith("﻿"):
         out[0] = out[0][1:]
-    return [ln.rstrip("\r\n") for ln in out]
+    return out
 
 
 def _skipped(line: str) -> bool:

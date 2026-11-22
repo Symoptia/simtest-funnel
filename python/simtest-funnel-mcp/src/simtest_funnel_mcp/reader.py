@@ -21,9 +21,9 @@ from numpy.typing import NDArray
 
 #: Accept date-only cells such as 2026-11-20 (midnight).
 ACCEPT_DATE_ONLY = True
-#: YYYY-MM-DD[(T| )hh:mm[:ss[.f+]][Z|+hh[:mm]|+hhmm]] (groups: date, time, fraction, zone).
-ISO_DATETIME = r"(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d+))?)?" + (
-    r"(Z|[+-]\d\d(?::?\d\d)?)?)" + ("?" if ACCEPT_DATE_ONLY else "")
+#: YYYY-MM-DD[(T| )hh:mm[:ss[.f+]][Z|+hh[:mm]|+hhmm]], ASCII digits only (groups: date, time, fraction, zone).
+ISO_DATETIME = r"([0-9]{4})-([0-9][0-9])-([0-9][0-9])(?:[T ]([0-9][0-9]):([0-9][0-9])(?::([0-9][0-9])(?:\.([0-9]+))?)?" + (
+    r"(Z|[+-][0-9][0-9](?::?[0-9][0-9])?)?)" + ("?" if ACCEPT_DATE_ONLY else "")
 )
 _EOL = re.compile(rb"\r\n|\r|\n")
 
@@ -96,7 +96,7 @@ def parse_iso(cells: "pd.Series[str]") -> tuple[NDArray[np.float64], NDArray[np.
     tail = np.flatnonzero(length > pos)
     if tail.shape[0]:
         rest = pd.Series([v[p:] for v, p in zip(text[tail].tolist(), pos[tail].tolist(), strict=True)], dtype=object)
-        g = rest.str.extract(r"^(?:\.(\d+))?(Z|[+-]\d\d(?::?\d\d)?)?\Z").fillna("")
+        g = rest.str.extract(r"^(?:\.([0-9]+))?(Z|[+-][0-9][0-9](?::?[0-9][0-9])?)?\Z").fillna("")
         frac[tail], zone[tail] = g[0].to_numpy(dtype=object), g[1].to_numpy(dtype=object)
     zd = [z.replace(":", "") for z in zone[tail].tolist()]
     zh, zm = np.zeros(n, dtype=np.int64), np.zeros(n, dtype=np.int64)

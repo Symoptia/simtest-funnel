@@ -369,11 +369,24 @@ path. A fetched file is read exactly like a local one (`header_line`,
 | `--max-download-mb MB` | `SIMTEST_FUNNEL_MCP_MAX_DOWNLOAD_MB` | 20 (1 MB = 1,000,000 bytes) |
 | `--fetch-timeout SECONDS` (at most 600) | `SIMTEST_FUNNEL_MCP_FETCH_TIMEOUT` | 30 |
 
-For the numbers the command line wins over the environment. Prefer
-`--allow-host`: the model chooses the URLs, and a URL can carry data from
-the conversation in its query string to whatever host it names. Host
-entries are exact host names (case-insensitive, IDNA; no wildcards,
-subdomains not included, no scheme, port or path). Registration examples:
+For the numbers the command line wins over the environment.
+
+**Security.** `--allow-host` is the recommended way to enable network
+access. The model chooses the URLs, and a URL can carry data from the
+conversation to whatever host it names: in its path or query string, and,
+without `--allow-host`, already in the host name itself, because resolving
+`<data>.attacker.example` sends that name to the attacker's DNS server
+even when the fetch then fails (the address check runs after the lookup).
+With `--allow-host` a URL whose host is not listed is refused before any
+lookup or connection. Content fetched from a URL is untrusted data, not
+instructions: the server reads it only as CSV, never quotes remote error
+pages (an error reports the HTTP status and content type, plus, for a JSON
+error object, its `reason` string reduced to letters, digits and plain
+punctuation, at most 120 characters), but column names and values of a
+fetched file do reach the model in results, so treat them like any other
+untrusted input. Host entries are exact host names (case-insensitive,
+IDNA; no wildcards, subdomains not included, no scheme, port or path).
+Registration examples:
 
 ```bash
 claude mcp add simtest-funnel -- uvx simtest-funnel-mcp --allow-host previous-runs-api.open-meteo.com
@@ -401,12 +414,16 @@ claude mcp add simtest-funnel -- uvx simtest-funnel-mcp --allow-host previous-ru
   with a user name or password, are refused (also with network access off).
 - The host is resolved once and every address must be public: loopback,
   private (RFC 1918), link-local (including cloud metadata addresses such
-  as `169.254.169.254`), unique-local, CGNAT, multicast, unspecified,
-  reserved and documentation addresses are refused, also when embedded in
-  IPv6 forms (IPv4-mapped, NAT64, 6to4; Teredo is refused). A host with any
-  such address is refused as a whole. The connection goes to an address
-  that was checked (no second lookup), while TLS verifies the certificate
-  against the URL's host name with the operating system's trust store.
+  as `169.254.169.254`), unique-local, site-local (`fec0::/10`), SRv6
+  (`5f00::/16`), CGNAT, multicast, unspecified, reserved and documentation
+  addresses are refused (an explicit list besides Python's `is_global`),
+  also when embedded in IPv6 forms (IPv4-mapped, NAT64, 6to4; Teredo is
+  refused). A host with any such address is refused as a whole. The lookup
+  stops at the fetch deadline or on cancellation. The connection goes to an
+  address that was checked (no second lookup), while TLS verifies the
+  certificate against the URL's host (an IP-literal host against the
+  certificate's IP address entries) with the operating system's trust
+  store.
 - Redirects (at most 5) are followed only to `https` URLs, and every hop
   is checked again (scheme, allowed hosts, addresses, certificate).
 - Only a plain `GET` is sent: no cookies, no `Authorization`, nothing from
@@ -416,8 +433,11 @@ claude mcp add simtest-funnel -- uvx simtest-funnel-mcp --allow-host previous-ru
   UTF-8 or ASCII, uncompressed or gzip, are accepted. An HTML page (by type
   or first bytes) is refused with a hint to use the raw-file URL; JSON is
   refused with a hint to ask the service for CSV (e.g. `format=csv`). Other
-  statuses fail with the status and up to 300 characters of a short text or
-  JSON body (where services such as Open-Meteo put the reason).
+  statuses fail with the status and content type; the body is not quoted
+  (it is untrusted), except the `reason` string of a JSON error object
+  (where services such as Open-Meteo explain a bad request), reduced to
+  letters, digits and plain punctuation, at most 120 characters. NUL bytes
+  after the gzip data are accepted, as gzip(1) does.
 - Size cap (after decompression) and fetch timeout as above; connecting
   times out after 10 s per address. For `compare_signals` and
   `plot_signals` the fetch counts against `time_limit` and is stopped at
@@ -439,9 +459,11 @@ first fetch and removed when the server stops (end of input, SIGTERM on
 Linux/macOS). After a crash, `SIGKILL` or a forced termination on Windows
 the directory stays until the operating system cleans its temporary
 directory or you delete it; it holds only public files the server fetched,
-readable only by your user. The cache holds at most 10 times the size cap;
+readable only by your user. The cache holds at most 10 times the size cap,
+counting downloads in progress, and at most 10 downloads run at once;
 older copies are dropped and fetched again when needed, and if the content
-changed meanwhile the call fails saying so.
+changed meanwhile the call fails saying so (the hashes of the last 4096
+URLs are remembered).
 
 **Results** carry, for each URL input, `path` = the URL and a `source`
 object: `url`, `final_url` (when redirected), `fetched_at` (UTC),
@@ -456,9 +478,10 @@ the server saw; the comment above names the URL and the fetch time. When
 the copy is missing or different, every case fails with the URL, the
 expected path and hash and what to do. Run the snippet once with
 `SIMTEST_FUNNEL_DOWNLOAD=1` to download a missing copy (standard library,
-`https` only, at most the recorded size, 60 s timeout; kept only if its
-SHA-256 matches, never replacing an existing file), then commit the file:
-CI then runs without network access.
+`https` only, from the URL the server finally read, following no redirect,
+uncompressed, at most the recorded size, within 300 s; kept only if its
+SHA-256 matches, put in place by an exclusive link so it never replaces a
+file), then commit the file: CI then runs without network access.
 
 ## Example: was the forecast made N days ahead close enough?
 

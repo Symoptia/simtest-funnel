@@ -27,6 +27,13 @@ from simtest_funnel_mcp.server import (
     plot_signals_impl,
 )
 
+#: The sample lives in the repository's examples/ directory, which the sdist
+#: (whose tests/ include this module) does not contain.
+pytestmark = pytest.mark.skipif(
+    not OPEN_METEO_SAMPLE.is_file(),
+    reason="the bundled Open-Meteo sample (repository examples/) is not present",
+)
+
 README = REPO_ROOT / "python" / "simtest-funnel-mcp" / "README.md"
 ATTRIBUTION = OPEN_METEO_SAMPLE.parent / "ATTRIBUTION.md"
 LIVE_URL = (

@@ -29,6 +29,7 @@ import errno
 import hashlib
 import http.client
 import ipaddress
+import json
 import re
 import select
 import socket
@@ -38,7 +39,7 @@ import time
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import BinaryIO, Protocol
+from typing import Protocol
 from urllib.parse import quote, urljoin, urlsplit
 
 from simtest_funnel_mcp import __version__
@@ -57,9 +58,9 @@ MAX_REDIRECTS = 5
 READ_BLOCK = 65536
 #: How often the watchdog checks cancellation and the deadline (seconds).
 WATCH_INTERVAL = 0.05
-#: Bytes of an error response read for the message, and characters quoted.
+#: Bytes of a JSON error response read for its reason, and characters shown.
 ERROR_BODY_BYTES = 4096
-ERROR_BODY_CHARS = 300
+ERROR_REASON_CHARS = 120
 
 USER_AGENT = f"simtest-funnel-mcp/{__version__} (+https://github.com/Symoptia/simtest-funnel)"
 ACCEPT = "text/csv, text/plain;q=0.9, */*;q=0.1"
@@ -104,6 +105,12 @@ class Cancellable(Protocol):
 
     @property
     def cancelled(self) -> bool: ...
+
+
+class Sink(Protocol):
+    """Where a fetch writes the body (a binary file, or a wrapper of one)."""
+
+    def write(self, data: bytes, /) -> int: ...
 
 
 class FetchError(Exception):
@@ -245,6 +252,20 @@ _SIX_TO_FOUR = ipaddress.ip_network("2002::/16")
 #: Deprecated IPv4-compatible (``::a.b.c.d``) and IPv4-translated forms.
 _V4_COMPATIBLE = ipaddress.ip_network("::/96")
 _V4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
+#: Never public, refused whatever ``is_global`` says (its table follows the
+#: IANA special-purpose registries, which do not list every range below,
+#: e.g. the deprecated site-local ``fec0::/10`` or SRv6 ``5f00::/16``).
+_DENY: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+        "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24",
+        "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+        "224.0.0.0/4", "240.0.0.0/4",
+        "::/128", "::1/128", "100::/64", "2001:db8::/32", "3fff::/20", "5f00::/16",
+        "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8",
+    )
+)
 
 
 def public_address_refusal(ip: IPAddress) -> str | None:
@@ -257,7 +278,10 @@ def public_address_refusal(ip: IPAddress) -> str | None:
     ``::ffff:0:0:0/96`` forms are refused outright. Otherwise the address must be
     ``is_global`` and not multicast, which excludes loopback, RFC 1918,
     link-local (including ``169.254.169.254``), unique-local, CGNAT,
-    unspecified, reserved, benchmarking and documentation ranges.
+    unspecified, reserved, benchmarking and documentation ranges; the
+    explicit list :data:`_DENY` is checked as well (site-local
+    ``fec0::/10``, SRv6 ``5f00::/16`` and the ranges above), so the policy
+    does not depend on the Python version's ``is_global`` table alone.
     """
     if isinstance(ip, ipaddress.IPv6Address):
         if ip in _TEREDO:
@@ -279,6 +303,8 @@ def public_address_refusal(ip: IPAddress) -> str | None:
             return "scoped address"
     if ip.is_multicast:
         return "multicast address"
+    if any(ip in net for net in _DENY if net.version == ip.version):
+        return "non-public address"
     if not ip.is_global:
         return "non-public address"
     return None
@@ -424,16 +450,10 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._ctx = context
 
     def connect(self) -> None:
-        server_hostname = None if _is_ip(self.host) else self.host
-        self.sock = self._ctx.wrap_socket(self._raw, server_hostname=server_hostname)
-
-
-def _is_ip(host: str) -> bool:
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return True
+        # Always the URL's host: for an IP literal, ``ssl`` sends no SNI and
+        # checks the certificate's IP address entries (a ``None`` name would
+        # make a context with ``check_hostname`` raise ``ValueError``).
+        self.sock = self._ctx.wrap_socket(self._raw, server_hostname=self.host)
 
 
 def default_ssl_context() -> ssl.SSLContext:
@@ -512,8 +532,39 @@ class Fetcher:
             f"start the server with {ALLOW_HOST_OPTION} {url.host} as well"
         )
 
-    def checked_addresses(self, url: ParsedUrl) -> list[IPAddress]:
-        """Resolve once and check every address; all must pass."""
+    def _resolve(self, url: ParsedUrl, wd: _Watchdog | None) -> list[str]:
+        """One lookup through :attr:`resolver`, bounded by the watchdog.
+
+        ``getaddrinfo`` cannot be interrupted, so it runs in a helper thread
+        and the fetch stops waiting at the deadline or on cancellation
+        (:meth:`_Watchdog.check` raises); a result that arrives later is
+        dropped with the thread's local box, never used."""
+        if wd is None:
+            return list(self.resolver(url.host, url.port))
+        box: dict[str, object] = {}
+        done = threading.Event()
+
+        def run() -> None:
+            try:
+                box["value"] = list(self.resolver(url.host, url.port))
+            except BaseException as exc:  # handed to the caller below
+                box["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=run, name="url-fetch-resolve", daemon=True).start()
+        while not done.wait(WATCH_INTERVAL):
+            wd.check()
+        error = box.get("error")
+        if isinstance(error, BaseException):
+            raise error
+        value = box["value"]
+        assert isinstance(value, list)
+        return [str(a) for a in value]
+
+    def checked_addresses(self, url: ParsedUrl, wd: _Watchdog | None = None) -> list[IPAddress]:
+        """Resolve once (bounded by ``wd``, see :meth:`_resolve`) and check
+        every address; all must pass."""
         try:
             literal: IPAddress | None = ipaddress.ip_address(url.host)
         except ValueError:
@@ -526,7 +577,7 @@ class Fetcher:
                 )
             return [literal]
         try:
-            raw = list(self.resolver(url.host, url.port))
+            raw = self._resolve(url, wd)
         except (OSError, UnicodeError) as exc:
             raise FetchError(
                 f"cannot resolve host {url.host}: {exc}. If this machine reaches the internet "
@@ -555,7 +606,7 @@ class Fetcher:
     def fetch(
         self,
         url: ParsedUrl,
-        dest: BinaryIO,
+        dest: Sink,
         *,
         cancel: Cancellable | None = None,
         call_deadline: float | None = None,
@@ -638,12 +689,12 @@ class Fetcher:
         raise FetchError(f"cannot connect to {url.host} port {url.port} ({detail}); {_PROXY_HINT}")
 
     def _hop(
-        self, url: ParsedUrl, previous: str | None, dest: BinaryIO, wd: _Watchdog
+        self, url: ParsedUrl, previous: str | None, dest: Sink, wd: _Watchdog
     ) -> FetchResult | str:
         """One request. Returns the result, or a redirect ``Location``."""
         self.check_host_allowed(url, previous)
         try:
-            addresses = self.checked_addresses(url)
+            addresses = self.checked_addresses(url, wd)
         except FetchError as exc:
             if previous is not None:
                 raise FetchError(f"redirect from {previous} to {url.host}: {exc}") from None
@@ -664,11 +715,18 @@ class Fetcher:
             except (ssl.SSLError, OSError) as exc:
                 wd.check()
                 raise FetchError(f"TLS connection to {url.host} failed: {exc}") from None
+            except Exception as exc:  # any other failure of the TLS layer
+                # E.g. ValueError from a TLS backend: a fetch error naming the
+                # host, never a traceback.
+                wd.check()
+                raise FetchError(
+                    f"TLS connection to {url.host} failed ({type(exc).__name__}: {exc})"
+                ) from None
             wd.attach(conn.sock)
             try:
                 self._request(conn, url)
                 response = conn.getresponse()
-            except (http.client.HTTPException, OSError) as exc:
+            except (http.client.HTTPException, OSError, ValueError) as exc:
                 wd.check()
                 raise FetchError(f"request to {url.host} failed: {exc}") from None
             if response.status in _REDIRECTS:
@@ -698,12 +756,24 @@ class Fetcher:
     def _status_message(
         self, url: ParsedUrl, response: http.client.HTTPResponse, wd: _Watchdog
     ) -> str:
-        text = f"{url.host} answered {response.status} {response.reason}".rstrip()
-        mtype, params = _media_type(response.getheader("Content-Type"))
+        """Status, standard reason phrase and content type of an error
+        response. The body is remote, untrusted text and is not quoted; only
+        the ``reason`` (or ``error`` / ``message``) string of a JSON object
+        body is shown, without the characters :data:`_REASON_DROP` removes and at most
+        :data:`ERROR_REASON_CHARS` characters (see :func:`_json_reason`)."""
+        try:
+            phrase = http.HTTPStatus(response.status).phrase
+        except ValueError:
+            phrase = ""
+        text = f"{url.host} answered {response.status} {phrase}".rstrip()
+        header = response.getheader("Content-Type")
+        mtype, _params = _media_type(header)
         encoding = (response.getheader("Content-Encoding") or "identity").strip().lower()
-        if mtype is None or not (mtype.startswith("text/") or mtype == "application/json"):
+        if mtype is None:
             return text
-        if encoding not in ("identity", "gzip"):
+        shown_type = mtype if _MEDIA_TYPE.fullmatch(mtype) else "an unusual type"
+        text += f" with a {shown_type} body (not shown: content from a URL is not repeated)"
+        if mtype != "application/json" or encoding not in ("identity", "gzip"):
             return text
         try:
             raw = response.read(ERROR_BODY_BYTES)
@@ -712,16 +782,10 @@ class Fetcher:
         except (OSError, zlib.error, http.client.HTTPException):
             wd.check()
             return text
-        try:
-            body = raw.decode(params.get("charset") or "utf-8", errors="replace").strip()
-        except LookupError:  # unknown charset name
-            body = raw.decode("utf-8", errors="replace").strip()
-        body = " ".join(body.split())
-        if not body:
+        reason = _json_reason(raw)
+        if reason is None:
             return text
-        if len(body) > ERROR_BODY_CHARS:
-            body = body[: ERROR_BODY_CHARS - 3] + "..."
-        return f"{text}: {body}"
+        return f"{text}; the server's JSON reason, sanitised: {reason}"
 
     def _check_content(
         self, url: ParsedUrl, response: http.client.HTTPResponse
@@ -772,7 +836,7 @@ class Fetcher:
         )
 
     def _body(
-        self, url: ParsedUrl, response: http.client.HTTPResponse, dest: BinaryIO, wd: _Watchdog
+        self, url: ParsedUrl, response: http.client.HTTPResponse, dest: Sink, wd: _Watchdog
     ) -> FetchResult:
         content_type, gzipped = self._check_content(url, response)
         cap = self.config.max_bytes
@@ -783,6 +847,9 @@ class Fetcher:
         inflater = zlib.decompressobj(16 + zlib.MAX_WBITS) if gzipped else None
         #: Whether the current gzip member has received data (truncation check).
         fed = False
+        #: Complete gzip members so far, and whether NUL padding has started.
+        members = 0
+        padded = False
 
         def emit(data: bytes) -> None:
             nonlocal size, sniff, sniffed
@@ -817,6 +884,15 @@ class Fetcher:
                 continue
             data = block
             while True:
+                if padded or (members and not fed and data[:1] == b"\0"):
+                    # NUL padding after a complete member, as gzip(1) and
+                    # Python's gzip module accept it (RFC 1952 has no
+                    # padding; anything else after a member must be another
+                    # member).
+                    padded = True
+                    if data.strip(b"\0"):
+                        raise FetchError(f"{url.host} sent data after NUL padding of gzip data")
+                    break
                 fed = True
                 # Each step expands at most READ_BLOCK bytes (and never past the cap).
                 limit = max(1, min(READ_BLOCK, cap - size + 1))
@@ -829,6 +905,7 @@ class Fetcher:
                     data = inflater.unused_data
                     inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
                     fed = False
+                    members += 1
                     if not data:
                         break
                     continue
@@ -849,6 +926,41 @@ class Fetcher:
         return FetchResult(
             final_url=url.url, content_type=content_type, size=size, sha256=digest.hexdigest()
         )
+
+
+#: A media type as shown in messages (anything else is not repeated).
+_MEDIA_TYPE = re.compile(r"[a-z0-9][a-z0-9.+-]{0,40}/[a-z0-9][a-z0-9.+-]{0,40}")
+#: Characters kept in a JSON error reason: letters, digits, space and plain
+#: punctuation, no quotes, brackets, braces, angle brackets, backticks or
+#: line breaks, so the text cannot pose as markup or as a message from the
+#: server or the user.
+_REASON_DROP = re.compile(r"[^A-Za-z0-9 .,:;=+\-_/()%]")
+
+
+def _json_reason(raw: bytes) -> str | None:
+    """The ``reason``, ``error`` or ``message`` string of a JSON object
+    (first found), sanitised: other characters removed, whitespace
+    collapsed, at most :data:`ERROR_REASON_CHARS` characters; ``None`` when
+    there is none. Open-Meteo, for example, answers a bad request with
+    ``{"error": true, "reason": "..."}``; the reason tells the agent what to
+    change, which justifies showing this much of a remote body."""
+
+    try:
+        doc = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    for key in ("reason", "error", "message"):
+        value = doc.get(key)
+        if isinstance(value, str):
+            text = " ".join(_REASON_DROP.sub(" ", value).split())
+            if not text:
+                return None
+            if len(text) > ERROR_REASON_CHARS:
+                text = text[: ERROR_REASON_CHARS - 3] + "..."
+            return text
+    return None
 
 
 def _html_message(url: ParsedUrl) -> str:

@@ -26,7 +26,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 import simtest.funnel as funnel
-from simtest_funnel_mcp.compare import CompareOutcome, RowRecord, TimeLimit, run_compare
+from simtest_funnel_mcp.compare import (
+    SAME_COLUMN_PROBLEM,
+    CompareOutcome,
+    RowRecord,
+    TimeLimit,
+    run_compare,
+)
 from simtest_funnel_mcp.csvio import SignalFile
 from simtest_funnel_mcp.models import (
     COEFFICIENTS,
@@ -413,8 +419,12 @@ def prepare_plot(
             )
     if test_column is not None and not test_column.strip():
         raise PlotArgumentError("test_column is empty")
-    pair = test_column is not None and test_column != column
     tcol = test_column if test_column is not None else column
+    if tst is ref and tcol == column:
+        raise PlotArgumentError(
+            SAME_COLUMN_PROBLEM.format(column=column, outcome="nothing plotted")
+        )
+    pair = test_column is not None and test_column != column
     outcome = run_compare(
         ref,
         tst,

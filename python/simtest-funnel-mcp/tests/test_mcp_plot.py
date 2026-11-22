@@ -800,6 +800,18 @@ def _svg_texts(svg: bytes) -> list[str]:
     return re.findall(r"<!-- (.*?) -->", svg.decode("utf-8"))
 
 
+def test_plot_of_a_column_with_itself_is_refused(open_meteo: Path, tmp_path: Path) -> None:
+    """No test file and no (or the same) test column: it would pass trivially."""
+    out = tmp_path / "self.svg"
+    for test_column in (None, OPEN_METEO_REF):
+        with pytest.raises(ToolError, match="compared with itself.*nothing plotted"):
+            plot_signals_impl(
+                str(open_meteo), None, [tmp_path], column=OPEN_METEO_REF, header_line=4,
+                output_path=str(out), test_column=test_column,
+            )
+    assert not out.exists()
+
+
 def test_day1_pair_plot_equals_the_compare_pair_row(open_meteo: Path) -> None:
     from simtest_funnel_mcp.models import ColumnPair
 

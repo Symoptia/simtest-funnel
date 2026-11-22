@@ -644,6 +644,27 @@ def test_time_column_in_a_pair(open_meteo: Path) -> None:
     assert row["verdict"] == "error" and "is the time column" in row["problem"]
 
 
+def test_pair_of_a_column_with_itself_in_one_file_is_refused(
+    open_meteo: Path, write_csv: WriteCsv
+) -> None:
+    """It would pass trivially: an error row, the other pairs still compared."""
+    pairs = [ColumnPair(reference=OPEN_METEO_REF, test=OPEN_METEO_REF, label="self"),
+             *_day_pairs(1)]
+    rows = {r["column"]: r for r in _om(open_meteo, pairs=pairs)["rows"]}
+    assert rows["self"]["verdict"] == "error"
+    assert "compared with itself" in rows["self"]["problem"]
+    assert "Pass test_path" in rows["self"]["problem"]
+    assert rows["day1"]["verdict"] != "error"
+    # The same file given as test_path is the same loaded file: refused too.
+    ref = write_csv("ref.csv", "time,y\n0,0\n1,1\n")
+    (row,) = _compare(ref, ref, pairs=[ColumnPair(reference="y", test="y")])["rows"]
+    assert row["verdict"] == "error" and "compared with itself" in row["problem"]
+    # Two files with the same column name: compared.
+    tst = write_csv("tst.csv", "time,y\n0,0\n1,1\n")
+    (row,) = _compare(ref, tst, pairs=[ColumnPair(reference="y", test="y")])["rows"]
+    assert row["verdict"] == "pass"
+
+
 def test_same_name_rows_have_no_pair_fields(demo_reference: Path, demo_test: Path) -> None:
     for kwargs in ({}, {"columns": ["z"]}):
         d = _compare(demo_reference, demo_test, **kwargs)

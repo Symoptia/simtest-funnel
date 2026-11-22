@@ -130,3 +130,112 @@ history, which the heuristic does not obviously give; not attempted.
   x, window edges inside runs).
 - Reviewer's harness and an extended version run at scale (numbers in the
   task list).
+
+## D2. IP-literal hosts (finding 2)
+
+`_PinnedHTTPSConnection.connect` passed `server_hostname=None` for an IP
+literal while the context has `check_hostname=True`, which makes `ssl`
+raise `ValueError`. Now the URL's host is always passed: for an IP literal
+`ssl` sends no SNI and matches the certificate's IP address entries. Any
+other exception from the TLS handshake becomes a `FetchError` naming the
+host; `ValueError` from the request/response step too.
+
+## D3. Fetched content is untrusted (finding 3)
+
+Decision: error responses report the host, the status with its *standard*
+phrase (`http.HTTPStatus`, not the server's reason phrase) and the content
+type (only if it looks like a media type). No body text is quoted, except
+the `reason` / `error` / `message` string of a JSON object body: Open-Meteo,
+the bundled example's service, explains a bad request that way ("End-date
+must be larger or equals than start-date"), which tells the agent exactly
+what to change. That string is reduced to `[A-Za-z0-9 .,:;=+-_/()%]`
+(no quotes, brackets, braces, angle brackets, backticks or line breaks, so
+it cannot pose as markup or as another speaker), whitespace collapsed, at
+most 120 characters, and labelled "the server's JSON reason, sanitised".
+Column names and values of a fetched file still reach the model (they are
+the data); the README, the server instructions (network on) and the
+INPUT FILES paragraph now say that content from a URL is untrusted data,
+not instructions, and the README and instructions explain that without
+`--allow-host` the host name itself is sent to DNS before any check, so it
+can carry data out even when the fetch fails; `--allow-host` (checked
+before any lookup) is the recommended way to enable network access.
+
+## D4. A column paired with itself (finding 4)
+
+`_pair_problem` returns an error row when `tst is ref` (the same loaded
+file: no `test_path`, or the same path and header line) and both sides name
+the same column. `prepare_plot` refuses the same case (no or the same test
+column) with a `PlotArgumentError`; nothing is written. Plain `columns`
+with an explicit identical `test_path` are left alone (an explicit request;
+without `test_path` they were already refused).
+
+## D5. ASCII digits in ISO timestamps (finding 5)
+
+`\d` matches any Unicode decimal digit and `parse_iso` then computes with
+code points; the patterns in `reader.py` (embedded verbatim in snippets)
+now use `[0-9]`. `models.XRange` uses the same pattern.
+
+## D6. Address policy and resolver bound (finding 6)
+
+An explicit deny-list (`_DENY`) is checked besides `is_global`: the IPv4
+special ranges, `::/128`, `::1`, `100::/64`, `2001:db8::/32`, `3fff::/20`,
+`5f00::/16` (SRv6), `fc00::/7`, `fe80::/10`, `fec0::/10` (site-local) and
+`ff00::/8`. Python 3.14's `is_global` is true for `fec0::1` and `5f00::1`.
+`2001::/23` is not listed, since it contains global assignments that
+`is_global` handles. The lookup runs in a daemon helper thread; the fetch
+waits in `WATCH_INTERVAL` slices, calling `_Watchdog.check()` (deadline and
+cancellation), and abandons the thread on a trip; the answer goes into a box
+local to that call, so a late answer is never used.
+
+## D7. Cache bound counts downloads in progress (finding 7)
+
+The `.part` file is wrapped in a writer that adds each written block to the
+download's count under the cache lock and evicts; `_evict` counts copies
+plus bytes in progress. At most `MAX_IN_FLIGHT = TOTAL_FACTOR` downloads run
+at once (another call fails with a clear error), so with the default bound
+the bytes in progress alone never exceed it. `_seen` keeps the last 4096
+URLs (oldest forgotten): beyond that a re-fetched URL is not compared with
+its old hash; documented.
+
+## D8. Snippet download (finding 8)
+
+Redirect targets cannot be checked for public addresses robustly in a few
+standard-library lines (urllib resolves again when it connects), so the
+snippet follows no redirect; it downloads from the URL the server finally
+read (`source.final_url`), so the common case meets no redirect. It asks
+for `Accept-Encoding: identity` and refuses any other `Content-Encoding`
+(the hash is of the bytes received), stops after `DOWNLOAD_DEADLINE = 300`
+s checked between reads (`read1`, so a slow sender cannot hold one read for
+the whole body; each read also has a 30 s socket timeout), and puts the
+copy in place with `os.link` (fails if the file exists), falling back to an
+exclusive `open(..., "xb")` copy where hard links are unsupported.
+
+## D9. CSV timing test (finding 9)
+
+100 000 rows instead of 1 000 000, best of three, and `iso < 4 × numeric +
+0.1 s`: the absolute slack absorbs timer and scheduling noise, while a
+per-cell parse (seconds) still fails it.
+
+## D10. Description consistency (finding 10)
+
+The `x_range` argument descriptions of both tools now state the unit
+(seconds since 1970 on a date-time axis), that only test points inside are
+judged against the tube of the whole reference there, built from the
+reference extended as far as needed, and that rtol bases come from inside;
+the plot description and the X_RANGE paragraph use the same wording as the
+guarantee of D1.
+
+## D11. Smaller items (finding 11)
+
+- **gzip padding.** RFC 1952 defines no padding, but gzip(1) ("trailing
+  zero bytes ignored") and Python's `gzip` module accept NUL bytes after the
+  last member (tape-block legacy). Accepting exactly that is consistent with
+  the common tools and harmless; any non-NUL byte after the padding is
+  refused, other data after a member must be another member.
+- **Preamble hint for CR-only files.** `_head_lines` reads at most 1 MiB and
+  splits at CR LF, CR or LF, as the reader counts lines.
+- **sdist.** `test_mcp_examples.py` is skipped (module-level `skipif`) when
+  the repository's `examples/` sample is absent, as in the sdist. Other
+  sdist tests also use repository files (`examples/web`, `.mcp.json`, the
+  README); excluding tests from the sdist would change release packaging,
+  which this change does not touch.

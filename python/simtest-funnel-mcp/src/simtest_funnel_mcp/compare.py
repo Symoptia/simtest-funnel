@@ -483,6 +483,15 @@ def _column_problem(name: str, ref: SignalFile, tst: SignalFile) -> tuple[int | 
     return None
 
 
+#: Problem of a pair that names the same column of the same loaded file on
+#: both sides (``{column}``, ``{outcome}``): it would pass trivially.
+SAME_COLUMN_PROBLEM = (
+    "column {column!r} would be compared with itself (reference and test are the same "
+    "file), which passes trivially; {outcome}. Pass test_path, or name a different test "
+    "column"
+)
+
+
 def _missing(name: str, side: str, sf: SignalFile) -> str:
     text = f"column {name!r} absent from the {side} file"
     close = difflib.get_close_matches(name, list(sf.signal_columns), n=3)
@@ -495,6 +504,8 @@ def _missing(name: str, side: str, sf: SignalFile) -> str:
 
 def _pair_problem(e: Entry, ref: SignalFile, tst: SignalFile) -> tuple[int | None, str] | None:
     """Server-detected problem of a column pair (as :func:`_column_problem`)."""
+    if tst is ref and e.reference == e.test:
+        return None, SAME_COLUMN_PROBLEM.format(column=e.reference, outcome="not compared")
     if e.reference == ref.time_column:
         return None, f"{e.reference!r} is the time column of the reference file"
     if e.test == tst.time_column:

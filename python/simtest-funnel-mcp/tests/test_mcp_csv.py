@@ -204,6 +204,19 @@ def test_preamble_hint_on_a_failing_read(write_csv: WriteCsv) -> None:
     assert msg.endswith("If it is, pass test_header_line=4.")
 
 
+def test_preamble_hint_in_a_file_with_lone_cr_line_breaks(write_csv: WriteCsv, tmp_path: Path) -> None:
+    meta = "latitude,longitude,elevation,utc_offset_seconds,timezone,timezone_abbreviation"
+    lines = [meta, "59.33,18.07,21.0,0,GMT,GMT", "", "time,a,b,c,d,e,f",
+             "2026-11-05T00:00,1,2,3,4,5,6"]
+    path = tmp_path / "cr.csv"
+    path.write_bytes(("\r".join(lines) + "\r").encode())
+    with pytest.raises(SignalFileError) as info:
+        load_csv(path)
+    msg = str(info.value)
+    assert "line 3 is blank and line 4 ('time,a,b,c,d,e,f') looks like a header row" in msg
+    assert msg.endswith("If it is, pass header_line=4.")
+
+
 def test_no_preamble_hint_on_a_plain_file_with_a_blank_line(write_csv: WriteCsv) -> None:
     sf = load_csv(write_csv("a.csv", "time,a,b\n\n0,1,2\n1,2,3\n"))
     assert sf.hints == ()
@@ -233,6 +246,30 @@ def test_iso_forms_accepted(write_csv: WriteCsv, cell: str, expected: float) -> 
     sf = load_csv(write_csv("a.csv", f"time,a\n{cell},1\n"))
     assert sf.time_kind == "datetime"
     assert sf.time[0] == expected
+
+
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "２０２６-11-20T00:00",  # fullwidth digits
+        "١٩٧٠-01-01T00:00Z",  # Arabic-Indic digits
+        "2026-11-20T00:0٥Z",  # one Arabic-Indic digit in the minutes
+        "2026-11-20T00:00:00.２５Z",  # fullwidth fraction
+        "2026-11-20T01:00+０1:00",  # fullwidth zone
+        "२०२६-११-२०",  # Devanagari date only
+    ],
+)
+def test_iso_needs_ascii_digits(write_csv: WriteCsv, cell: str) -> None:
+    """Unicode digits are not ISO 8601 digits: the cell is not a date-time
+    (the column stays numeric with that cell unusable)."""
+    from simtest_funnel_mcp.models import XRange
+
+    sf = load_csv(write_csv("a.csv", f"time,a\n{cell},1\n2026-11-20T00:00,2\n"))
+    assert sf.time_kind == "numeric"
+    assert sf.time_problems()
+    # Neither as an x_range bound.
+    with pytest.raises(ValueError):
+        XRange(lo=cell)
 
 
 def test_iso_fraction_is_bit_identical_to_the_epoch_number(write_csv: WriteCsv) -> None:
@@ -318,10 +355,13 @@ def test_reader_returns_the_table(write_csv: WriteCsv) -> None:
     assert (table.time_kind, table.time_zone, table.header_line) == ("datetime", "offset", 3)
 
 
-def test_million_row_iso_file_reads_within_a_small_multiple(tmp_path: Path) -> None:
+def test_iso_file_reads_within_a_small_multiple_of_a_numeric_one(tmp_path: Path) -> None:
+    """ISO times are parsed vectorised: 100 000 rows take at most a small
+    multiple of the numeric twin's time (best of three, plus 0.1 s against
+    timer and scheduling noise); a per-cell parse would take seconds."""
     import time
 
-    n = 1_000_000
+    n = 100_000
     t = OPEN_METEO_START + np.arange(n)
     iso = np.datetime_as_string(t.astype("datetime64[s]"))
     y = (np.arange(n) % 7).astype(str)
@@ -332,13 +372,13 @@ def test_million_row_iso_file_reads_within_a_small_multiple(tmp_path: Path) -> N
 
     def best(name: str) -> float:
         times = []
-        for _ in range(2):
+        for _ in range(3):
             start = time.perf_counter()
             load_csv(tmp_path / name)
             times.append(time.perf_counter() - start)
         return min(times)
 
     num, iso_time = best("num.csv"), best("iso.csv")
-    print(f"1M rows: numeric {num:.2f} s, ISO {iso_time:.2f} s")
-    assert iso_time < 4 * num
+    print(f"100k rows: numeric {num:.2f} s, ISO {iso_time:.2f} s")
+    assert iso_time < 4 * num + 0.1, (iso_time, num)
     assert (load_csv(tmp_path / "iso.csv").time == load_csv(tmp_path / "num.csv").time).all()

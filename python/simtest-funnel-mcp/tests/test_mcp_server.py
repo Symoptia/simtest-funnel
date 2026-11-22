@@ -306,6 +306,25 @@ def _tools() -> dict[str, Any]:
     return {t.name: t for t in asyncio.run(run()).tools}
 
 
+def _x_range_description(tool: Any) -> str:
+    """The description of the ``x_range`` argument (may sit on a $ref'd wrapper)."""
+    prop = tool.input_schema["properties"]["x_range"]
+    return str(prop.get("description", ""))
+
+
+def test_x_range_argument_descriptions_agree() -> None:
+    """Both tools explain the bound units and the tube beyond the window."""
+    tools = _tools()
+    for name in ("compare_signals", "plot_signals"):
+        text = _x_range_description(tools[name])
+        assert "(seconds since 1970 on a date-time axis)" in text, name
+        assert "only test points inside it are judged" in text, name
+        assert "the tube of the whole reference there" in text, name
+        assert "extended beyond the window as far as needed" in text, name
+    plot = tools["plot_signals"].description or ""
+    assert "built from the\nreference extended beyond it as far as needed" in plot
+
+
 def test_schemas_list_the_new_arguments() -> None:
     tools = _tools()
     for name in ("describe_signals", "compare_signals", "plot_signals"):
