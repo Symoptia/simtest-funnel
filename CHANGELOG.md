@@ -1,3 +1,10 @@
+# [1.0.0-beta.21](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.20...v1.0.0-beta.21) (2026-11-22)
+
+
+### Bug Fixes
+
+* **sdk:** show plot titles, put the legend below the plot and make the local build repeatable ([99d004f](https://github.com/Symoptia/simtest-funnel/commit/99d004f8edef1ed289638c89566b58021e5379c7))
+
 # [1.0.0-beta.20](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.19...v1.0.0-beta.20) (2026-11-22)
 
 
