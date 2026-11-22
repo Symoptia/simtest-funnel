@@ -1,3 +1,15 @@
+# [1.0.0-beta.14](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.13...v1.0.0-beta.14) (2026-11-22)
+
+
+### Features
+
+* **mcp:** downsample tube bounds and restrict plot output directories ([17fe592](https://github.com/Symoptia/simtest-funnel/commit/17fe5927748771e45439b510141c126ae603fd58))
+
+
+### Performance Improvements
+
+* **core:** edit tube curves through a gap buffer in remove_loop ([731fd5a](https://github.com/Symoptia/simtest-funnel/commit/731fd5a73c7ef0f06cb2f1002125ee298d003041))
+
 # [1.0.0-beta.13](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.12...v1.0.0-beta.13) (2026-11-15)
 
 
