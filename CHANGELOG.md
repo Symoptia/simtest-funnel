@@ -1,3 +1,10 @@
+# [1.0.0-beta.20](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.19...v1.0.0-beta.20) (2026-11-22)
+
+
+### Features
+
+* **python:** publish abi3 wheels for Linux, macOS and Windows and an sdist ([07f85fb](https://github.com/Symoptia/simtest-funnel/commit/07f85fb0ef23ce2a17ae92aa2de9aa2cfb15a572))
+
 # [1.0.0-beta.19](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.18...v1.0.0-beta.19) (2026-11-22)
 
 

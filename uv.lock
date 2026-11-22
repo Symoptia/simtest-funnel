@@ -2049,7 +2049,7 @@ wheels = [
 
 [[package]]
 name = "simtest-funnel"
-version = "1.0.0b19"
+version = "1.0.0b20"
 source = { editable = "crates/simtest-funnel-python" }
 dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -2061,7 +2061,7 @@ requires-dist = [{ name = "numpy", specifier = ">=1.26" }]
 
 [[package]]
 name = "simtest-funnel-mcp"
-version = "1.0.0b19"
+version = "1.0.0b20"
 source = { editable = "python/simtest-funnel-mcp" }
 dependencies = [
     { name = "anyio" },
