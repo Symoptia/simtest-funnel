@@ -272,6 +272,13 @@ coefficients MUST be rejected as well.
 - **WHEN** an agent passes the x-range `{"lo": "-inf"}`
 - **THEN** the call fails with an argument validation error
 
+#### Scenario: Time shift within the x tolerance at the window edges
+- **WHEN** an agent compares an hourly daily cycle with the same cycle 2 h
+  late, `atolx = 10800` and `atoly = 0.05`, with a 2-day x-range in the
+  middle of 6 days of data
+- **THEN** the row passes with 49 judged points, as those points do when
+  the whole files are compared
+
 ### Requirement: One row per column and tolerance set
 
 The result SHALL contain one row per (column, tolerance set) whose comparison
@@ -949,3 +956,16 @@ SHA-256 equals the recorded one; an existing copy SHALL never be replaced.
   already exists
 - **THEN** no request is made and the copy is checked as without the
   variable
+
+### Requirement: Description explains the x-range window
+
+The `compare_signals` description SHALL state that only test points inside
+the x-range are judged, that the tube there is built from the reference
+also beyond the x-range so a time shift within the x tolerance passes at
+its edges, and that the bases of `rtolx` / `rtoly` are the reference inside
+the x-range.
+
+#### Scenario: Agent learns the window semantics
+- **WHEN** an agent reads the `compare_signals` description
+- **THEN** it finds that only points inside x_range are judged, against a
+  tube built from the reference extended beyond x_range

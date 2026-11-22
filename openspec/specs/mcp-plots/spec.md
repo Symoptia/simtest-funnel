@@ -284,6 +284,13 @@ data of both files.
 - **THEN** only test points in that window are judged and the x axis spans
   0.4 to 0.6
 
+#### Scenario: Window edges within the x tolerance
+- **WHEN** an agent plots an hourly daily cycle against the same cycle 2 h
+  late with `atolx = 10800`, `atoly = 0.05` and a 2-day x-range
+- **THEN** the plot reports PASS with all 49 points inside the tube, the
+  same row as `compare_signals`, and the drawn tube reaches both edges of
+  the view
+
 ### Requirement: Deterministic files
 
 Plotting the same input with the same arguments twice SHALL produce
