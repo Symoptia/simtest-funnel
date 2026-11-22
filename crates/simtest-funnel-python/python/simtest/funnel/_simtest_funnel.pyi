@@ -102,7 +102,11 @@ def compare(
     - ``lower``: ``(NDArray[f64], NDArray[f64])`` — lower bound `(x, y)`.
     - ``upper``: ``(NDArray[f64], NDArray[f64])`` — upper bound `(x, y)`.
     - ``errors``: ``(NDArray[f64], NDArray[f64])`` — signed deviations
-      on the test x-grid.
+      on the test x-grid (``0`` outside ``x_range``).
+
+    With an ``x_range`` only test points inside it are judged, against the
+    tube built from the reference extended beyond it by the x tolerance;
+    ``lower`` / ``upper`` then reach beyond the window.
     """
     ...
 

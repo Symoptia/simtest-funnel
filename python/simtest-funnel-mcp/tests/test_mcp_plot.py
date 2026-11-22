@@ -927,3 +927,38 @@ def test_date_ticks_and_labels(lo: float, hi: float, labels: list[str]) -> None:
     ticks, step = date_ticks(lo, hi)
     assert date_labels(ticks, step) == labels
     assert all(lo <= t <= hi for t in ticks)
+
+
+def test_x_range_tube_built_beyond_the_window(write_csv: WriteCsv) -> None:
+    """Daily cycle 2 h late, atolx = 3 h, 2-day window: the plot passes like
+    compare_signals, and the drawn tube reaches the edges of the view."""
+    import datetime as dt
+
+    def cycle(name: str, delay_h: float) -> Path:
+        lines = ["time,temperature"]
+        for h in range(145):
+            v = 10.0 + 5.0 * np.cos(2.0 * np.pi * (h - 14.0 - delay_h) / 24.0)
+            lines.append(f"{dt.datetime(2026, 11, 1) + dt.timedelta(hours=h):%Y-%m-%dT%H:%M},"
+                         f"{v:.12g}")
+        return write_csv(name, "\n".join(lines) + "\n")
+
+    ref, tst = cycle("ref.csv", 0.0), cycle("test.csv", 2.0)
+    tol = ToleranceSet(label="3h", atolx=10800, atoly=0.05)
+    x_range = XRange(lo="2026-11-03T00:00", hi="2026-11-05T00:00")
+    outcome = prepare_plot(load_csv(ref), load_csv(tst), column="temperature", tolerance=tol,
+                           x_range=x_range, max_intervals=5)
+    row = outcome.record.row
+    assert (row.verdict, row.points_compared) == ("pass", 49) and not row.points_outside
+    data = outcome.data
+    assert "PASS, all 49 points inside the tube" in data.title
+    lo, hi = data.view
+    assert data.lower_x.min() < lo and data.upper_x.max() > hi
+    assert data.marker_x.shape[0] == 0
+    _assert_drawn_tube_agrees(outcome)
+    compared = structured(compare_signals_impl(
+        str(ref), str(tst), [], tolerances=[tol], x_range=x_range,
+    ))
+    plotted = structured(plot_signals_impl(
+        str(ref), str(tst), [], column="temperature", tolerance=tol, x_range=x_range,
+    ))
+    assert plotted["row"] == compared["rows"][0]

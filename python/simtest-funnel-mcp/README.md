@@ -87,6 +87,14 @@ reference) or `MISSING_TEST` (the reverse), still reports
 `points_compared` / `points_outside`, and its `problem` text names both
 time spans and the exact `x_range` that compares the overlap.
 
+Only test points inside `x_range` are judged, but the tube there is built
+from the reference extended beyond `x_range` (by twice the x half-width
+plus 3 samples on each side), so a test curve shifted by less than the x
+tolerance passes at the window edges exactly as it does when the whole
+files are compared. At the first and last reference sample there is
+nothing to extend with. The bases of `rtolx` / `rtoly` (reference time
+span and value range) are those of the reference inside `x_range`.
+
 ### `plot_signals(reference_path, column, test_path=None, test_column=None, ...)`
 
 Draws ONE comparison - one signal column (or one reference column against
@@ -101,7 +109,7 @@ look at it. SVG is never returned inline (it would reach the model as text).
 | `test_column` | `column` | Test column plotted against `column`, like one `compare_signals` pair (legend and title then name both) |
 | `header_line`, `test_header_line` | 1, `header_line` | As in `compare_signals` |
 | `tolerance` | library default | One tolerance set: optional `label` plus any of the six coefficients (one entry of `compare_signals` `tolerances`) |
-| `x_range` | unbounded | As in `compare_signals`; also the time window shown (zoom) |
+| `x_range` | unbounded | As in `compare_signals` (tube built also from the reference just beyond it); also the time window shown (zoom), with the tube drawn to its edges |
 | `output_path` | none | Write the plot here: `.svg` (document) or `.png` (1600 x 900 px), inside a workspace root or a configured output directory. Omit for the preview only |
 | `overwrite` | false | Replace `output_path` if it exists (refused otherwise) |
 | `max_intervals` | 5 | Violation intervals listed in the result row (all are drawn) |

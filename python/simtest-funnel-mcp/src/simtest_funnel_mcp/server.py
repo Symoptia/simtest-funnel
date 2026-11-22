@@ -253,6 +253,13 @@ whole time span, so it grows with the length of the record (rtolx = 0.002 allows
 43 min on 15 days of data). A failed row with no x coefficient given gets a note
 suggesting an x tolerance.
 
+X_RANGE: only test points inside x_range are judged, but the tube there is built
+from the reference extended beyond x_range (by twice half_x plus 3 samples on each
+side), so a test curve shifted by less than half_x passes at the window edges
+exactly as in a comparison of the whole files. At the first and last reference
+sample there is nothing to extend with. time_span_ref and value_range_ref (the rtol
+bases) stay those of the reference inside x_range.
+
 Example "1 % in y, 0.5 s in x": {{"rtoly": 0.01, "atolx": 0.5}} (1 % of the reference
 value range). For 1 % of the local value use "ltoly": 0.01; to allow both use
 "rtoly"/"ltoly" together (the max applies). Example "within 0.05 units, no time
@@ -346,8 +353,10 @@ taken relative to the first workspace root, else the first output directory. An
 existing file is refused unless overwrite=true. Omit output_path to get only the
 inline preview (nothing is written). SVG is never returned inline.
 
-x_range restricts the comparison exactly as in compare_signals (rtol bases are
-computed within it) and is also the time window shown, so it doubles as zoom.
+x_range restricts the comparison exactly as in compare_signals (only test points
+inside it are judged, the tube is built from the reference also just beyond it, rtol
+bases are computed within it) and is also the time window shown, so it doubles as
+zoom; the tube is drawn up to the edges of the view.
 A column that cannot be compared (missing, bad data, time ranges that differ,
 non-monotonic time) is an error and nothing is written; use compare_signals to see
 all problems. Tolerance coefficients: see compare_signals.
@@ -1364,9 +1373,10 @@ def build_server(network: Network = NETWORK_OFF) -> MCPServer:
             XRange | None,
             Field(
                 description=(
-                    "Time window {lo, hi} to compare; bounds must be finite numbers (seconds since "
-                    "1970 on a date-time axis) or, on a date-time axis, ISO 8601 strings; omit a "
-                    "bound for unbounded."
+                    "Time window {lo, hi} to compare: only test points inside it are judged "
+                    "(against a tube built from the reference also just beyond it); bounds must "
+                    "be finite numbers (seconds since 1970 on a date-time axis) or, on a "
+                    "date-time axis, ISO 8601 strings; omit a bound for unbounded."
                 )
             ),
         ] = None,

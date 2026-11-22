@@ -35,9 +35,20 @@ export interface Tolerances {
 export type ResolvedTolerances = { [K in keyof Tolerances]-?: number };
 
 /**
- * X-range filter passed in {@link Options}. A bound that is omitted,
- * `undefined` or `null` is unbounded on that side, so `{ lo: 0.5 }` means
- * `[0.5, Infinity]` (same as the Python `Range`).
+ * X-range window passed in {@link Options}: only test points with x in
+ * `[lo, hi]` are judged. A bound that is omitted, `undefined` or `null` is
+ * unbounded on that side, so `{ lo: 0.5 }` means `[0.5, Infinity]` (same as
+ * the Python `Range`).
+ *
+ * The tube for the window is built from the reference extended beyond it
+ * by the x tolerance (two x half-widths plus three samples per side), so a
+ * test point near a window edge that is shifted by less than the x
+ * tolerance is judged as in a full-range comparison; without `rtolx` /
+ * `rtoly` every point in the window gets the same verdict as in the
+ * full-range comparison. At the first and last reference sample there is
+ * nothing to extend with. `rtolx` / `rtoly` are relative to the reference
+ * inside the window, and coverage (`MissingReference` / `MissingTest`) is
+ * judged inside the window.
  */
 export interface XRange {
   lo?: number | null;
@@ -83,7 +94,13 @@ export const Status = {
 } as const;
 export type StatusCode = (typeof Status)[keyof typeof Status];
 
-/** Result of {@link compare}. Errors are signed. */
+/**
+ * Result of {@link compare}. `errorsX` is the test x-grid and `errorsY` the
+ * signed deviation there (positive above the upper bound, negative below the
+ * lower bound, `0` inside the tube and for test points outside `xRange`).
+ * With an `xRange`, `lowerX` / `upperX` reach beyond the window by the
+ * extension the tube is built from.
+ */
 export interface CompareResult {
   status: StatusCode;
   lowerX: Float64Array;
@@ -304,7 +321,13 @@ export interface CreateFunnelPlotInputs {
   result: CompareResult;
 }
 
-/** Render a funnel plot into `el`. */
+/**
+ * Render a funnel plot into `el`: reference, test, both tube bounds and the
+ * absolute deviations. For a comparison with an `xRange` the bounds cover
+ * the window plus the extension the tube was built from and the deviations
+ * are `0` outside the window; pass e.g. `{ xaxis: { range: [lo, hi] } }` as
+ * `layout` to show only the window.
+ */
 export async function createFunnelPlot(
   plotly: PlotlyLike,
   el: HTMLElement,

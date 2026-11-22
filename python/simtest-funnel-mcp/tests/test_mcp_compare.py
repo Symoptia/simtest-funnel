@@ -892,3 +892,68 @@ def test_numeric_axis_output_has_no_iso_fields(demo_reference: Path, demo_test: 
     blob = json.dumps(d)
     assert "_iso" not in blob and "time_tolerance" not in blob and "time_zone" not in blob
     assert d["reference"]["time_kind"] == "numeric" and d["reference"]["header_line"] == 1
+
+
+# --------------------------------------------------------------------------
+# x_range: the tube is built from the reference beyond the window
+# --------------------------------------------------------------------------
+
+HOUR = 3600.0
+DAY = 86400.0
+T0 = 1793491200.0  # 2026-11-01T00:00 (no time zone, read as UTC)
+SHIFT_3H = ToleranceSet(label="3h", atolx=10800, atoly=0.05)
+
+
+def _daily_cycle_csv(write_csv: WriteCsv, name: str, delay_h: float) -> Path:
+    """Hourly daily temperature cycle over 6 days, ``delay_h`` hours late."""
+    import datetime as dt
+
+    lines = ["time,temperature"]
+    for h in range(145):
+        s = h * HOUR
+        v = 10.0 + 5.0 * np.cos(2.0 * np.pi * (s - (14.0 + delay_h) * HOUR) / DAY)
+        stamp = dt.datetime(2026, 11, 1) + dt.timedelta(hours=h)
+        lines.append(f"{stamp:%Y-%m-%dT%H:%M},{v:.12g}")
+    return write_csv(name, "\n".join(lines) + "\n")
+
+
+def _window(ref: Path, tst: Path, lo: float | None, hi: float | None) -> dict[str, Any]:
+    x_range = None if lo is None and hi is None else XRange(lo=lo, hi=hi)
+    d = _compare(ref, tst, tolerances=[SHIFT_3H], x_range=x_range)
+    row: dict[str, Any] = d["rows"][0]
+    return row
+
+
+def test_x_range_shift_within_atolx_passes_at_window_edges(write_csv: WriteCsv) -> None:
+    ref = _daily_cycle_csv(write_csv, "ref.csv", 0.0)
+    tst = _daily_cycle_csv(write_csv, "test.csv", 2.0)
+    # The whole files fail only in the first hours (no earlier reference).
+    full = _window(ref, tst, None, None)
+    assert full["verdict"] == "fail"
+    assert all(iv["end_x"] < T0 + 3 * HOUR for iv in full["intervals"])
+    # A 2-day window: the 2 h delay is inside the 3 h tolerance at both edges.
+    row = _window(ref, tst, T0 + 2 * DAY, T0 + 4 * DAY)
+    assert row["verdict"] == "pass"
+    assert row["points_compared"] == 49 and not row.get("points_outside")
+    # ISO bounds give the same row.
+    iso = _compare(ref, tst, tolerances=[SHIFT_3H],
+                   x_range=XRange(lo="2026-11-03T00:00", hi="2026-11-05T00:00"))
+    assert iso["rows"][0] == row
+
+
+def test_x_range_window_edges_cases(write_csv: WriteCsv) -> None:
+    ref = _daily_cycle_csv(write_csv, "ref.csv", 0.0)
+    tst = _daily_cycle_csv(write_csv, "test.csv", 2.0)
+    end = T0 + 144 * HOUR
+    # Narrower than the x tolerance (two samples, 1 h).
+    narrow = _window(ref, tst, T0 + 2.5 * DAY, T0 + 2.5 * DAY + HOUR)
+    assert (narrow["verdict"], narrow["points_compared"]) == ("pass", 2)
+    # At the data start nothing is extended: fails there as the whole files do.
+    assert _window(ref, tst, T0, T0 + DAY)["verdict"] == "fail"
+    assert _window(ref, tst, T0 + 3 * HOUR, T0 + DAY)["verdict"] == "pass"
+    # Partly outside the data: compared on the overlap.
+    part = _window(ref, tst, end - DAY, end + DAY)
+    assert (part["verdict"], part["points_compared"]) == ("pass", 25)
+    # Wholly outside the data, even within the tolerance of its end.
+    outside = _window(ref, tst, end + HOUR / 2, end + 2 * HOUR)
+    assert outside["verdict"] == "error"

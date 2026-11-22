@@ -72,6 +72,29 @@ fn eq_zero(v: f64) -> bool {
     v.abs() < 1e-10
 }
 
+/// An upper bound on the x half-width that [`tube_halfwidths_checked`]
+/// gives a reference point at `x`:
+/// `max(atolx, rtolx*range_x, ltolx*|x|, fallback, HALFWIDTH_FLOOR)`, where
+/// `fallback = rtolx*mag_x` if `rtolx` is non-zero (the constant-reference
+/// fallback), else `0`. Equal to the half-width except where the fallback
+/// is not taken although it is larger.
+///
+/// As a function of `x` it has the form `max(c, ltolx*|x|)`, which the
+/// x-range extension relies on (see `compare::extended_indices`).
+#[inline]
+pub(crate) fn halfwidth_x_bound(x: f64, dc: DataChar, tol: &Tolerances) -> f64 {
+    let fallback = if eq_zero(tol.rtolx) {
+        0.0
+    } else {
+        tol.rtolx * dc.mag_x
+    };
+    tol.atolx
+        .max(tol.rtolx * dc.range_x)
+        .max(fallback)
+        .max(HALFWIDTH_FLOOR)
+        .max(tol.ltolx * x.abs())
+}
+
 /// Compute per-point half-widths `(half_x, half_y)` for the reference
 /// trajectory using the same formula as the C reference's
 /// `set_tube_size`. Falls back to `rtol*mag` when the range-based

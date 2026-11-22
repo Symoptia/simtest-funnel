@@ -1,12 +1,43 @@
 //! Public `compare` / `compare_into` API wiring the tube-size,
 //! corner-enumeration, and error stages together.
+//!
+//! # The x-range window
+//!
+//! [`Options::x_range`] restricts which test points are judged to the
+//! window `[lo, hi]` (intersected with the reference x-extent). The tube is
+//! not built from the reference clipped to the window: it is built from the
+//! reference extended beyond the window on both sides (by two x
+//! half-widths plus three samples, see `extended_indices`), so the tube
+//! over the window covers reference values just outside it, as it does in
+//! a comparison over the full range. A test point inside the window that
+//! is shifted in x by less than the x tolerance is therefore judged as in
+//! the full-range comparison, also at the window edges. Where the window
+//! reaches the first or last reference point there is nothing to extend
+//! with, as in a full-range comparison.
+//!
+//! What stays relative to the window: the bases of the range-relative
+//! tolerances (`range_x`, `range_y` and, for the constant-reference
+//! fallback, the magnitudes) are computed from the reference points
+//! inside the window, so with `rtolx` / `rtoly` a windowed comparison
+//! differs from the full-range one by design; the coverage checks
+//! ([`Status::MissingReference`] / [`Status::MissingTest`]) compare the
+//! extents clipped to the window, and at least two reference and two test
+//! points must lie inside the window ([`Status::InsufficientData`]).
+//!
+//! Without range-relative tolerances, every test point inside the window
+//! gets the same verdict as in the full-range comparison. The deviations
+//! and bounds there are in practice bit-identical to the full-range ones;
+//! the only known exception is floating-point rounding when a run of
+//! collinear reference segments crosses the start of the extension (the
+//! corner algorithm inserts no corners inside such a run), which can
+//! only matter for a test point within rounding error of a bound.
 
 use crate::cancel::{CancelToken, Cancelled, Checkpoint};
 use crate::corners::build_bounds_checked;
 use crate::errors::compute_errors_checked;
-use crate::options::{Options, Range};
+use crate::options::{Options, Range, Tolerances};
 use crate::status::Status;
-use crate::tube::{get_data_char_checked, tube_halfwidths_checked};
+use crate::tube::{get_data_char_checked, halfwidth_x_bound, tube_halfwidths_checked, DataChar};
 
 /// Caller-provided output buffers for [`compare_into`].
 pub struct Outputs<'a> {
@@ -20,7 +51,7 @@ pub struct Outputs<'a> {
     pub upper_y: &'a mut [f64],
     /// Test-grid x-coordinates, length == `t_test.len()`.
     pub errors_x: &'a mut [f64],
-    /// Signed deviations; zero where in-tube or outside effective range.
+    /// Signed deviations, as in [`CompareResult::errors`].
     pub errors_y: &'a mut [f64],
 }
 
@@ -44,11 +75,19 @@ pub fn estimate_capacities(n_reference: usize, n_test: usize) -> Capacities {
 pub struct CompareResult {
     /// Comparison status code.
     pub status: Status,
-    /// Lower bound `(x, y)`.
+    /// Lower bound `(x, y)`. With an `x_range`, the bound of the tube built
+    /// from the reference extended beyond the window (see the
+    /// [module docs](self)), so it reaches past the window by up to the
+    /// extension plus an x half-width.
     pub lower: (Vec<f64>, Vec<f64>),
-    /// Upper bound `(x, y)`.
+    /// Upper bound `(x, y)`, over the same x-extent as `lower`.
     pub upper: (Vec<f64>, Vec<f64>),
-    /// Errors `(x, y)`. `y` is a signed deviation.
+    /// Errors `(x, y)`, one per test point: `x` is the test x-value and `y`
+    /// the signed deviation (positive above the upper bound, negative below
+    /// the lower bound, `0` inside the tube). Test points outside `x_range`
+    /// get `0`; test points inside `x_range` but beyond the reference
+    /// extent are scored against the bounds' end values, as in the LBNL
+    /// reference, but are not judged (see [`Status`]).
     pub errors: (Vec<f64>, Vec<f64>),
 }
 
@@ -73,7 +112,83 @@ fn range_indices(x: &[f64], lo: f64, hi: f64) -> std::ops::Range<usize> {
     start..end
 }
 
+/// `max|x|` of a non-decreasing, NaN-free, non-empty `x`, computed as
+/// [`get_data_char`](crate::tube::get_data_char_checked) computes `mag_x`
+/// (`max(x_max, |x_min|)`) from the two end points.
+#[inline]
+fn sorted_magnitude(x: &[f64]) -> f64 {
+    x[x.len() - 1].max(x[0].abs())
+}
+
+/// Extension of the reference beyond an x-range window, in x half-widths.
+///
+/// One half-width is what a reference point's tube rectangle reaches;
+/// the second covers the corner segments and loop removal of the corner
+/// algorithm, which connect corners of neighbouring points. Measured with
+/// the property test in `window_property.rs`: one half-width plus
+/// [`EXTENSION_SAMPLES`] already gave identical in-window results; two
+/// are used for safety (the extra cost is a few samples per side).
+const EXTENSION_HALFWIDTHS: f64 = 2.0;
+
+/// Reference samples kept beyond the half-width extension on each side.
+///
+/// The corners of a reference point depend on the slope of the segment
+/// arriving at it, so the first sample of the extended reference gets
+/// different corners than in the full reference, and the corner
+/// algorithm skips repeated points and collinear runs. Measured (see
+/// [`EXTENSION_HALFWIDTHS`]): 0 extra samples changed verdicts, 1 left
+/// rounding-level differences in deviations in ~1 % of windows, 2 left
+/// them in ~1 window in 10 000, 3 left none in ~40 000 random windows.
+const EXTENSION_SAMPLES: usize = 3;
+
+/// Index range of the reference used to build the tube for the window
+/// `w` (the reference points in `[lo, hi]`).
+///
+/// On the left it starts `EXTENSION_SAMPLES` points before the first
+/// point `x` left of the window whose x half-width `h(x)` satisfies
+/// `x + EXTENSION_HALFWIDTHS * h(x) >= lo`; on the right it ends
+/// `EXTENSION_SAMPLES` points after the last point with
+/// `x - EXTENSION_HALFWIDTHS * h(x) <= hi`. `h` is the upper bound
+/// [`halfwidth_x_bound`], of the form `max(c, ltolx * |x|)`, so with
+/// `EXTENSION_HALFWIDTHS * ltolx <= 1` both reaches are monotone in `x`
+/// and the points are found by binary search: the cost grows with the
+/// extension, not with the length of the reference. Otherwise (a local
+/// x tolerance of 50 % or more, or non-finite times) the extension takes
+/// the whole reference on the side that has points beyond the window.
+/// A window that starts (ends) at the first (last) reference point has
+/// nothing to extend on that side.
+fn extended_indices(
+    t_ref: &[f64],
+    w: std::ops::Range<usize>,
+    lo: f64,
+    hi: f64,
+    dc: DataChar,
+    tol: &Tolerances,
+) -> std::ops::Range<usize> {
+    let n = t_ref.len();
+    let (k, extra) = (EXTENSION_HALFWIDTHS, EXTENSION_SAMPLES);
+    let reach = |x: f64| k * halfwidth_x_bound(x, dc, tol);
+    let bounded = k * tol.ltolx <= 1.0 && t_ref[0].is_finite() && t_ref[n - 1].is_finite();
+    let start = if w.start == 0 || !bounded {
+        0
+    } else {
+        let p = t_ref[..w.start].partition_point(|&x| x + reach(x) < lo);
+        p.saturating_sub(extra)
+    };
+    let end = if w.end == n || !bounded {
+        n
+    } else {
+        let p = t_ref[w.end..].partition_point(|&x| x - reach(x) <= hi);
+        (w.end + p).saturating_add(extra).min(n)
+    };
+    start..end
+}
+
 /// Full comparison returning owned vectors.
+///
+/// With an `x_range`, only test points inside it are judged, against the
+/// tube built from the reference extended beyond it (see the
+/// [module docs](self) for what is relative to the window).
 ///
 /// Cannot be interrupted; see [`compare_cancellable`] /
 /// [`compare_with_check`] for a comparison that can be stopped.
@@ -170,14 +285,13 @@ fn compare_impl<C: FnMut() -> Result<(), Cancelled>>(
         return Ok(empty_result(Status::EmptyRange));
     }
 
-    // 3. Restrict the reference to x_range (both time arrays are
-    //    non-decreasing and NaN-free here, so the points in range are a
-    //    contiguous slice). Only the count of test points in range
-    //    matters: errors are computed on the full test arrays so that
-    //    `errors_x`/`errors_y` keep length `n_test`.
-    let r = range_indices(t_ref, opts.x_range.lo, opts.x_range.hi);
-    let (tr, yr) = (&t_ref[r.clone()], &y_ref[r]);
-    if tr.len() < 2 || range_indices(t_test, opts.x_range.lo, opts.x_range.hi).len() < 2 {
+    // 3. The window: reference and test points inside x_range (both time
+    //    arrays are non-decreasing and NaN-free here, so the points in
+    //    range are contiguous slices).
+    let (lo, hi) = (opts.x_range.lo, opts.x_range.hi);
+    let w = range_indices(t_ref, lo, hi);
+    let tw = range_indices(t_test, lo, hi);
+    if w.len() < 2 || tw.len() < 2 {
         return Ok(empty_result(Status::InsufficientData));
     }
 
@@ -188,15 +302,39 @@ fn compare_impl<C: FnMut() -> Result<(), Cancelled>>(
     let mut cp = Checkpoint::new(check);
     cp.now()?;
 
-    // 4. tube size + bounds
-    let dc = get_data_char_checked(tr, yr, &mut cp)?;
-    let (hx, hy) = tube_halfwidths_checked(tr, yr, dc, &opts.tolerances, &mut cp)?;
+    // 4. Tube size from the reference inside the window (the bases of the
+    //    range-relative tolerances), then the tube from the reference
+    //    extended beyond the window by the x half-widths, so that the tube
+    //    over the window is the tube of the whole reference there.
+    let tol = &opts.tolerances;
+    let dc = get_data_char_checked(&t_ref[w.clone()], &y_ref[w.clone()], &mut cp)?;
+    let e = extended_indices(t_ref, w, lo, hi, dc, tol);
+    let (tr, yr) = (&t_ref[e.clone()], &y_ref[e]);
+    let (hx, hy) = tube_halfwidths_checked(tr, yr, dc, tol, &mut cp)?;
     cp.now()?;
-    let (lx, ly, ux, uy) = build_bounds_checked(tr, yr, &hx, &hy, dc.mag_x, &mut cp)?;
+    // Normalize x by the magnitude of the whole reference (O(1): it is
+    // sorted), so the corner arithmetic does not depend on the window.
+    let mag_x = sorted_magnitude(t_ref);
+    let (lx, ly, ux, uy) = build_bounds_checked(tr, yr, &hx, &hy, mag_x, &mut cp)?;
 
-    // 5. errors: computed over original t_test / y_test arrays (caller sees
-    //    length-n_test output); deviations are non-zero only inside eff range.
-    let (ex, ey) = compute_errors_checked(t_test, y_test, &lx, &ly, &ux, &uy, &mut cp)?;
+    // 5. Deviations of the test points inside x_range; the arrays keep
+    //    length n_test, with deviation 0 outside x_range.
+    let (ex, ey) = if tw.len() == t_test.len() {
+        compute_errors_checked(t_test, y_test, &lx, &ly, &ux, &uy, &mut cp)?
+    } else {
+        let (_, eyw) = compute_errors_checked(
+            &t_test[tw.clone()],
+            &y_test[tw.clone()],
+            &lx,
+            &ly,
+            &ux,
+            &uy,
+            &mut cp,
+        )?;
+        let mut ey = vec![0.0_f64; t_test.len()];
+        ey[tw].copy_from_slice(&eyw);
+        (t_test.to_vec(), ey)
+    };
 
     // 6. classify status
     let status = classify_status(t_ref, t_test, &ey, eff_lo, eff_hi, opts.x_range, &mut cp)?;
@@ -330,9 +468,12 @@ fn classify_status<C: FnMut() -> Result<(), Cancelled>>(
 }
 
 #[cfg(test)]
+#[path = "window_property.rs"]
+mod window_property;
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::Tolerances;
 
     fn opts_loose() -> Options {
         Options {

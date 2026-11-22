@@ -98,6 +98,18 @@ settings; `worst`, `compared_range` and both fractions are `None`.
 x-extents are clipped to it first, so `Range(lo, hi)` inside the overlap
 of the two trajectories yields `PASS` or `FAIL`.
 
+The tube for an `x_range` window is built from the reference extended
+beyond the window by the x tolerance (two x half-widths plus three
+samples per side), so a test point near a window edge that is shifted by
+less than the x tolerance is judged exactly as in a comparison over the
+full range; without `rtolx` / `rtoly` every point in the window gets the
+same verdict as in the full-range comparison. At the first and last
+reference sample there is nothing to extend with. `rtolx` / `rtoly` are
+relative to the reference inside the window. The bounds in
+`result.lower` / `result.upper` reach beyond the window by the
+extension; `result.errors` has deviation `0` for test points outside
+`x_range`.
+
 ## Downsampling for plots
 
 `downsample_min_max` reduces a long signal for plotting or reporting. It

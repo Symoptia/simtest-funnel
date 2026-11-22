@@ -87,6 +87,20 @@ class Tolerances:
 
 @dataclass(frozen=True)
 class Range:
+    """Inclusive x-range ``[lo, hi]``: the window in which test points are judged.
+
+    The default is unbounded (the full reference span). The tube for the
+    window is built from the reference extended beyond it by the x
+    tolerance (two x half-widths plus three samples per side), so a test
+    point near a window edge that is shifted by less than the x tolerance is
+    judged as in a full-range comparison; without ``rtolx`` / ``rtoly``
+    every point in the window gets the same verdict as in the full-range
+    comparison. At the first and last reference sample there is nothing to
+    extend with. ``rtolx`` / ``rtoly`` are relative to the reference inside
+    the window, and coverage (``MISSING_REFERENCE`` / ``MISSING_TEST``) is
+    judged inside the window.
+    """
+
     lo: float = float("-inf")
     hi: float = float("+inf")
 
@@ -101,6 +115,15 @@ class Options:
 
 @dataclass(frozen=True)
 class CompareResult:
+    """Result of :func:`compare`.
+
+    ``lower`` / ``upper`` are the tube bounds ``(x, y)``; with an ``x_range``
+    they reach beyond the window by the extension the tube is built from.
+    ``errors`` is ``(x, deviation)`` on the test grid: signed (positive above
+    the upper bound, negative below the lower bound, ``0`` inside the tube),
+    and ``0`` for test points outside ``x_range``.
+    """
+
     status: int
     lower: tuple[np.ndarray, np.ndarray]
     upper: tuple[np.ndarray, np.ndarray]

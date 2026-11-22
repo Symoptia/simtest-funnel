@@ -71,6 +71,8 @@ def test_tools_are_listed_with_annotations_and_schemas() -> None:
         '"1 % in y, 0.5 s in x": {"rtoly": 0.01, "atolx": 0.5}',
         "rtoly = 0.002",
         "x: all 0 (NO time tolerance)",
+        "X_RANGE: only test points inside x_range are judged",
+        "built\nfrom the reference extended beyond x_range",
     ):
         assert needle in description, needle
     assert set(tools["describe_signals"].input_schema["properties"]) == {

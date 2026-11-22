@@ -11,7 +11,9 @@
 /// half_y[i] = max(atoly, rtoly*range_y, ltoly*|y_ref[i]|)
 /// ```
 ///
-/// where `range_*` is the reference extent within `x_range`. A half-width
+/// where `range_*` is the extent of the reference points inside `x_range`
+/// (the window, not the reference beyond it that the tube is also built
+/// from; see [`compare`](crate::compare())). A half-width
 /// below `1e-10` (e.g. only `rtoly` on a constant reference, `range_y = 0`)
 /// falls back to `rtol * max|reference value|` on that axis when `rtol > 0`,
 /// then to the `1e-10` floor.
@@ -184,9 +186,14 @@ impl From<Tolerances> for PartialTolerances {
     }
 }
 
-/// Half-open inclusive x-range used to clip the trajectories before
-/// comparison. The default is `(-inf, +inf)` which selects the full
-/// reference span.
+/// Inclusive x-range `[lo, hi]`: the window of x in which test points are
+/// judged. The default is `(-inf, +inf)`, the full reference span.
+///
+/// The tube for the window is built from the reference extended beyond it
+/// by the x tolerance, so in-window points near the window edges are
+/// judged as in a full-range comparison; the bases of the range-relative
+/// tolerances are computed from the reference inside the window. See the
+/// [`compare`](mod@crate::compare) module.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "json", derive(serde::Serialize))]
 pub struct Range {
@@ -214,7 +221,7 @@ impl Default for Range {
 pub struct Options {
     /// Tolerance coefficients; see [`Tolerances`].
     pub tolerances: Tolerances,
-    /// X-range used to clip both trajectories before comparison.
+    /// Window of x in which test points are judged; see [`Range`].
     pub x_range: Range,
 }
 

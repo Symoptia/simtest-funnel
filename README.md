@@ -170,6 +170,14 @@ aware of the following:
   give at least one y coefficient (e.g. `atoly = 0`). This also applies
   to CLI `--params` files: they use the LBNL `param.json` keys, but a
   missing y tolerance key is resolved per axis instead of meaning `0`.
+- **x-range window (library and MCP server).** LBNL Funnel has no
+  x-range. `x_range` judges only the test points inside the window, but
+  builds the tube from the reference extended beyond it by the x
+  tolerance (two x half-widths plus three samples per side), so points
+  near the window edges are judged as in a full-range comparison.
+  Range-relative tolerances (`rtolx`, `rtoly`) are relative to the
+  reference inside the window. See the
+  [core README](crates/simtest-funnel-core/README.md#the-x-range-window).
 
 The core and CLI READMEs cross-link back to this section.
 

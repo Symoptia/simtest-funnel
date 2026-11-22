@@ -36,7 +36,7 @@ assert_eq!(r.status, Status::Pass);
 
 At each reference sample the tube half-widths are
 `max(atol, rtol * range, ltol * |value|)` per axis, where `range` is the
-reference extent within `x_range`. If that is effectively zero
+extent of the reference samples inside `x_range`. If that is effectively zero
 (`< 1e-10`, e.g. only `rtoly` given on a constant reference) it falls
 back to `rtol * max|value|` (when `rtol > 0`), then to `1e-10`; give
 `atoly` for constant or near-constant signals.
@@ -65,6 +65,33 @@ axis — the same rule the Python, TypeScript and CLI front ends use:
 
 A plain `Tolerances` value is fully explicit and used verbatim. It has
 no `Default` impl; spell explicit all-zero as `Tolerances::ZERO`.
+
+## The x-range window
+
+`Options::x_range` (default unbounded) is the window `[lo, hi]` of x in
+which test points are judged. The tube is built from the reference
+**extended beyond the window** by two x half-widths plus three samples
+on each side, so a test point near a window edge that is shifted in x by
+less than the x tolerance is judged exactly as in a comparison over the
+full range. Where the window reaches the first or last reference sample
+there is nothing to extend with, as in a full-range comparison.
+
+- Without range-relative tolerances (`rtolx = rtoly = 0`), every test
+  point inside the window gets the same verdict as in the full-range
+  comparison (deviations and bounds are in practice bit-identical; the
+  only known difference is rounding when a run of collinear reference
+  segments crosses the start of the extension).
+- `rtolx` / `rtoly` (and the constant-reference fallback) are relative to
+  the reference samples **inside the window**, so with them a windowed
+  comparison differs from the full-range one by design.
+- Coverage (`MissingReference` / `MissingTest`) and the minimum of two
+  reference and two test samples are judged inside the window.
+- `lower` / `upper` cover the window plus the extension; `errors` has one
+  entry per test sample, with deviation `0` outside `x_range`.
+- The extension costs a few samples per side (found by binary search), so
+  a small window on a long record stays cheap. A local x tolerance
+  `ltolx >= 0.5` has no bounded reach and uses the reference up to the
+  data start / end.
 
 ## Cancellation
 

@@ -75,6 +75,17 @@ acceptable; a range-relative `rtolx` grows with the length of the record.
 compares `x >= 0.5`. Results report ranges as `ResolvedXRange` with both
 bounds present (`-Infinity` / `Infinity` when unbounded).
 
+Only test points inside the window are judged, but the tube is built from
+the reference extended beyond the window by the x tolerance (two x
+half-widths plus three samples per side), so a test point near a window
+edge that is shifted by less than the x tolerance passes exactly as in a
+comparison over the full range (without `rtolx` / `rtoly`, every point in
+the window gets the same verdict as in the full-range comparison). At the
+first and last reference sample there is nothing to extend with.
+`rtolx` / `rtoly` are relative to the reference inside the window.
+`lowerX` / `upperX` reach beyond the window by the extension;
+`errorsY` is `0` for test points outside `xRange`.
+
 `defaultOptions()` returns the six default values explicitly (passing
 them is identical to omitting `options`), and `summarize()` echoes the
 six resolved values (`ResolvedTolerances`).
