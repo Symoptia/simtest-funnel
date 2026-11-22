@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    branches: [main, beta]
+
+jobs:
+  semantic-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      new_release_version: ${{ steps.check-release.outputs.new_release_version }}
+      new_release_published: ${{ steps.check-release.outputs.new_release_published }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_TOKEN }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+      # prepareCmd (.releaserc.json) refreshes uv.lock with `uv lock`
+      # (scripts/release-refresh-lockfiles.sh); Cargo.lock uses the Rust
+      # toolchain above. uv is pinned to the version that wrote uv.lock: a
+      # newer uv rewrites the lockfile format and the script's guard
+      # rejects the diff.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
+      # Build the publishable, self-contained SDK bundle (wasm glue + dist)
+      # before semantic-release so @semantic-release/npm packs real artifacts.
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: cd packages/sdk && pnpm install
+      - run: cd packages/sdk && pnpm build
+      # npm trusted publishing (OIDC) requires npm >= 11.5.1; the version
+      # bundled with Node is too old, so upgrade it explicitly.
+      - run: npm install -g npm@latest
+      - run: npm install -g semantic-release @semantic-release/changelog
+              @semantic-release/git @semantic-release/exec @semantic-release/npm
+      - run: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+      - id: check-release
+        run: |
+          if [ -f .release-version ]; then
+            echo "new_release_published=true" >> "$GITHUB_OUTPUT"
+            echo "new_release_version=$(cat .release-version)" >> "$GITHUB_OUTPUT"
+          fi
+
+  # All Python distributions (abi3 wheels for every platform, the
+  # simtest-funnel sdist, the MCP server's wheel and sdist), built from the
+  # release tag and smoke-tested on their own platforms. Uploads workflow
+  # artifacts only; publish-pypi uploads them to PyPI.
+  python-wheels:
+    needs: semantic-release
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/python-wheels.yml
+    with:
+      ref: v${{ needs.semantic-release.outputs.new_release_version }}
+
+  # The single PyPI upload. It runs only when every build and smoke job has
+  # passed, so a failing platform never leaves a partial release on PyPI.
+  # Recovery from any failure here or in python-wheels: re-run the failed
+  # jobs of this workflow run (everything builds from the tag;
+  # --skip-existing completes an interrupted upload).
+  publish-pypi:
+    needs: [semantic-release, python-wheels]
+    runs-on: ubuntu-24.04
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          name: mcp-dist
+          path: mcp-dist
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.25"
+      - name: Check the distribution set
+        env:
+          RELEASE_VERSION: ${{ needs.semantic-release.outputs.new_release_version }}
+        run: |
+          ls -l dist mcp-dist
+          # 1.0.0-beta.18 -> 1.0.0b18 (PEP 440, as in the file names)
+          version=$(echo "$RELEASE_VERSION" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/')
+          count() { find "$1" -type f -name "$2" | wc -l; }
+          test "$(count dist "simtest_funnel-$version-cp311-abi3-*.whl")" -eq 8
+          test -f "dist/simtest_funnel-$version.tar.gz"
+          test "$(count dist '*')" -eq 9
+          test -f "mcp-dist/simtest_funnel_mcp-$version-py3-none-any.whl"
+          test -f "mcp-dist/simtest_funnel_mcp-$version.tar.gz"
+          test "$(count mcp-dist '*')" -eq 2
+          uvx twine check --strict dist/* mcp-dist/*
+      # simtest-funnel first: simtest-funnel-mcp pins it exactly, so the
+      # server never appears on PyPI before the library it needs.
+      - name: Upload to PyPI
+        run: |
+          uvx twine upload --non-interactive --skip-existing dist/*
+          uvx twine upload --non-interactive --skip-existing mcp-dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+  publish-crate:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: v${{ needs.semantic-release.outputs.new_release_version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish -p simtest-funnel-core
+              --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish-docs:
+    needs: semantic-release
+    runs-on: ubuntu-latest
+    if: needs.semantic-release.outputs.new_release_published == 'true'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9
+      - run: npm install -g wrangler@latest
+      - run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: pip install uv "maturin[patchelf]"
+      - run: cargo doc --no-deps --workspace --exclude simtest-funnel-python
+      - run: cp docs/index.html target/doc/index.html
+      - name: Build Python API reference (pdoc)
+        run: |
+          uv sync
+          cd crates/simtest-funnel-python && maturin develop --uv
+          cd ../.. && uv run pdoc simtest.funnel -o target/doc/python
+      - name: Build TypeScript API reference (typedoc)
+        run: make docs-js
+      - name: Build browser demo into target/doc/demo
+        run: make demo
+      - run: wrangler pages deploy target/doc
+              --project-name simtest-funnel
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

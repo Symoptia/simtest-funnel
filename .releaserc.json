@@ -1,0 +1,29 @@
+{
+  "branches": [
+    "main",
+    { "name": "beta", "prerelease": true }
+  ],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
+    ["@semantic-release/exec", {
+      "prepareCmd": "sed -i 's/^version = .*/version = \"${nextRelease.version}\"/' Cargo.toml && bash scripts/release-python-versions.sh '${nextRelease.version}' && bash scripts/release-refresh-lockfiles.sh",
+      "successCmd": "echo '${nextRelease.version}' > .release-version"
+    }],
+    ["@semantic-release/git", {
+      "assets": [
+        "Cargo.toml",
+        "crates/simtest-funnel-python/pyproject.toml",
+        "python/simtest-funnel-mcp/pyproject.toml",
+        "Cargo.lock",
+        "uv.lock",
+        "packages/sdk/package.json",
+        "CHANGELOG.md"
+      ],
+      "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+    }],
+    "@semantic-release/github",
+    ["@semantic-release/npm", { "pkgRoot": "packages/sdk" }]
+  ]
+}

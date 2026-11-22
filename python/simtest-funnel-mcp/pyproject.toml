@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simtest-funnel-mcp"
+version = "1.0.0b22"
+description = "Local MCP server for funnel (tolerance-tube) comparison of signals in CSV files"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Symoptia contributors" }]
+classifiers = [
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = [
+    "mcp>=2.3,<3",
+    "simtest-funnel==1.0.0b22",
+    "numpy>=1.26",
+    "pandas>=2",
+    "matplotlib>=3.8",
+    # Imported directly: anyio.to_thread.run_sync(abandon_on_cancel=...)
+    # needs anyio 4.1; PIL quantizes the inline preview.
+    "anyio>=4.1",
+    "pillow>=9",
+    # OS trust store for fetching https URLs (fetch.py); already pulled in by mcp.
+    "truststore>=0.10",
+]
+
+[project.scripts]
+simtest-funnel-mcp = "simtest_funnel_mcp.server:main"
+
+[project.urls]
+Repository = "https://github.com/Symoptia/simtest-funnel"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/simtest_funnel_mcp"]

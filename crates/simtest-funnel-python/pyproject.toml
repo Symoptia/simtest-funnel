@@ -1,0 +1,40 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "simtest-funnel"
+version = "1.0.0b22"
+description = "Trajectory comparison library"
+readme = "README.md"
+# Keep in step with the pyo3 `abi3-py3XX` feature in Cargo.toml: one wheel
+# per platform, built against the stable ABI of this minimum version.
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Symoptia contributors" }]
+# Imported by simtest.funnel at module load (the extension exchanges numpy
+# arrays); pandas stays optional (compare_dataframes imports it lazily).
+dependencies = ["numpy>=1.26"]
+classifiers = [
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/Symoptia/simtest-funnel"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "simtest.funnel._simtest_funnel"
+python-source = "python"
+python-packages = ["simtest"]
