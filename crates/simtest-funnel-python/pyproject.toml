@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "simtest-funnel"
-version = "1.0.0b21"
+version = "1.0.0b22"
 description = "Trajectory comparison library"
 readme = "README.md"
 # Keep in step with the pyo3 `abi3-py3XX` feature in Cargo.toml: one wheel

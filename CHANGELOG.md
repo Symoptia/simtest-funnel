@@ -1,3 +1,11 @@
+# [1.0.0-beta.22](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.21...v1.0.0-beta.22) (2026-11-22)
+
+
+### Features
+
+* **mcp:** refuse unknown arguments, explain results and shorten tool descriptions ([9cfd748](https://github.com/Symoptia/simtest-funnel/commit/9cfd748aaf348c4c71d676dd7a745fdb0f61a644))
+* **skill:** add the funnel-signal-comparison agent skill ([c476f98](https://github.com/Symoptia/simtest-funnel/commit/c476f985a6a80216e11eab121129d7f8f4e91682))
+
 # [1.0.0-beta.21](https://github.com/Symoptia/simtest-funnel/compare/v1.0.0-beta.20...v1.0.0-beta.21) (2026-11-22)
 
 
