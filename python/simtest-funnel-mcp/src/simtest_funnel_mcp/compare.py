@@ -255,7 +255,7 @@ def _labels(sets: list[ToleranceSet]) -> list[str]:
 def _file_info(sf: SignalFile) -> FileInfo:
     t = sf.time[np.isfinite(sf.time)]
     info = FileInfo(
-        path=str(sf.path),
+        path=sf.name,
         header_line=sf.header_line,
         time_column=sf.time_column,
         time_column_rule="named time" if sf.time_column_rule == "named time" else "first column",
@@ -298,8 +298,8 @@ def check_time_axes(ref: SignalFile, tst: SignalFile) -> None:
         )
     hints = "".join(f" {h}" for sf in (ref, tst) for h in sf.hints)
     raise CompareArgumentError(
-        f"the time axes do not match: reference {ref.path} time column "
-        f"{ref.time_column!r} is {_axis_kind(ref)}, test {tst.path} time column "
+        f"the time axes do not match: reference {ref.name} time column "
+        f"{ref.time_column!r} is {_axis_kind(ref)}, test {tst.name} time column "
         f"{tst.time_column!r} is {_axis_kind(tst)}; {fix}.{hints}"
     )
 

@@ -41,4 +41,6 @@ dev = [
     "pandas-stubs",
     "maturin>=1.13.1",
     "pdoc>=14",
+    # Test certificates for the local HTTPS server of the URL-fetch tests.
+    "cryptography",
 ]

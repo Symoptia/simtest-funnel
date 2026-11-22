@@ -103,28 +103,56 @@ time spent reading.
 
 For an input given as a URL, the snippet SHALL read a local copy at
 `SIMTEST_FUNNEL_DATA_ROOT` / a file name derived from the URL, state the URL,
-fetch time and SHA-256 in a comment with a download command, and before
-comparing verify the copy's SHA-256, failing with a message naming the URL,
-the expected hash and the download command when the copy is missing or
-differs. The snippet SHALL NOT access the network.
+fetch time, size and SHA-256, and before comparing verify the copy's
+SHA-256, failing when the copy is missing (naming the URL, the expected
+file, the hash and `SIMTEST_FUNNEL_DOWNLOAD`) or differs (giving both
+hashes). Without `SIMTEST_FUNNEL_DOWNLOAD=1` it SHALL NOT access the network.
 
 #### Scenario: Vendored copy
 - **WHEN** an agent requests a snippet for a comparison of a URL input, the
   fetched file is saved under the stated name in the data root and the
   snippet is run with pytest
-- **THEN** every test case passes, reproducing the status codes in the result
+- **THEN** every test case passes, reproducing the status codes in the result,
+  and no connection is opened
 
 #### Scenario: Copy missing in CI
-- **WHEN** the same snippet runs where the copy is missing
-- **THEN** the tests fail with a message naming the URL, the file name
-  expected under the data root, the SHA-256 and a download command, and no
+- **WHEN** the same snippet runs where the copy is missing and
+  `SIMTEST_FUNNEL_DOWNLOAD` is not set
+- **THEN** the tests fail with a message naming the URL, the file expected
+  under the data root, the SHA-256 and `SIMTEST_FUNNEL_DOWNLOAD=1`, and no
   connection is opened
 
-#### Scenario: Content changed upstream
-- **WHEN** the copy was downloaded again later and its content differs
+#### Scenario: Copy differs
+- **WHEN** the copy under the data root differs from the data compared
 - **THEN** the tests fail with a message giving the expected and the actual
   SHA-256
 
 #### Scenario: Two URLs with the same last path segment
 - **WHEN** the reference and test URLs differ but end in the same file name
 - **THEN** the snippet uses two different local file names
+
+### Requirement: Opt-in download in the snippet
+
+When `SIMTEST_FUNNEL_DOWNLOAD=1` is set and a URL input's local copy is
+missing (and only then), the snippet SHALL download the URL over `https`
+only, read at most the recorded size, and save it as the copy only when its
+SHA-256 equals the recorded one; an existing copy SHALL never be replaced.
+
+#### Scenario: Opt-in download of a missing copy
+- **WHEN** the snippet runs with `SIMTEST_FUNNEL_DOWNLOAD=1`, the copy is
+  missing and the URL still serves the data that was compared
+- **THEN** the URL is downloaded once, saved under the stated name, and
+  every test case passes
+
+#### Scenario: Opt-in download of changed data
+- **WHEN** the snippet runs with `SIMTEST_FUNNEL_DOWNLOAD=1`, the copy is
+  missing and the URL now serves different data
+- **THEN** the tests fail with a message saying the data behind the URL
+  differs from what was compared, giving both SHA-256 values, and no file is
+  left under the data root
+
+#### Scenario: Opt-in with an existing copy
+- **WHEN** the snippet runs with `SIMTEST_FUNNEL_DOWNLOAD=1` and a copy
+  already exists
+- **THEN** no request is made and the copy is checked as without the
+  variable

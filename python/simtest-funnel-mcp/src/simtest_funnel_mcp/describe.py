@@ -115,7 +115,7 @@ def describe(
             problems.append(f"column {name!r} has {bad} non-numeric, empty or non-finite value(s)")
         infos.append(info)
     return DescribeResult(
-        path=str(sf.path),
+        path=sf.name,
         header_line=sf.header_line,
         time_column=sf.time_column,
         time_column_rule="named time" if sf.time_column_rule == "named time" else "first column",

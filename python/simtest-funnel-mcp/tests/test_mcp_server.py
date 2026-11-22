@@ -436,3 +436,89 @@ def test_readme_open_meteo_example_runs_against_the_fixture(open_meteo: Path) ->
     d = result.structured_content
     assert {r["column"] for r in d["rows"]} == {"day1", "day3", "day5"}
     assert d["tolerance_sets"][0]["time_tolerance"]["duration"] == "PT3H"
+
+
+# --------------------------------------------------------------------------
+# Network start-up options (add-mcp-url-ingestion)
+# --------------------------------------------------------------------------
+
+
+def _net_config(cli: list[str], env: dict[str, str] | None = None) -> Any:
+    args = server._arg_parser().parse_args(cli)
+    return server.parse_network_config(
+        args.allow_network, args.allow_host, args.max_download_mb, args.fetch_timeout,
+        env or {},
+    )
+
+
+def test_network_is_off_by_default() -> None:
+    cfg = _net_config([])
+    assert cfg.allow_network is False and cfg.allow_hosts == ()
+    assert cfg.max_download_mb == 20 and cfg.fetch_timeout == 30
+
+
+def test_network_options_and_environment() -> None:
+    assert _net_config(["--allow-network"]).allow_network is True
+    for value in ("1", "true", "YES", "on"):
+        assert _net_config([], {"SIMTEST_FUNNEL_MCP_ALLOW_NETWORK": value}).allow_network
+    for value in ("0", "false", "no", "off", ""):
+        assert not _net_config([], {"SIMTEST_FUNNEL_MCP_ALLOW_NETWORK": value}).allow_network
+    # --allow-host implies network access; hosts from CLI and env are united.
+    cfg = _net_config(
+        ["--allow-host", "Previous-Runs-API.open-meteo.com", "--allow-host", "a.example"],
+        {"SIMTEST_FUNNEL_MCP_ALLOW_HOSTS": "b.example, a.example"},
+    )
+    assert cfg.allow_network is True
+    assert cfg.allow_hosts == ("previous-runs-api.open-meteo.com", "a.example", "b.example")
+    assert _net_config([], {"SIMTEST_FUNNEL_MCP_ALLOW_HOSTS": "x.example"}).allow_network
+    # Numbers: the command line wins over the environment.
+    env = {"SIMTEST_FUNNEL_MCP_MAX_DOWNLOAD_MB": "5", "SIMTEST_FUNNEL_MCP_FETCH_TIMEOUT": "7"}
+    assert _net_config([], env).max_download_mb == 5
+    assert _net_config([], env).fetch_timeout == 7
+    cfg = _net_config(["--max-download-mb", "2.5", "--fetch-timeout", "12"], env)
+    assert cfg.max_download_mb == 2.5 and cfg.fetch_timeout == 12
+    assert _net_config(["--allow-host", "[2001:db8::1]"]).allow_hosts == ("2001:db8::1",)
+    assert _net_config(["--allow-host", "Bücher.example"]).allow_hosts == (
+        "xn--bcher-kva.example",
+    )
+
+
+@pytest.mark.parametrize(
+    ("cli", "env", "needle"),
+    [
+        ([], {"SIMTEST_FUNNEL_MCP_ALLOW_NETWORK": "maybe"}, "SIMTEST_FUNNEL_MCP_ALLOW_NETWORK"),
+        (["--allow-host", "https://example.org"], {}, "a scheme"),
+        (["--allow-host", "*.example.org"], {}, "a wildcard"),
+        (["--allow-host", "example.org/data"], {}, "a path"),
+        (["--allow-host", "example.org:443"], {}, "a port"),
+        (["--allow-host", "user@example.org"], {}, "user info"),
+        ([], {"SIMTEST_FUNNEL_MCP_ALLOW_HOSTS": "a.example,*.b"}, "a wildcard"),
+        (["--max-download-mb", "0"], {}, "--max-download-mb"),
+        (["--max-download-mb", "-1"], {}, "--max-download-mb"),
+        (["--max-download-mb", "lots"], {}, "--max-download-mb"),
+        ([], {"SIMTEST_FUNNEL_MCP_MAX_DOWNLOAD_MB": "inf"}, "SIMTEST_FUNNEL_MCP_MAX_DOWNLOAD_MB"),
+        (["--fetch-timeout", "0"], {}, "--fetch-timeout"),
+        (["--fetch-timeout", "601"], {}, "at most 600"),
+    ],
+)
+def test_bad_network_settings_are_rejected(
+    cli: list[str], env: dict[str, str], needle: str
+) -> None:
+    with pytest.raises(ValueError) as info:
+        _net_config(cli, env)
+    assert needle in str(info.value)
+
+
+def test_main_exits_on_a_bad_network_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    monkeypatch.setenv("SIMTEST_FUNNEL_MCP_ALLOW_NETWORK", "maybe")
+    with pytest.raises(SystemExit) as info:
+        server.main([])
+    assert info.value.code == 2
+    err = capsys.readouterr().err
+    assert "SIMTEST_FUNNEL_MCP_ALLOW_NETWORK" in err and "'maybe'" in err and "1, true" in err
+    monkeypatch.delenv("SIMTEST_FUNNEL_MCP_ALLOW_NETWORK")
+    with pytest.raises(SystemExit):
+        server.main(["--max-download-mb", "0"])
+    assert "--max-download-mb" in capsys.readouterr().err

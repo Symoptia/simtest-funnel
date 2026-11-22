@@ -184,8 +184,24 @@ class ColumnInfo(BaseModel):
     )
 
 
+class SourceInfo(BaseModel):
+    """Where an input given as a URL came from (absent for local files)."""
+
+    url: str = Field(description="The URL as given (normalised).")
+    final_url: str | None = Field(default=None, description="The URL after redirects.")
+    fetched_at: str = Field(description="When it was fetched (UTC, ISO 8601).")
+    size: int = Field(description="Bytes of content read (after decompression).")
+    sha256: str = Field(description="SHA-256 of the content read (hex).")
+    content_type: str | None = None
+    reused: bool = Field(
+        description="True when this call used the copy cached by an earlier call of this "
+        "server process; false for the call that fetched it."
+    )
+
+
 class DescribeResult(BaseModel):
-    path: str
+    path: str = Field(description="Resolved local path, or the URL for a URL input.")
+    source: SourceInfo | None = Field(default=None, description="URL inputs only.")
     header_line: int = Field(default=1, description="Physical line of the header used.")
     time_column: str
     time_column_rule: Literal["named time", "first column"]
@@ -223,7 +239,8 @@ class Coefficients(BaseModel):
 
 
 class FileInfo(BaseModel):
-    path: str
+    path: str = Field(description="Resolved local path, or the URL for a URL input.")
+    source: SourceInfo | None = Field(default=None, description="URL inputs only.")
     header_line: int | None = Field(default=None, description="Physical line of the header used.")
     time_column: str
     time_column_rule: Literal["named time", "first column"]

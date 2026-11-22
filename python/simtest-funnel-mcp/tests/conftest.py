@@ -101,3 +101,35 @@ def open_meteo_text(*, iso: bool = True, preamble: bool = True) -> str:
 def open_meteo(write_csv: WriteCsv) -> Path:
     """Open-Meteo Previous Runs layout: header on line 4, ISO times, no zone."""
     return write_csv("open_meteo.csv", open_meteo_text())
+
+
+# --------------------------------------------------------------------------
+# Local HTTPS test server (URL-fetch tests; offline)
+# --------------------------------------------------------------------------
+
+#: The bundled Open-Meteo sample (repository only, not packaged).
+OPEN_METEO_SAMPLE = REPO_ROOT / "examples" / "open-meteo" / "stockholm-2026-11-05-to-19.csv"
+
+
+@pytest.fixture(scope="session")
+def certs(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    from urlserver import make_certs
+
+    return make_certs(tmp_path_factory.mktemp("certs"))
+
+
+@pytest.fixture(scope="session")
+def _https_server(certs: Any) -> Any:
+    from urlserver import TestServer
+
+    srv = TestServer(certs.good_cert, certs.good_key)
+    yield srv
+    srv.close()
+
+
+@pytest.fixture
+def https_server(_https_server: Any) -> Any:
+    """The session's HTTPS server with no routes and no recorded requests."""
+    _https_server.reset()
+    yield _https_server
+    _https_server.reset()

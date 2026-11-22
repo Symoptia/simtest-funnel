@@ -12,10 +12,41 @@ from simtest_funnel_mcp.models import (
     Coefficients,
     CompareResult,
     DescribeResult,
+    FileInfo,
     PlotResult,
     Row,
+    SourceInfo,
     TimeTolerance,
 )
+
+#: URLs longer than this are shortened in the text (never in structured content).
+MAX_URL_CHARS = 200
+
+
+def short_url(url: str) -> str:
+    """``url``, with its middle elided when longer than :data:`MAX_URL_CHARS`."""
+    if len(url) <= MAX_URL_CHARS:
+        return url
+    keep = (MAX_URL_CHARS - 1) // 2
+    return url[:keep] + "…" + url[-keep:]
+
+
+def source_line(src: SourceInfo) -> str:
+    """``fetched <time>, <size> bytes, sha256 <12 hex>…`` for a URL input."""
+    line = f"fetched {src.fetched_at}, {src.size} bytes, sha256 {src.sha256[:12]}…"
+    if src.reused:
+        line += ", cached copy of this server process"
+    if src.final_url is not None:
+        line += f", redirected to {short_url(src.final_url)}"
+    return line
+
+
+def _file_line(role: str, f: FileInfo) -> str:
+    name = short_url(f.path) if f.source is not None else f.path
+    line = f"{role} {name} (time column {f.time_column!r}, {f.row_count} rows)"
+    if f.source is not None:
+        line += f"\n    {source_line(f.source)}"
+    return line
 
 
 def g(value: float | None) -> str:
@@ -84,10 +115,13 @@ def render_describe(d: DescribeResult, digits: int = MIN_TIME_DIGITS) -> str:
             t.time_zone or "", "mixed time zones"
         )
         kind = f", ISO 8601 date-times ({zone})"
+    name = short_url(d.path) if d.source is not None else d.path
     lines = [
-        f"{d.path}: {d.row_count} rows, time column {d.time_column!r} ({d.time_column_rule})"
+        f"{name}: {d.row_count} rows, time column {d.time_column!r} ({d.time_column_rule})"
         f"{kind}{header}",
     ]
+    if d.source is not None:
+        lines.append(source_line(d.source))
     if t.start is not None:
         if t.kind == "datetime":
             sampling = (
@@ -183,11 +217,7 @@ def _row_line(r: Row, digits: int) -> str:
 
 
 def render_compare(c: CompareResult, digits: int = MIN_TIME_DIGITS) -> str:
-    lines = [
-        f"reference {c.reference.path} (time column {c.reference.time_column!r}, "
-        f"{c.reference.row_count} rows)",
-        f"test {c.test.path} (time column {c.test.time_column!r}, {c.test.row_count} rows)",
-    ]
+    lines = [_file_line("reference", c.reference), _file_line("test", c.test)]
     if c.x_range.lo is not None or c.x_range.hi is not None:
         x = c.x_range
         lines.append(f"x_range {tg(x.lo, digits, x.lo_iso)} .. {tg(x.hi, digits, x.hi_iso)}")
@@ -242,11 +272,7 @@ def _kb(n: int) -> str:
 
 
 def render_plot(p: PlotResult, digits: int = MIN_TIME_DIGITS) -> str:
-    lines = [
-        f"reference {p.reference.path} (time column {p.reference.time_column!r}, "
-        f"{p.reference.row_count} rows)",
-        f"test {p.test.path} (time column {p.test.time_column!r}, {p.test.row_count} rows)",
-    ]
+    lines = [_file_line("reference", p.reference), _file_line("test", p.test)]
     if p.x_range.lo is not None or p.x_range.hi is not None:
         x = p.x_range
         lines.append(f"x_range {tg(x.lo, digits, x.lo_iso)} .. {tg(x.hi, digits, x.hi_iso)}")

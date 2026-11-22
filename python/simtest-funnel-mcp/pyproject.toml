@@ -20,6 +20,8 @@ dependencies = [
     # needs anyio 4.1; PIL quantizes the inline preview.
     "anyio>=4.1",
     "pillow>=9",
+    # OS trust store for fetching https URLs (fetch.py); already pulled in by mcp.
+    "truststore>=0.10",
 ]
 
 [project.scripts]

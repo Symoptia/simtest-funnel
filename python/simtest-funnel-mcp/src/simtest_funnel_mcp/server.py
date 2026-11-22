@@ -9,9 +9,12 @@ import errno
 import io
 import os
 import secrets
+import signal
 import stat
+import sys
 import threading
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, TypeVar
 from urllib.parse import urlparse
@@ -42,6 +45,22 @@ from simtest_funnel_mcp.compare import (
 )
 from simtest_funnel_mcp.csvio import SignalFile, SignalFileError, load_csv
 from simtest_funnel_mcp.describe import DEFAULT_MAX_COLUMNS, describe
+from simtest_funnel_mcp.fetch import (
+    ALLOW_HOST_OPTION,
+    ALLOW_NETWORK_ENV,
+    ALLOW_NETWORK_OPTION,
+    DEFAULT_FETCH_TIMEOUT,
+    DEFAULT_MAX_DOWNLOAD_MB,
+    FETCH_TIMEOUT_OPTION,
+    MAX_DOWNLOAD_OPTION,
+    MAX_FETCH_TIMEOUT,
+    FetchConfig,
+    FetchError,
+    Fetcher,
+    is_url,
+    normalise_host,
+    parse_url,
+)
 from simtest_funnel_mcp.models import (
     ColumnPair,
     CompareResult,
@@ -51,6 +70,7 @@ from simtest_funnel_mcp.models import (
     PlotPreview,
     PlotResult,
     RangeOut,
+    SourceInfo,
     ToleranceSet,
     ToleranceSpec,
     XRange,
@@ -72,6 +92,7 @@ from simtest_funnel_mcp.render import (
 )
 from simtest_funnel_mcp.snippet import make_snippet
 from simtest_funnel_mcp.timeaxis import format_iso
+from simtest_funnel_mcp.urlcache import Fetched, UrlCache
 
 try:
     import fcntl
@@ -80,8 +101,8 @@ except ImportError:  # Windows
 
 SERVER_NAME = "simtest-funnel"
 
-INSTRUCTIONS = """\
-Funnel (tolerance-tube) comparison of signals stored in local CSV files
+_INSTRUCTIONS = """\
+Funnel (tolerance-tube) comparison of signals stored in CSV files ({where})
 (comma-separated, header row, '#' comment lines, one shared time column,
 numeric or ISO 8601 date-times). The server reads the files itself; never
 paste sample values into a call. If a file starts with a preamble (metadata
@@ -94,8 +115,7 @@ Typical flow: describe_signals on the reference to see columns, time span,
 sampling and value ranges; choose tolerances (there is no time tolerance
 unless you give one, e.g. atolx); compare_signals; plot_signals to look at
 one column (inline PNG preview) and optionally save the plot as an SVG or
-PNG file for a document. Use absolute paths. Stateless: pass the
-paths on every call. Only plot_signals writes, and only the output_path
+PNG file for a document. Use absolute paths. {state} Only plot_signals writes, and only the output_path
 it is given (never an existing file unless overwrite=true), which must lie
 inside a workspace root declared by the client or an output directory
 configured when the server was started; with neither, omit output_path
@@ -104,6 +124,59 @@ time_limit seconds (default 60) after the call started, reading the files
 included: compare_signals then returns the finished rows and lists the
 comparisons not completed; plot_signals fails and writes nothing. Raise
 time_limit for very long signals."""
+
+
+def _hosts_text(config: FetchConfig) -> str:
+    hosts = list(config.allow_hosts)
+    if len(hosts) > 10:
+        return ", ".join(hosts[:10]) + f" and {len(hosts) - 10} more"
+    return ", ".join(hosts)
+
+
+def instructions(config: FetchConfig) -> str:
+    """Server instructions for the network setting."""
+    if not config.allow_network:
+        where = (
+            f"local paths; https URLs only if the server is started with "
+            f"{ALLOW_NETWORK_OPTION}"
+        )
+        state = "Stateless: pass the paths on every call."
+    else:
+        only = f" on {_hosts_text(config)}" if config.allow_hosts else ""
+        where = f"local paths or public https URLs{only}"
+        state = (
+            "Pass the paths or URLs on every call; a URL is fetched once per server process "
+            "and that copy is reused by later calls (results report it under 'source')."
+        )
+    return _INSTRUCTIONS.format(where=where, state=state)
+
+
+def sources_help(config: FetchConfig, *, plot: bool = False) -> str:
+    """The INPUT FILES paragraph of the tool descriptions."""
+    if not config.allow_network:
+        return (
+            "INPUT FILES: local paths. https URLs are accepted only when the server was "
+            f"started with {ALLOW_NETWORK_OPTION} (or {ALLOW_NETWORK_ENV}=1); this server was "
+            "not, so download such a file and pass its local path."
+        )
+    only = (
+        f" on these hosts only: {_hosts_text(config)}" if config.allow_hosts
+        else " on any public host"
+    )
+    text = (
+        f"INPUT FILES: a local path or a public https:// URL{only} (no http, no "
+        "credentials, no proxies). A URL is fetched once per server process and that copy "
+        "is reused by later calls (no refresh; restarting the server fetches it again); "
+        "results report it under 'source' (url, fetched_at, size, sha256, reused). "
+        "Fetching counts against time_limit and stops at the deadline; at most "
+        f"{config.cap_text()} and {config.fetch_timeout:g} s per fetch. Give the raw CSV "
+        "URL: HTML pages and JSON are refused (ask the service for CSV, e.g. format=csv). "
+        "Roots apply to local paths only."
+    )
+    if plot:
+        text += " output_path stays a local path."
+    return text
+
 
 CSV_HELP = (
     "CSV dialect: comma-separated, one header row, lines whose first non-blank character "
@@ -125,8 +198,8 @@ CSV_HELP = (
     "8601 strings (*_iso fields)."
 )
 
-DESCRIBE_DESCRIPTION = f"""\
-Describe a local CSV signal file without returning sample values: header line used,
+_DESCRIBE_DESCRIPTION = """\
+Describe a CSV signal file without returning sample values: header line used,
 time column and its kind (numeric or datetime, with time zone or not), row count, time
 start/end/span (on a date-time axis also as ISO 8601 strings and durations), sampling
 (uniform or not; min/median/max step), and for
@@ -134,11 +207,11 @@ every signal column its min, max and range, plus data problems (non-numeric or
 empty cells, time column not non-decreasing, no time zone, preamble hints with the
 header_line to pass). Use it to pick columns and sensible
 tolerances before compare_signals. At most max_columns columns (default
-{DEFAULT_MAX_COLUMNS}) and as many problems are listed; the result states the totals and
+{max_columns}) and as many problems are listed; the result states the totals and
 how many were omitted. 'columns' filters by exact name or glob pattern ('*', '?',
-'[...]'), e.g. ["*.port.signal", "time_*"]. {CSV_HELP}"""
+'[...]'), e.g. ["*.port.signal", "time_*"]. {sources} {csv_help}"""
 
-COMPARE_DESCRIPTION = f"""\
+_COMPARE_DESCRIPTION = """\
 Compare signals of a test CSV file against a reference CSV file with the funnel
 (tolerance tube) algorithm of LBNL Funnel. A tube is built around the reference
 curve. A column passes when every test point inside the compared time range
@@ -149,7 +222,8 @@ the reference; MISSING_TEST: the reverse) whose problem text gives both time spa
 and the x_range that compares the overlap. Returns one row per (column, tolerance set) with verdict
 (pass/fail/error), status code, points outside, worst deviation and, for failures
 only, the violation intervals (largest deviation first, capped by max_intervals).
-{CSV_HELP}
+{sources}
+{csv_help}
 
 TOLERANCES - six coefficients, x = time axis, y = signal value. At each reference
 sample the tube half-widths are
@@ -216,10 +290,10 @@ reproduces the returned rows in CI; it is returned in the structured content fie
 server's working directory) and resolved against $SIMTEST_FUNNEL_DATA_ROOT or the
 current directory, so commit the CSV files at the same relative location.
 
-TIME LIMIT: time_limit (seconds, default {DEFAULT_TIME_LIMIT:g}) is a deadline for the whole
-call, counted from its start, so the time spent reading the files counts against it.
-Comparisons are started only while time remains and a running comparison is stopped
-at the deadline; reading itself is not interrupted, so a call can overrun the limit by
+TIME LIMIT: time_limit (seconds, default {limit:g}) is a deadline for the whole
+call, counted from its start, so the time spent reading the files (and fetching URLs)
+counts against it. Comparisons are started only while time remains and a running
+comparison is stopped at the deadline, as is a URL fetch; reading itself is not interrupted, so a call can overrun the limit by
 the time spent reading. When the limit is reached the call still succeeds: rows are
 returned for the comparisons that finished, the others are listed in 'not_completed'
 (totals.not_completed counts them, time_limit_reached is true) and a note suggests a
@@ -242,7 +316,7 @@ READ_ONLY = ToolAnnotations(
     open_world_hint=False,
 )
 
-PLOT_DESCRIPTION = f"""\
+_PLOT_DESCRIPTION = """\
 Plot ONE funnel comparison - one signal column (or one reference column against a
 differently named test_column), one tolerance set - and return a
 small PNG preview (800x450) inline as image content so you can look at it. The plot
@@ -278,13 +352,38 @@ A column that cannot be compared (missing, bad data, time ranges that differ,
 non-monotonic time) is an error and nothing is written; use compare_signals to see
 all problems. Tolerance coefficients: see compare_signals.
 
-time_limit (seconds, default {DEFAULT_TIME_LIMIT:g}) is a deadline for the whole call,
-counted from its start: reading the files, the comparison and rendering. The comparison
+time_limit (seconds, default {limit:g}) is a deadline for the whole call,
+counted from its start: fetching URLs, reading the files, the comparison and rendering. The comparison
 is stopped at the deadline; reading and rendering are not interrupted, but the deadline
 is checked before rendering and again immediately before the file is written. When the
 limit is reached, or the call is cancelled, the call fails and nothing is written: the
 file is written under a temporary name and moved into place only while the call is
-still live, so no partial or late file appears. {CSV_HELP}"""
+still live, so no partial or late file appears. {sources} {csv_help}"""
+
+def describe_description(config: FetchConfig) -> str:
+    return _DESCRIBE_DESCRIPTION.format(
+        max_columns=DEFAULT_MAX_COLUMNS, sources=sources_help(config), csv_help=CSV_HELP
+    )
+
+
+def compare_description(config: FetchConfig) -> str:
+    return _COMPARE_DESCRIPTION.format(
+        limit=DEFAULT_TIME_LIMIT, sources=sources_help(config), csv_help=CSV_HELP
+    )
+
+
+def plot_description(config: FetchConfig) -> str:
+    return _PLOT_DESCRIPTION.format(
+        limit=DEFAULT_TIME_LIMIT, sources=sources_help(config, plot=True), csv_help=CSV_HELP
+    )
+
+
+#: Network access off (the default): the texts of a plain start.
+_NETWORK_OFF = FetchConfig()
+INSTRUCTIONS = instructions(_NETWORK_OFF)
+DESCRIBE_DESCRIPTION = describe_description(_NETWORK_OFF)
+COMPARE_DESCRIPTION = compare_description(_NETWORK_OFF)
+PLOT_DESCRIPTION = plot_description(_NETWORK_OFF)
 
 PLOT = ToolAnnotations(
     read_only_hint=False,
@@ -300,11 +399,6 @@ _PLOT_FORMATS: dict[str, Literal["svg", "png"]] = {".svg": "svg", ".png": "png"}
 #: Colours kept in the inline preview (visually identical, ~1/3 of the bytes).
 PREVIEW_COLORS = 128
 
-mcp = MCPServer(
-    SERVER_NAME,
-    instructions=INSTRUCTIONS,
-    version=__version__,
-)
 
 
 # --------------------------------------------------------------------------
@@ -698,13 +792,122 @@ def _preview_png(data: PlotData) -> bytes:
     return buf.getvalue()
 
 
-def _load(
-    raw: str, roots: list[Path], header_line: int = 1, arg: str = "header_line"
-) -> SignalFile:
+@dataclass(frozen=True)
+class Network:
+    """The network setting of one server: its configuration and, when
+    network access is enabled, its URL cache."""
+
+    config: FetchConfig
+    cache: UrlCache | None = None
+
+    @classmethod
+    def create(cls, config: FetchConfig, fetcher: Fetcher | None = None) -> Network:
+        """A network setting; the cache exists only with network access."""
+        if not config.allow_network:
+            return cls(config)
+        return cls(config, UrlCache(fetcher if fetcher is not None else Fetcher(config)))
+
+
+#: A plain start: no network access.
+NETWORK_OFF = Network(_NETWORK_OFF)
+
+
+def network_off_message(url: str) -> str:
+    return (
+        f"{url}: reading URLs is disabled because the server was started without network "
+        f"access. Start it with {ALLOW_NETWORK_OPTION} (or the environment variable "
+        f"{ALLOW_NETWORK_ENV}=1), preferably restricted with {ALLOW_HOST_OPTION} HOST, or "
+        "download the file and pass its local path"
+    )
+
+
+def _source_info(f: Fetched) -> SourceInfo:
+    e = f.entry
+    return SourceInfo(
+        url=e.url,
+        final_url=e.final_url if e.final_url != e.url else None,
+        fetched_at=e.fetched_at,
+        size=e.size,
+        sha256=e.sha256,
+        content_type=e.content_type,
+        reused=f.reused,
+    )
+
+
+@dataclass(frozen=True)
+class Loaded:
+    """A loaded input: the file, its identity and, for a URL, its source."""
+
+    sf: SignalFile
+    #: Resolved local path or normalised URL: the same key means the same file.
+    key: Path | str
+    source: SourceInfo | None = None
+
+
+@dataclass(frozen=True)
+class _CallScope:
+    """What fetching needs to know about the running call."""
+
+    network: Network
+    cancel: funnel.CancelToken | None = None
+    limit: TimeLimit | None = None
+    gate: PublishGate | None = None
+
+
+def _input_key(raw: str, roots: list[Path], network: Network) -> Path | str:
+    """The identity of an input: its normalised URL or resolved local path.
+
+    URLs are checked (scheme, credentials) whether or not network access is
+    enabled; with it off, a URL is refused without any network activity.
+    Roots never apply to URLs.
+    """
+    if is_url(raw):
+        try:
+            url = parse_url(raw)
+        except FetchError as exc:
+            raise ToolError(str(exc)) from None
+        if network.cache is None:
+            raise ToolError(network_off_message(url.url))
+        return url.url
+    return resolve_path(raw, roots)
+
+
+def _load_key(key: Path | str, header_line: int, arg: str, scope: _CallScope) -> Loaded:
+    """Read the input ``key`` (from :func:`_input_key`), fetching a URL first."""
+    if isinstance(key, Path):
+        try:
+            return Loaded(load_csv(key, header_line, arg=arg), key)
+        except SignalFileError as exc:
+            raise ToolError(str(exc)) from exc
+    cache = scope.network.cache
+    assert cache is not None
+    url = parse_url(key)
+    limit = scope.limit
     try:
-        return load_csv(resolve_path(raw, roots), header_line, arg=arg)
+        with cache.use(
+            url,
+            cancel=scope.cancel if limit is None else limit.cancel,
+            call_deadline=None if limit is None else limit.deadline,
+            call_limit_text=None if limit is None else limit.describe(),
+            gate=scope.gate,
+        ) as fetched:
+            sf = load_csv(fetched.entry.file, header_line, arg=arg, display=key)
+    except FetchError as exc:
+        raise ToolError(f"cannot read {key}: {exc}") from None
     except SignalFileError as exc:
         raise ToolError(str(exc)) from exc
+    return Loaded(sf, key, _source_info(fetched))
+
+
+def _load(
+    raw: str,
+    roots: list[Path],
+    header_line: int = 1,
+    arg: str = "header_line",
+    scope: _CallScope | None = None,
+) -> Loaded:
+    scope = scope if scope is not None else _CallScope(NETWORK_OFF)
+    return _load_key(_input_key(raw, roots, scope.network), header_line, arg, scope)
 
 
 #: Refusal when neither a test path nor pairs are given.
@@ -721,21 +924,26 @@ def _load_pair(
     roots: list[Path],
     header_line: int,
     test_header_line: int | None,
-) -> tuple[SignalFile, SignalFile]:
+    scope: _CallScope | None = None,
+) -> tuple[Loaded, Loaded]:
     """Load reference and test; the test file defaults to the reference file
-    and one file (same path and header line) is read only once."""
-    ref = _load(reference_path, roots, header_line)
+    and one file (same path or URL and header line) is read only once. Both
+    inputs are checked before anything is fetched or read."""
+    scope = scope if scope is not None else _CallScope(NETWORK_OFF)
+    ref_key = _input_key(reference_path, roots, scope.network)
     t_line = header_line if test_header_line is None else test_header_line
-    if test_path is None:
-        tst_path = ref.path
-    else:
-        tst_path = resolve_path(test_path, roots)
-    if tst_path == ref.path and t_line == header_line:
+    tst_key = ref_key if test_path is None else _input_key(test_path, roots, scope.network)
+    ref = _load_key(ref_key, header_line, "header_line", scope)
+    if tst_key == ref_key and t_line == header_line:
         return ref, ref
-    try:
-        return ref, load_csv(tst_path, t_line, arg="test_header_line")
-    except SignalFileError as exc:
-        raise ToolError(str(exc)) from exc
+    return ref, _load_key(tst_key, t_line, "test_header_line", scope)
+
+
+def _attach_sources(info_ref: object, info_tst: object, ref: Loaded, tst: Loaded) -> None:
+    """Set ``source`` on the reference and test ``FileInfo`` of a result."""
+    for info, loaded in ((info_ref, ref), (info_tst, tst)):
+        if loaded.source is not None:
+            info.source = loaded.source  # type: ignore[attr-defined]
 
 
 #: Value fields rounded to 10 significant digits (drops binary noise such as
@@ -823,13 +1031,23 @@ def describe_signals_impl(
     max_columns: int = DEFAULT_MAX_COLUMNS,
     root_notes: list[str] | None = None,
     header_line: int = 1,
+    network: Network = NETWORK_OFF,
+    cancel: funnel.CancelToken | None = None,
+    gate: PublishGate | None = None,
 ) -> CallToolResult:
-    """Describe one file; see :data:`DESCRIBE_DESCRIPTION`."""
-    sf = _load(path, roots, header_line)
+    """Describe one file; see :data:`DESCRIBE_DESCRIPTION`.
+
+    A URL (with ``network`` enabled) is fetched within the fetch timeout;
+    ``cancel`` stops the fetch, ``gate`` orders its commit against
+    cancellation (see :class:`~simtest_funnel_mcp.urlcache.UrlCache`).
+    """
+    loaded = _load(path, roots, header_line, scope=_CallScope(network, cancel, None, gate))
+    sf = loaded.sf
     try:
         result = describe(sf, columns=columns, max_columns=max_columns)
     except ValueError as exc:
         raise ToolError(str(exc)) from exc
+    result.source = loaded.source
     result.notes.extend(root_notes or [])
     return CallToolResult(
         content=[TextContent(type="text", text=render_describe(result, time_digits(sf.time)))],
@@ -855,17 +1073,23 @@ def compare_signals_impl(
     root_notes: list[str] | None = None,
     time_limit: float = DEFAULT_TIME_LIMIT,
     cancel: funnel.CancelToken | None = None,
+    network: Network = NETWORK_OFF,
+    gate: PublishGate | None = None,
 ) -> CallToolResult:
     """Compare two files; see :data:`COMPARE_DESCRIPTION`.
 
-    ``time_limit`` counts from the start of the call; ``cancel`` (the
-    call's token) stops the running comparison with
-    ``funnel.ComparisonCancelled``.
+    ``time_limit`` counts from the start of the call, fetching included;
+    ``cancel`` (the call's token) stops a fetch and the running comparison
+    (``funnel.ComparisonCancelled``).
     """
     limit = _start_limit(time_limit, cancel)
     if test_path is None and pairs is None:
         raise ToolError(NO_TEST_PATH)
-    ref, tst = _load_pair(reference_path, test_path, roots, header_line, test_header_line)
+    ref_in, tst_in = _load_pair(
+        reference_path, test_path, roots, header_line, test_header_line,
+        _CallScope(network, limit.cancel, limit, gate),
+    )
+    ref, tst = ref_in.sf, tst_in.sf
     try:
         outcome = run_compare(
             ref,
@@ -882,6 +1106,7 @@ def compare_signals_impl(
     except CompareArgumentError as exc:
         raise ToolError(str(exc)) from exc
     result = outcome.result
+    _attach_sources(result.reference, result.test, ref_in, tst_in)
     result.notes.extend(root_notes or [])
     if include_snippet:
         base = roots[0] if roots else Path.cwd().resolve()
@@ -915,6 +1140,7 @@ def plot_signals_impl(
     time_limit: float = DEFAULT_TIME_LIMIT,
     cancel: funnel.CancelToken | None = None,
     gate: PublishGate | None = None,
+    network: Network = NETWORK_OFF,
 ) -> CallToolResult:
     """Plot one comparison; see :data:`PLOT_DESCRIPTION`.
 
@@ -929,13 +1155,24 @@ def plot_signals_impl(
     limit = _start_limit(time_limit, cancel)
     if max_intervals < 0:
         raise ToolError("max_intervals must be >= 0")
-    # Check the output path before any work, write only after rendering.
+    gate = gate if gate is not None else PublishGate()
+    # Check the output path before any work (any fetch included), write only
+    # after rendering.
+    if output_path is not None and is_url(output_path):
+        raise ToolError(
+            f"output_path must be a local path, not a URL ({output_path.strip()[:100]}); "
+            "nothing was fetched or written"
+        )
     target = (
         resolve_output_path(output_path, roots, overwrite, output_dirs)
         if output_path is not None
         else None
     )
-    ref, tst = _load_pair(reference_path, test_path, roots, header_line, test_header_line)
+    ref_in, tst_in = _load_pair(
+        reference_path, test_path, roots, header_line, test_header_line,
+        _CallScope(network, limit.cancel, limit, gate),
+    )
+    ref, tst = ref_in.sf, tst_in.sf
     try:
         outcome = prepare_plot(
             ref, tst, column=column, tolerance=tolerance, x_range=x_range,
@@ -958,7 +1195,7 @@ def plot_signals_impl(
             overwrite,
             [*roots, *output_dirs],
             limit,
-            gate if gate is not None else PublishGate(),
+            gate,
         )
         size = png_size(blob) if fmt == "png" else None
         file_out = PlotFile(
@@ -969,6 +1206,7 @@ def plot_signals_impl(
             height_px=size[1] if size else None,
         )
     cr = outcome.compare.result
+    _attach_sources(cr.reference, cr.test, ref_in, tst_in)
     result = PlotResult(
         reference=cr.reference,
         test=cr.test,
@@ -1013,263 +1251,295 @@ def plot_signals_impl(
 # --------------------------------------------------------------------------
 
 
-@mcp.tool(
-    name="describe_signals",
-    title="Describe CSV signals",
-    description=DESCRIBE_DESCRIPTION,
-    annotations=READ_ONLY,
-)
-def describe_signals(
-    path: Annotated[str, Field(description="Path of the CSV file (absolute recommended).")],
-    roots: Roots,
-    header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
-    columns: Annotated[
-        list[str] | None,
-        Field(
-            description=(
-                "Signal columns to describe: exact names or glob patterns ('*', '?', '[...]'); "
-                "omit for all."
-            )
-        ),
-    ] = None,
-    max_columns: Annotated[
-        int, Field(ge=1, description="Max columns (and problems) listed.")
-    ] = DEFAULT_MAX_COLUMNS,
-) -> Annotated[CallToolResult, DescribeResult]:
-    ignored: list[str] = []
-    paths = root_paths(roots, ignored)
-    return describe_signals_impl(
-        path, paths, columns=columns, max_columns=max_columns, root_notes=ignored,
-        header_line=header_line,
+PATH_HELP = "Path of the CSV file (absolute recommended), or an https URL."
+REFERENCE_HELP = "Path (or https URL) of the reference CSV file."
+
+
+def build_server(network: Network = NETWORK_OFF) -> MCPServer:
+    """An MCP server with the three tools, for the given network setting.
+
+    Instructions, descriptions and annotations follow the setting: the tools
+    are open-world exactly when network access is enabled.
+    """
+    config = network.config
+    world = {"open_world_hint": config.allow_network}
+    read_only = READ_ONLY.model_copy(update=world)
+    plot = PLOT.model_copy(update=world)
+    server = MCPServer(SERVER_NAME, instructions=instructions(config), version=__version__)
+
+    @server.tool(
+        name="describe_signals",
+        title="Describe CSV signals",
+        description=describe_description(config),
+        annotations=read_only,
     )
-
-
-@mcp.tool(
-    name="compare_signals",
-    title="Compare CSV signals (funnel)",
-    description=COMPARE_DESCRIPTION,
-    annotations=READ_ONLY,
-)
-async def compare_signals(
-    reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
-    roots: Roots,
-    test_path: Annotated[
-        str | None,
-        Field(
-            description=(
-                "Path of the test CSV file. Optional with pairs (default: the reference "
-                "file); required otherwise."
-            )
-        ),
-    ] = None,
-    pairs: Annotated[
-        list[ColumnPair] | None,
-        Field(
-            description=(
-                "Reference/test column pairs [{reference, test, label?}] of exact names; "
-                "the row key is the label, else the test column. Not with columns."
-            )
-        ),
-    ] = None,
-    header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
-    test_header_line: Annotated[
-        int | None, Field(ge=1, description=TEST_HEADER_LINE_HELP)
-    ] = None,
-    columns: Annotated[
-        list[str] | None,
-        Field(
-            description=(
-                "Signal columns to compare: exact names or glob patterns ('*', '?', '[...]'); "
-                "omit for all columns present in both files."
-            )
-        ),
-    ] = None,
-    tolerances: Annotated[
-        list[ToleranceSet] | None,
-        Field(
-            description=(
-                "Tolerance sets, each with an optional unique 'label' and any of atolx, atoly, "
-                "ltolx, ltoly, rtolx, rtoly. Omit for one set with the library default "
-                "(rtoly = 0.002, no time tolerance)."
-            )
-        ),
-    ] = None,
-    column_tolerances: Annotated[
-        dict[str, ToleranceSpec] | None,
-        Field(
-            description=(
-                "Per-column overrides (row key -> coefficients), applied per axis; the key "
-                "is the column name, or for pairs the label (else the test column)."
-            )
-        ),
-    ] = None,
-    x_range: Annotated[
-        XRange | None,
-        Field(
-            description=(
-                "Time window {lo, hi} to compare; bounds must be finite numbers (seconds since "
-                "1970 on a date-time axis) or, on a date-time axis, ISO 8601 strings; omit a "
-                "bound for unbounded."
-            )
-        ),
-    ] = None,
-    max_intervals: Annotated[
-        int, Field(ge=0, description="Max violation intervals listed per failing row.")
-    ] = DEFAULT_MAX_INTERVALS,
-    max_rows: Annotated[
-        int, Field(ge=1, description="Max rows returned (errors, then failures, then passes).")
-    ] = DEFAULT_MAX_ROWS,
-    include_snippet: Annotated[
-        bool,
-        Field(
-            description=(
-                "Include a pytest file reproducing the returned rows (structured field "
-                "'snippet')."
-            )
-        ),
-    ] = False,
-    time_limit: Annotated[
-        float,
-        Field(
-            gt=0,
-            allow_inf_nan=False,
-            description=(
-                "Deadline in seconds for the whole call, counted from its start and "
-                "including reading the files (default 60). When reached, finished rows "
-                "are returned and the rest listed in 'not_completed'."
+    async def describe_signals(
+        path: Annotated[str, Field(description=PATH_HELP)],
+        roots: Roots,
+        header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
+        columns: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Signal columns to describe: exact names or glob patterns ('*', '?', '[...]'); "
+                    "omit for all."
+                )
             ),
-        ),
-    ] = DEFAULT_TIME_LIMIT,
-) -> Annotated[CallToolResult, CompareResult]:
-    ignored: list[str] = []
-    paths = root_paths(roots, ignored)
-    return await run_off_loop(
-        lambda token: compare_signals_impl(
-            reference_path,
-            test_path,
-            paths,
-            columns=columns,
-            pairs=pairs,
-            header_line=header_line,
-            test_header_line=test_header_line,
-            tolerances=tolerances,
-            column_tolerances=column_tolerances,
-            x_range=x_range,
-            max_intervals=max_intervals,
-            max_rows=max_rows,
-            include_snippet=include_snippet,
-            root_notes=ignored,
-            time_limit=time_limit,
-            cancel=token,
+        ] = None,
+        max_columns: Annotated[
+            int, Field(ge=1, description="Max columns (and problems) listed.")
+        ] = DEFAULT_MAX_COLUMNS,
+    ) -> Annotated[CallToolResult, DescribeResult]:
+        ignored: list[str] = []
+        paths = root_paths(roots, ignored)
+        gate = PublishGate()
+        return await run_off_loop(
+            lambda token: describe_signals_impl(
+                path, paths, columns=columns, max_columns=max_columns, root_notes=ignored,
+                header_line=header_line, network=network, cancel=token, gate=gate,
+            ),
+            gate,
         )
+
+    @server.tool(
+        name="compare_signals",
+        title="Compare CSV signals (funnel)",
+        description=compare_description(config),
+        annotations=read_only,
     )
-
-
-@mcp.tool(
-    name="plot_signals",
-    title="Plot one CSV signal comparison (funnel)",
-    description=PLOT_DESCRIPTION,
-    annotations=PLOT,
-)
-async def plot_signals(
-    reference_path: Annotated[str, Field(description="Path of the reference CSV file.")],
-    column: Annotated[
-        str,
-        Field(
-            min_length=1,
-            description="The one signal column to plot (exact name; the reference column).",
-        ),
-    ],
-    roots: Roots,
-    test_path: Annotated[
-        str | None,
-        Field(description="Path of the test CSV file (default: the reference file)."),
-    ] = None,
-    test_column: Annotated[
-        str | None,
-        Field(
-            min_length=1,
-            description="Test column to plot against column (exact name; default: column).",
-        ),
-    ] = None,
-    header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
-    test_header_line: Annotated[
-        int | None, Field(ge=1, description=TEST_HEADER_LINE_HELP)
-    ] = None,
-    tolerance: Annotated[
-        ToleranceSet | None,
-        Field(
-            description=(
-                "One tolerance set: optional 'label' and any of atolx, atoly, ltolx, ltoly, "
-                "rtolx, rtoly (same as one entry of compare_signals 'tolerances'). Omit for "
-                "the library default (rtoly = 0.002, no time tolerance)."
-            )
-        ),
-    ] = None,
-    x_range: Annotated[
-        XRange | None,
-        Field(
-            description=(
-                "Time window {lo, hi} to compare and show; bounds must be finite numbers or, "
-                "on a date-time axis, ISO 8601 strings; omit a bound for unbounded."
-            )
-        ),
-    ] = None,
-    output_path: Annotated[
-        str | None,
-        Field(
-            description=(
-                "File to write: '.svg' (document) or '.png', inside a workspace root or the "
-                "server's configured output directory. The directory must exist. Omit for "
-                "the inline preview only."
-            )
-        ),
-    ] = None,
-    overwrite: Annotated[
-        bool, Field(description="Replace output_path if it already exists.")
-    ] = False,
-    max_intervals: Annotated[
-        int, Field(ge=0, description="Max violation intervals listed in the result row.")
-    ] = DEFAULT_MAX_INTERVALS,
-    time_limit: Annotated[
-        float,
-        Field(
-            gt=0,
-            allow_inf_nan=False,
-            description=(
-                "Deadline in seconds for the whole call, counted from its start: reading "
-                "the files, the comparison and rendering (default 60). When reached, the "
-                "call fails and nothing is written."
+    async def compare_signals(
+        reference_path: Annotated[str, Field(description=REFERENCE_HELP)],
+        roots: Roots,
+        test_path: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Path (or https URL) of the test CSV file. Optional with pairs (default: "
+                    "the reference file); required otherwise."
+                )
             ),
-        ),
-    ] = DEFAULT_TIME_LIMIT,
-) -> Annotated[CallToolResult, PlotResult]:
-    ignored: list[str] = []
-    paths = root_paths(roots, ignored)
-    output_dirs = configured_output_dirs()
-    gate = PublishGate()
-    return await run_off_loop(
-        lambda token: plot_signals_impl(
-            reference_path,
-            test_path,
-            paths,
-            column=column,
-            test_column=test_column,
-            header_line=header_line,
-            test_header_line=test_header_line,
-            tolerance=tolerance,
-            x_range=x_range,
-            output_path=output_path,
-            overwrite=overwrite,
-            max_intervals=max_intervals,
-            root_notes=ignored,
-            output_dirs=output_dirs,
-            time_limit=time_limit,
-            cancel=token,
-            gate=gate,
-        ),
-        gate,
+        ] = None,
+        pairs: Annotated[
+            list[ColumnPair] | None,
+            Field(
+                description=(
+                    "Reference/test column pairs [{reference, test, label?}] of exact names; "
+                    "the row key is the label, else the test column. Not with columns."
+                )
+            ),
+        ] = None,
+        header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
+        test_header_line: Annotated[
+            int | None, Field(ge=1, description=TEST_HEADER_LINE_HELP)
+        ] = None,
+        columns: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Signal columns to compare: exact names or glob patterns ('*', '?', '[...]'); "
+                    "omit for all columns present in both files."
+                )
+            ),
+        ] = None,
+        tolerances: Annotated[
+            list[ToleranceSet] | None,
+            Field(
+                description=(
+                    "Tolerance sets, each with an optional unique 'label' and any of atolx, atoly, "
+                    "ltolx, ltoly, rtolx, rtoly. Omit for one set with the library default "
+                    "(rtoly = 0.002, no time tolerance)."
+                )
+            ),
+        ] = None,
+        column_tolerances: Annotated[
+            dict[str, ToleranceSpec] | None,
+            Field(
+                description=(
+                    "Per-column overrides (row key -> coefficients), applied per axis; the key "
+                    "is the column name, or for pairs the label (else the test column)."
+                )
+            ),
+        ] = None,
+        x_range: Annotated[
+            XRange | None,
+            Field(
+                description=(
+                    "Time window {lo, hi} to compare; bounds must be finite numbers (seconds since "
+                    "1970 on a date-time axis) or, on a date-time axis, ISO 8601 strings; omit a "
+                    "bound for unbounded."
+                )
+            ),
+        ] = None,
+        max_intervals: Annotated[
+            int, Field(ge=0, description="Max violation intervals listed per failing row.")
+        ] = DEFAULT_MAX_INTERVALS,
+        max_rows: Annotated[
+            int, Field(ge=1, description="Max rows returned (errors, then failures, then passes).")
+        ] = DEFAULT_MAX_ROWS,
+        include_snippet: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Include a pytest file reproducing the returned rows (structured field "
+                    "'snippet')."
+                )
+            ),
+        ] = False,
+        time_limit: Annotated[
+            float,
+            Field(
+                gt=0,
+                allow_inf_nan=False,
+                description=(
+                    "Deadline in seconds for the whole call, counted from its start and "
+                    "including fetching and reading the files (default 60). When reached, "
+                    "finished rows are returned and the rest listed in 'not_completed'."
+                ),
+            ),
+        ] = DEFAULT_TIME_LIMIT,
+    ) -> Annotated[CallToolResult, CompareResult]:
+        ignored: list[str] = []
+        paths = root_paths(roots, ignored)
+        gate = PublishGate()
+        return await run_off_loop(
+            lambda token: compare_signals_impl(
+                reference_path,
+                test_path,
+                paths,
+                columns=columns,
+                pairs=pairs,
+                header_line=header_line,
+                test_header_line=test_header_line,
+                tolerances=tolerances,
+                column_tolerances=column_tolerances,
+                x_range=x_range,
+                max_intervals=max_intervals,
+                max_rows=max_rows,
+                include_snippet=include_snippet,
+                root_notes=ignored,
+                time_limit=time_limit,
+                cancel=token,
+                network=network,
+                gate=gate,
+            ),
+            gate,
+        )
+
+    @server.tool(
+        name="plot_signals",
+        title="Plot one CSV signal comparison (funnel)",
+        description=plot_description(config),
+        annotations=plot,
     )
+    async def plot_signals(
+        reference_path: Annotated[str, Field(description=REFERENCE_HELP)],
+        column: Annotated[
+            str,
+            Field(
+                min_length=1,
+                description="The one signal column to plot (exact name; the reference column).",
+            ),
+        ],
+        roots: Roots,
+        test_path: Annotated[
+            str | None,
+            Field(
+                description="Path (or https URL) of the test CSV file (default: the reference file)."
+            ),
+        ] = None,
+        test_column: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                description="Test column to plot against column (exact name; default: column).",
+            ),
+        ] = None,
+        header_line: Annotated[int, Field(ge=1, description=HEADER_LINE_HELP)] = 1,
+        test_header_line: Annotated[
+            int | None, Field(ge=1, description=TEST_HEADER_LINE_HELP)
+        ] = None,
+        tolerance: Annotated[
+            ToleranceSet | None,
+            Field(
+                description=(
+                    "One tolerance set: optional 'label' and any of atolx, atoly, ltolx, ltoly, "
+                    "rtolx, rtoly (same as one entry of compare_signals 'tolerances'). Omit for "
+                    "the library default (rtoly = 0.002, no time tolerance)."
+                )
+            ),
+        ] = None,
+        x_range: Annotated[
+            XRange | None,
+            Field(
+                description=(
+                    "Time window {lo, hi} to compare and show; bounds must be finite numbers or, "
+                    "on a date-time axis, ISO 8601 strings; omit a bound for unbounded."
+                )
+            ),
+        ] = None,
+        output_path: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Local file to write (never a URL): '.svg' (document) or '.png', inside a "
+                    "workspace root or the server's configured output directory. The directory "
+                    "must exist. Omit for the inline preview only."
+                )
+            ),
+        ] = None,
+        overwrite: Annotated[
+            bool, Field(description="Replace output_path if it already exists.")
+        ] = False,
+        max_intervals: Annotated[
+            int, Field(ge=0, description="Max violation intervals listed in the result row.")
+        ] = DEFAULT_MAX_INTERVALS,
+        time_limit: Annotated[
+            float,
+            Field(
+                gt=0,
+                allow_inf_nan=False,
+                description=(
+                    "Deadline in seconds for the whole call, counted from its start: fetching "
+                    "and reading the files, the comparison and rendering (default 60). When "
+                    "reached, the call fails and nothing is written."
+                ),
+            ),
+        ] = DEFAULT_TIME_LIMIT,
+    ) -> Annotated[CallToolResult, PlotResult]:
+        ignored: list[str] = []
+        paths = root_paths(roots, ignored)
+        output_dirs = configured_output_dirs()
+        gate = PublishGate()
+        return await run_off_loop(
+            lambda token: plot_signals_impl(
+                reference_path,
+                test_path,
+                paths,
+                column=column,
+                test_column=test_column,
+                header_line=header_line,
+                test_header_line=test_header_line,
+                tolerance=tolerance,
+                x_range=x_range,
+                output_path=output_path,
+                overwrite=overwrite,
+                max_intervals=max_intervals,
+                root_notes=ignored,
+                output_dirs=output_dirs,
+                time_limit=time_limit,
+                cancel=token,
+                gate=gate,
+                network=network,
+            ),
+            gate,
+        )
+
+    return server
+
+
+#: The server of a plain start (network access off); :func:`main` builds
+#: its own from the start-up options.
+mcp = build_server()
 
 
 def _arg_parser() -> argparse.ArgumentParser:
@@ -1293,8 +1563,156 @@ def _arg_parser() -> argparse.ArgumentParser:
             "Needed for writing only when the client declares no workspace roots."
         ),
     )
+    net = parser.add_argument_group(
+        "reading files from URLs (off by default)",
+        "With network access enabled, the tools also accept public https URLs in place of "
+        "input paths; each URL is fetched once per server process and cached until it exits.",
+    )
+    net.add_argument(
+        ALLOW_NETWORK_OPTION,
+        action="store_true",
+        help=(
+            "Allow fetching public https URLs (any public host unless --allow-host is "
+            f"given). Also enabled by ${ALLOW_NETWORK_ENV}=1."
+        ),
+    )
+    net.add_argument(
+        ALLOW_HOST_OPTION,
+        action="append",
+        default=[],
+        metavar="HOST",
+        help=(
+            "Allow fetching from this host name only (exact, no wildcards; repeatable; "
+            f"implies {ALLOW_NETWORK_OPTION}). Also read from ${ALLOW_HOSTS_ENV} "
+            "(comma-separated). Recommended: a model-chosen URL can carry conversation "
+            "data in its query string."
+        ),
+    )
+    net.add_argument(
+        MAX_DOWNLOAD_OPTION,
+        type=str,
+        default=None,
+        metavar="MB",
+        help=(
+            f"Size cap per fetched file in MB, after decompression (default "
+            f"{DEFAULT_MAX_DOWNLOAD_MB:g}). Also ${MAX_DOWNLOAD_ENV}."
+        ),
+    )
+    net.add_argument(
+        FETCH_TIMEOUT_OPTION,
+        type=str,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            f"Timeout for a whole fetch, redirects included (default "
+            f"{DEFAULT_FETCH_TIMEOUT:g}, at most {MAX_FETCH_TIMEOUT:g}); never later than "
+            f"the call's time_limit. Also ${FETCH_TIMEOUT_ENV}."
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
+
+
+#: Environment variables of the network options (besides ALLOW_NETWORK_ENV).
+ALLOW_HOSTS_ENV = "SIMTEST_FUNNEL_MCP_ALLOW_HOSTS"
+MAX_DOWNLOAD_ENV = "SIMTEST_FUNNEL_MCP_MAX_DOWNLOAD_MB"
+FETCH_TIMEOUT_ENV = "SIMTEST_FUNNEL_MCP_FETCH_TIMEOUT"
+
+_TRUE = ("1", "true", "yes", "on")
+_FALSE = ("0", "false", "no", "off", "")
+
+
+def parse_allow_host(entry: str) -> str:
+    """Validate and normalise one ``--allow-host`` entry; ``ValueError`` if
+    it is not a plain host name or IP literal."""
+    raw = entry.strip()
+    hint = "give a host name such as previous-runs-api.open-meteo.com"
+    if not raw:
+        raise ValueError(f"{ALLOW_HOST_OPTION}: empty host name; {hint}")
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    bad = next((c for c in ("://", "/", "*", "@", "?", "#", " ") if c in raw), None)
+    if bad is None and ":" in raw:
+        try:
+            normalise_host(raw)
+            import ipaddress
+
+            ipaddress.ip_address(raw)
+        except (FetchError, ValueError):
+            bad = ":"  # a port
+    if bad is not None:
+        what = {
+            "://": "a scheme", "/": "a path", "*": "a wildcard", "@": "user info",
+            ":": "a port",
+        }.get(bad, f"{bad!r}")
+        raise ValueError(f"{ALLOW_HOST_OPTION} {entry!r} contains {what}; {hint}")
+    try:
+        return normalise_host(raw)
+    except FetchError as exc:
+        raise ValueError(f"{ALLOW_HOST_OPTION} {entry!r}: {exc}; {hint}") from None
+
+
+def _positive(value: str, option: str, env: str, maximum: float | None = None) -> float:
+    try:
+        number = float(value)
+    except ValueError:
+        number = float("nan")
+    if not (number > 0 and number != float("inf")) or (maximum is not None and number > maximum):
+        limit = f" and at most {maximum:g}" if maximum is not None else ""
+        raise ValueError(
+            f"{option} / {env} must be a positive number{limit}, got {value!r}"
+        )
+    return number
+
+
+def parse_network_config(
+    allow_network: bool,
+    allow_hosts: Sequence[str],
+    max_download_mb: str | None,
+    fetch_timeout: str | None,
+    environ: dict[str, str] | os._Environ[str],
+) -> FetchConfig:
+    """The network configuration from the options and the environment.
+
+    Hosts from both are united; for the numbers the command line wins.
+    Raises ``ValueError`` naming the option or variable at fault.
+    """
+    env_flag = environ.get(ALLOW_NETWORK_ENV)
+    enabled = allow_network
+    if env_flag is not None:
+        v = env_flag.strip().lower()
+        if v in _TRUE:
+            enabled = True
+        elif v not in _FALSE:
+            raise ValueError(
+                f"{ALLOW_NETWORK_ENV}={env_flag!r} is not recognised; use one of "
+                f"{', '.join(_TRUE)} to enable or {', '.join(repr(f) for f in _FALSE)} to "
+                "disable network access"
+            )
+    env_hosts = [h for h in environ.get(ALLOW_HOSTS_ENV, "").split(",") if h.strip()]
+    hosts: list[str] = []
+    for entry in [*allow_hosts, *env_hosts]:
+        h = parse_allow_host(entry)
+        if h not in hosts:
+            hosts.append(h)
+    if hosts:
+        enabled = True
+    mb_raw = max_download_mb if max_download_mb is not None else environ.get(MAX_DOWNLOAD_ENV)
+    mb = (
+        DEFAULT_MAX_DOWNLOAD_MB if mb_raw is None or not mb_raw.strip()
+        else _positive(mb_raw, MAX_DOWNLOAD_OPTION, MAX_DOWNLOAD_ENV)
+    )
+    to_raw = fetch_timeout if fetch_timeout is not None else environ.get(FETCH_TIMEOUT_ENV)
+    timeout = (
+        DEFAULT_FETCH_TIMEOUT if to_raw is None or not to_raw.strip()
+        else _positive(to_raw, FETCH_TIMEOUT_OPTION, FETCH_TIMEOUT_ENV, MAX_FETCH_TIMEOUT)
+    )
+    return FetchConfig(
+        allow_network=enabled,
+        allow_hosts=tuple(hosts),
+        max_download_mb=mb,
+        fetch_timeout=timeout,
+    )
 
 
 def parse_output_dirs(cli: Sequence[str], env: str | None) -> list[Path]:
@@ -1331,7 +1749,40 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
     _output_dirs[:] = dirs
-    mcp.run("stdio")
+    try:
+        config = parse_network_config(
+            args.allow_network, args.allow_host, args.max_download_mb, args.fetch_timeout,
+            os.environ,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    if not config.allow_network:
+        mcp.run("stdio")
+        return
+    network = Network.create(config)
+    _install_sigterm_cleanup(network)
+    try:
+        build_server(network).run("stdio")
+    finally:
+        if network.cache is not None:
+            network.cache.cleanup()
+
+
+def _install_sigterm_cleanup(network: Network) -> None:
+    """On POSIX, make SIGTERM remove the URL cache, then terminate as the
+    default action would (``atexit`` does not run on a signal, and raising
+    ``SystemExit`` does not stop the server: its stdin reader thread keeps
+    the interpreter alive)."""
+    if not hasattr(signal, "SIGTERM") or sys.platform == "win32":
+        return
+
+    def on_sigterm(signum: int, frame: object) -> None:
+        if network.cache is not None:
+            network.cache.cleanup()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    signal.signal(signal.SIGTERM, on_sigterm)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,18 @@ state of `python/simtest-funnel-mcp/src/simtest_funnel_mcp/`, assuming
   `mcp-server` and `mcp-plots` deltas relax exactly these points, and only
   when network access is enabled (see "Conflicts with existing specs").
 
+Facts checked again during implementation (2026-11-22): the sample request
+of task 7.1 answered `200`, `text/csv; charset=utf-8`, 12 226 bytes, 360
+rows, the three-line preamble (grid point `59.36731,18.0,24.0`) and the
+header on line 4, as assumed. With curl's `--compressed` (which offers
+`deflate, gzip, br, zstd`) the server chose `Content-Encoding: deflate`;
+the fetcher asks for `gzip` only and a live fetch with it (opt-in test,
+`SIMTEST_FUNNEL_LIVE=1`, run once) returned the same SHA-256 as the bundled
+copy. Open-Meteo's licence page lists ECMWF forecasts under CC-BY and
+requires a link and an indication of changes; its terms page limits the
+free API to non-commercial use and fewer than 10,000 calls a day, 5,000 an
+hour and 600 a minute.
+
 Facts checked on 2026-11-22 against the live service (two one-day requests
 and one 15-day request, `models=ecmwf_ifs` and `ecmwf_ifs025`): the Previous
 Runs API answers `200`, `Content-Type: text/csv; charset=utf-8`,
@@ -128,11 +140,15 @@ No new installed package. A small module `fetch.py` uses:
    `Accept: text/csv, text/plain;q=0.9, */*;q=0.1`, `Accept-Encoding: gzip`,
    `Connection: close`; nothing else. Redirects are handled by the module
    (decision 4), not by the library.
-6. The body is read with `response.read1(65536)` (or `read(65536)`) in a
-   loop, decompressed incrementally with
-   `zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)` using `max_length` so
-   that no step can expand beyond the remaining allowance, hashed with
-   `hashlib.sha256` and written to the temporary file as it arrives.
+6. The body is read with `response.read1(65536)` in a loop, decompressed
+   incrementally with `zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)` using
+   `max_length` = min(64 kB, remaining allowance + 1), so that no step
+   expands more than 64 kB or past the cap (implementation note: bounding a
+   step only by the remaining allowance let one step expand ~20 MB; the
+   gzip-bomb test measured a 37 MB peak, now well under 8 MB), hashed with
+   `hashlib.sha256` and written to the temporary file as it arrives. A body
+   shorter than its `Content-Length` (which `read1` reports only as an
+   empty read) and a truncated gzip stream are errors.
 
 Alternative: `httpx2` (already installed). It can pin the address (request
 to the IP with a `Host` header and an `sni_hostname` extension) and ignore
@@ -149,7 +165,12 @@ With `ipaddress`: an address is accepted only if `ip.is_global` is true and
 it is not multicast. Before that, IPv6 forms that embed an IPv4 address
 are unwrapped and the IPv4 address is checked instead: IPv4-mapped
 (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`), 6to4
-(`2002::/16`) and Teredo (`2001::/32`, refused outright). `is_global` is
+(`2002::/16`) and Teredo (`2001::/32`, refused outright). Implementation
+note: the local-use NAT64 prefix `64:ff9b:1::/48` is refused outright too
+(where its IPv4 address sits depends on the local prefix length), and so
+are the deprecated IPv4-compatible `::/96` and IPv4-translated
+`::ffff:0:0:0/96` forms, because Python's `is_global` is true for
+`::a00:1` (= `::10.0.0.1`). `is_global` is
 false for loopback, RFC 1918, link-local (`169.254.0.0/16` including the
 metadata address, `fe80::/10`), unique-local `fc00::/7`, CGNAT
 `100.64.0.0/10`, unspecified, reserved, benchmarking and documentation
@@ -194,19 +215,27 @@ internal addresses. Resolution failure is its own error.
   reads) `fetch_timeout` (30 s), so a default call (60 s) keeps at least
   30 s for reading and comparing.
 - Effective fetch deadline = `min(start + fetch_timeout, call deadline)`.
-  Before every blocking operation the socket timeout is set to
-  `min(remaining, 1.0)` seconds; a socket timeout with time remaining and
-  no cancellation is retried only for the connect step, otherwise it ends
-  the fetch (we do not resume a half-read TLS record). The 1 s slice bounds
-  how long a stalled socket can delay noticing cancellation.
-- Between reads the call's `CancelToken` and the deadline are checked.
+- **Changed during implementation:** instead of 1 s socket slices, a
+  watchdog thread per fetch checks the call's `CancelToken` and the
+  deadline every 50 ms and shuts the socket down when either trips, so a
+  blocked handshake or read returns at once and the fetch fails with the
+  matching message. Reason: `http.client` reads through a buffered
+  `socket.makefile()` object that refuses every further read after one
+  socket timeout ("cannot read from timed out object"), so a 1 s slice
+  would have turned any 1 s pause of the sender into a failed fetch. The
+  socket timeout is set to the remaining time as a backstop. Connecting is
+  non-blocking with `select` in 50 ms steps (10 s per address), checking
+  the token and deadline each step. The token and deadline are also
+  checked between reads.
   `describe_signals` has no `time_limit` argument; its fetch is bounded by
   `fetch_timeout` only (design choice; alternative: add `time_limit` to
   `describe_signals` too — more surface for little gain, since describing a
   local file is fast).
 - `describe_signals` becomes async and runs through `run_off_loop` like the
   other two tools so that cancellation reaches its fetch (spec "Cancellation
-  stops a fetch"). Its local-file behaviour is unchanged.
+  stops a fetch"). Its local-file behaviour is unchanged. All three tools
+  pass a `PublishGate` to `run_off_loop`; the cache commits an entry under
+  that gate (decision 6).
 
 ### 6. Process-lifetime cache (owner decision 3; layout is a design choice, not yet confirmed by the owner)
 
@@ -238,15 +267,23 @@ internal addresses. Resolution failure is its own error.
   time of evicted entries), otherwise the call fails "content of <url>
   changed during this server process (sha256 A then B); restart the server
   to use the new content". This keeps the owner's guarantee (same URL,
-  same content within one process) without unbounded disk use.
+  same content within one process) without unbounded disk use. An
+  unchanged refetched copy keeps its first fetch time, so repeated calls
+  give identical results. Copies in use by a running call (between fetch
+  and the end of reading) are pinned and never evicted.
   Alternative: no bound (simpler; a long session with many large URLs
   could fill the temp disk) or refusing new URLs when full (surprising).
-- Removal: `atexit` handler `shutil.rmtree(dir, ignore_errors=True)`; on
-  POSIX a `SIGTERM` handler (installed in `main()` only when network access
-  is enabled) raises `SystemExit` in the main thread so `atexit` runs;
-  `SIGINT` already raises `KeyboardInterrupt`; end of stdin ends
-  `mcp.run` normally. On Windows, closing the console or `TerminateProcess`
-  skips `atexit`.
+- Removal: `atexit` handler `shutil.rmtree(dir, ignore_errors=True)`, and
+  `main()` removes the directory again when `mcp.run` returns (end of
+  stdin). On POSIX a `SIGTERM` handler (installed in `main()` only when
+  network access is enabled) removes the directory, restores the default
+  action and sends SIGTERM to the process again, so it ends as a plain
+  SIGTERM would. **Changed during implementation:** raising `SystemExit`
+  from the handler (as first planned) does not stop the server, because the
+  stdio transport's stdin reader thread keeps the interpreter alive; the
+  subprocess test hung until killed. `SIGINT` already raises
+  `KeyboardInterrupt`. On Windows, closing the console or `TerminateProcess`
+  skips `atexit`. After `cleanup()` the cache refuses new fetches.
 - Leftovers (`SIGKILL`, crash, power loss, Windows termination): the
   directory stays in the system temporary directory until the OS cleans it
   (systemd-tmpfiles, macOS periodic cleanup, Windows Storage Sense) or the
@@ -283,8 +320,10 @@ limit (the MCP client serialises most calls anyway).
 - `header_line` / `test_header_line` apply to the fetched file exactly as
   to a local file; `pairs` with `test_path` omitted reuse the reference URL
   (one fetch, one read).
-- Order in `compare_signals`: start the `TimeLimit`, fetch/read the
-  reference, then the test (sequential; the second often hits the cache).
+- Order in `compare_signals`: start the `TimeLimit`, check both inputs
+  (scheme, credentials, network setting, roots for local paths) before
+  anything is fetched or read, then fetch/read the reference, then the test
+  (sequential; the second often hits the cache).
   A fetch error fails the call (there is no data to give rows for), unlike
   the per-row errors of the comparison.
 - `plot_signals`: `output_path` that matches `is_url` is refused with
@@ -326,38 +365,60 @@ modify the environment, and the private cache is server-internal state.
 result within a process). Since tools are registered at import time,
 `main()` sets `open_world_hint` on the three registered tools' annotations
 after parsing the options and before `mcp.run` (or registration moves into
-a `build_server(config)` function; implementation detail). Instructions and
+a `build_server(config)` function; implementation detail). Implemented as
+`build_server(network)`: the module-level `mcp` is `build_server()` (network
+off, exactly the previous texts and annotations), and `main()` builds its
+own server only when network access is enabled. Instructions and
 descriptions are generated from the configuration the same way: with
 network on they say "local paths or https URLs" and list allowed hosts
 (at most 10, then "and N more"); with network off they say URLs need
 `--allow-network`. The server instructions' "local CSV files ... Read-only
 and stateless" wording changes accordingly.
 
-### 11. Snippets for URL inputs (design choice, not yet confirmed by the owner)
+### 11. Snippets for URL inputs (decided by the owner on 2026-11-22)
 
 The snippet targets CI, where the URL may change, be rate-limited or be
-unreachable, so it never fetches. For each URL input it writes
+unreachable, so by default it never fetches. For each URL input it writes
 
 ```python
-# REFERENCE was fetched from
+# REFERENCE was fetched by the server from
 #   https://previous-runs-api.open-meteo.com/v1/forecast?...
-# on 2026-11-22T14:39:26Z (12226 bytes). Save a copy next to the other data:
-#   curl -fLo forecast.csv '<url>'
-REFERENCE = DATA_ROOT / "forecast.csv"
-REFERENCE_SHA256 = "3f2a9c1e…"
+# on 2026-11-22T14:39:26Z (12226 bytes). The tests read a local copy, 'forecast.csv' under
+# DATA_ROOT, and check its SHA-256; they never use the network unless
+# SIMTEST_FUNNEL_DOWNLOAD=1 is set, which downloads a missing copy once (then commit it).
+REFERENCE = DATA_ROOT / 'forecast.csv'
+REFERENCE_URL = 'https://previous-runs-api.open-meteo.com/v1/forecast?...'
+REFERENCE_SHA256 = '3f2a9c1e...'
+REFERENCE_SIZE = 12226
 ```
 
-and a module-level check that fails (not skips) with the URL, the expected
-path, the expected and actual SHA-256 and the `curl` command when the file
-is missing or differs. The local name is the URL's last path segment,
-sanitised to `[A-Za-z0-9._-]`, with `.csv` appended if it has no
-extension, or `url-<first 8 hex of the URL hash>.csv` when empty; when the
-reference and test names collide for different URLs, both get a `-<first
-8 hex of the content hash>` suffix. One URL used for both sides is one file.
-Alternatives: embed the URL and download in the test (needs network in CI,
-breaks when the content changes, and would need its own address checks) or
-an opt-in download behind an environment variable (more code in every
-snippet for a rare case; the curl line covers it).
+and a check run at the start of every case (`_check_copies()`, cached once
+it succeeded) that **fails** (not skips) with the URL, the expected path,
+the expected SHA-256 and size and the name of the environment variable when
+the copy is missing, and with the expected and actual SHA-256 when it
+differs.
+
+Owner decision (replacing the earlier "curl command in a comment"): the
+snippet contains a small, standard-library, opt-in download step for local
+development. Only when `SIMTEST_FUNNEL_DOWNLOAD=1` is set and the copy is
+missing, it downloads the URL with `urllib` (https only, also for redirects;
+a `User-Agent` of `simtest-funnel-snippet`; at most the recorded size, more
+fails; 60 s timeout) into a temporary file next to the copy, and keeps it
+only when its SHA-256 equals the recorded one; then the normal check runs.
+A changed source fails saying the data behind the URL differs from what was
+compared and leaves no file; an existing copy is never replaced and no
+request is made for it. Without the variable no network code runs. The
+developer commits the downloaded file; the snippet needs no edit. (Unlike
+the server, the opt-in download uses the developer's own `urllib` setup,
+proxies included: it runs on their machine at their explicit request.)
+
+The local name is the URL's last path segment, sanitised to
+`[A-Za-z0-9._-]`, with `.csv` appended if it has no extension, or
+`url-<first 8 hex of the URL hash>.csv` when empty; when the reference and
+test names collide for different URLs, both get a `-<first 8 hex of the
+content hash>` suffix. One URL used for both sides is one file. The code is
+kept in one section of `snippet.py` (`DOWNLOAD_ENV`, `_URL_BLOCK`,
+`_URL_CHECK`, `url_local_name`) so the policy can change in one place.
 
 ### 12. Sample and walkthrough details (design choice, not yet confirmed by the owner)
 
@@ -396,7 +457,15 @@ snippet for a rare case; the curl line covers it).
 - The README's numbers (shares outside the tube per pair and tube) are
   computed from the bundled file during implementation and pinned by a
   test; they will differ somewhat from the hand trial in the proposal
-  (different model and dates).
+  (different model and dates). Result on the bundled file (points outside
+  the tube of 360; `tests/test_mcp_examples.py` parses the README table):
+  ±2 °C: day 1 pass 0 (0.0 %), day 3 fail 38 (10.6 %), day 5 fail 84
+  (23.3 %); ±2 °C ±3 h: day 1 pass 0, day 3 fail 14 (3.9 %), day 5 fail 47
+  (13.1 %).
+- The walkthrough's calls are written as ```` ```jsonc ```` blocks headed
+  by a `// tool_name` comment, which the walkthrough test parses; this also
+  keeps the existing README test (exactly one ```` ```json ```` block with
+  `"pairs"`, in the CSV-dialect section) valid without changing it.
 
 ### 13. Tests offline (design choice, not yet confirmed by the owner)
 
@@ -413,6 +482,9 @@ snippet for a rare case; the curl line covers it).
   environment, DNS rebinding resolver, certificate for another name,
   concurrent single flight, cancellation mid-download, cache cleanup in a
   subprocess on stdin close and SIGTERM).
+- The stdio subprocess tests start the real `main()` through a test-only
+  launcher (`tests/net_server.py`) that swaps in the test resolver, address
+  policy and CA; there is still no production switch.
 - An optional live test (`SIMTEST_FUNNEL_LIVE=1`) fetches the documented
   Open-Meteo URL and checks the header line and columns (not the bytes:
   the API may reprocess archives).

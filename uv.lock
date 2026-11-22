@@ -1691,6 +1691,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pillow" },
     { name = "simtest-funnel" },
+    { name = "truststore" },
 ]
 
 [package.metadata]
@@ -1702,6 +1703,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2" },
     { name = "pillow", specifier = ">=9" },
     { name = "simtest-funnel", editable = "crates/simtest-funnel-python" },
+    { name = "truststore", specifier = ">=0.10" },
 ]
 
 [[package]]
@@ -1717,6 +1719,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "cryptography" },
     { name = "maturin" },
     { name = "mypy" },
     { name = "pandas-stubs" },
@@ -1734,6 +1737,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cryptography" },
     { name = "maturin", specifier = ">=1.13.1" },
     { name = "mypy", specifier = ">=1.8" },
     { name = "pandas-stubs" },

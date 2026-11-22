@@ -67,6 +67,14 @@ class SignalFile:
     fraction_digits: int = 0
     #: Preamble hints for a read that succeeded but looks implausible.
     hints: tuple[str, ...] = field(default=())
+    #: What results and messages call the file: the URL for a fetched file
+    #: (whose local cache path is never shown), else ``None`` (the path).
+    display: str | None = None
+
+    @property
+    def name(self) -> str:
+        """The file's name in results and messages (path or URL)."""
+        return self.display if self.display is not None else str(self.path)
 
     @property
     def row_count(self) -> int:
@@ -222,12 +230,21 @@ def preamble_hint(
 # --------------------------------------------------------------------------
 
 
-def load_csv(path: Path, header_line: int = 1, *, arg: str = "header_line") -> SignalFile:
+def load_csv(
+    path: Path, header_line: int = 1, *, arg: str = "header_line", display: str | None = None
+) -> SignalFile:
     """Load ``path``; raise :class:`SignalFileError` if it cannot be used.
 
     ``arg`` names the header line argument in hints (``header_line`` or
-    ``test_header_line``).
+    ``test_header_line``). ``display`` replaces the path in messages and
+    results (the URL of a fetched file).
     """
+    if display is not None:
+        try:
+            sf = load_csv(path, header_line, arg=arg)
+        except SignalFileError as exc:
+            raise SignalFileError(str(exc).replace(str(path), display)) from None
+        return _replace(sf, display=display)
     if header_line < 1:
         raise SignalFileError(f"{path}: {arg} must be >= 1, got {header_line}")
     if not path.exists():

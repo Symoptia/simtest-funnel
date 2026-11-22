@@ -7,8 +7,12 @@ local CSV files with the funnel (tolerance-tube) algorithm of
 [LBNL Funnel](https://github.com/lbl-srg/funnel).
 
 The server reads the files itself, so raw samples never enter the model's
-context. It is stateless: every call names the files it reads, and no
-network connection is opened. `describe_signals` and `compare_signals` are
+context. It is stateless: every call names the files it reads, and by
+default no network connection is opened. Started with `--allow-network`
+(or `--allow-host HOST`), it also reads public `https://` URLs (see
+[Reading files from URLs](#reading-files-from-urls)); a worked example is
+[Was the forecast made N days ahead close enough?](#example-was-the-forecast-made-n-days-ahead-close-enough).
+`describe_signals` and `compare_signals` are
 read-only; `plot_signals` writes exactly the plot file it is given (and
 nothing at all without `output_path`), and only inside a workspace root
 declared by the client or an output directory configured at start-up (see
@@ -51,7 +55,7 @@ by exact name or glob pattern (`*`, `?`, `[...]`), e.g.
 | `max_intervals` | 5 | Violation intervals listed per failing row (largest deviation first) |
 | `max_rows` | 100 | Rows returned (errors, then failures, then passes); totals always cover all rows |
 | `include_snippet` | false | Add a pytest file reproducing the returned rows (for CI), in the structured field `snippet` |
-| `time_limit` | 60 | Deadline in seconds for the whole call, counted from its start, reading the files included (positive); see [Time limit and cancellation](#time-limit-and-cancellation) |
+| `time_limit` | 60 | Deadline in seconds for the whole call, counted from its start, fetching (URLs) and reading the files included (positive); see [Time limit and cancellation](#time-limit-and-cancellation) |
 
 The result has one row per (column, tolerance set) with verdict
 (`pass` / `fail` / `error`), the library status code, points outside the
@@ -133,7 +137,8 @@ output directory (below); a relative `output_path` is taken relative to the
 first workspace root, else the first output directory; the directory must
 already exist (none is created); a symbolic link must point to a file with
 the same extension; an existing file is refused unless `overwrite=true`.
-These checks run before any CSV file is read. The file is written only
+These checks run before any CSV file is read or any URL fetched; a URL as
+`output_path` is refused. The file is written only
 after rendering succeeded, under a temporary name in the target directory,
 and moved into place (atomically replacing an existing file with
 `overwrite=true`; never replacing one without it) only if the call is
@@ -174,8 +179,9 @@ a nearly noise-free signal with a large time tolerance (`rtolx`/`atolx`)
 can take much longer.
 
 - `time_limit` (seconds, default 60) is a deadline for the whole call,
-  counted from its start: reading the CSV files counts against it (and,
-  for `plot_signals`, rendering). Comparisons start only while time
+  counted from its start: fetching URL inputs and reading the CSV files
+  count against it (and, for `plot_signals`, rendering); a fetch is stopped
+  at the deadline. Comparisons start only while time
   remains, and a running one stops when the limit is reached. Reading and
   rendering are not interrupted, so a call can overrun the limit by the
   time they take.
@@ -332,6 +338,220 @@ steep edges), consider an x tolerance such as atolx (time units)
 "1 % in y, 0.5 s in x" is `{"rtoly": 0.01, "atolx": 0.5}` (or `ltoly` for
 1 % of the local value).
 
+## Reading files from URLs
+
+Network access is **off by default**: a plain start reads local files only,
+opens no network connection and creates no file or directory besides the
+plot files it is asked for. A URL argument is then refused with a message
+naming `--allow-network` and `SIMTEST_FUNNEL_MCP_ALLOW_NETWORK`.
+
+When enabled at start-up, `describe_signals`, `compare_signals` and
+`plot_signals` accept a public `https://` URL wherever they accept an input
+path (`path`, `reference_path`, `test_path`); `output_path` stays a local
+path. A fetched file is read exactly like a local one (`header_line`,
+`pairs`, date-time time column).
+
+| Option | Environment variable | Default |
+| --- | --- | --- |
+| `--allow-network` | `SIMTEST_FUNNEL_MCP_ALLOW_NETWORK` (`1`/`true`/`yes`/`on`, or `0`/`false`/`no`/`off`/empty; anything else stops the server at start-up) | off |
+| `--allow-host HOST` (repeatable; implies `--allow-network`) | `SIMTEST_FUNNEL_MCP_ALLOW_HOSTS` (comma-separated; united with the options) | any public host |
+| `--max-download-mb MB` | `SIMTEST_FUNNEL_MCP_MAX_DOWNLOAD_MB` | 20 (1 MB = 1,000,000 bytes) |
+| `--fetch-timeout SECONDS` (at most 600) | `SIMTEST_FUNNEL_MCP_FETCH_TIMEOUT` | 30 |
+
+For the numbers the command line wins over the environment. Prefer
+`--allow-host`: the model chooses the URLs, and a URL can carry data from
+the conversation in its query string to whatever host it names. Host
+entries are exact host names (case-insensitive, IDNA; no wildcards,
+subdomains not included, no scheme, port or path). Registration examples:
+
+```bash
+claude mcp add simtest-funnel -- uvx simtest-funnel-mcp --allow-host previous-runs-api.open-meteo.com
+```
+
+```json
+{
+  "mcpServers": {
+    "simtest-funnel": {
+      "command": "uvx",
+      "args": ["simtest-funnel-mcp", "--allow-host", "previous-runs-api.open-meteo.com"],
+      "env": { "SIMTEST_FUNNEL_MCP_ALLOW_HOSTS": "raw.githubusercontent.com" }
+    }
+  }
+}
+```
+
+(Claude Desktop: `claude_desktop_config.json`; Claude Code: a project's
+`.mcp.json`. From a checkout, append the options after
+`"simtest-funnel-mcp"` in the `uv run` arguments.)
+
+**What is fetched, and how.**
+
+- Only `https` URLs with a host; `http`, `file` and other schemes, and URLs
+  with a user name or password, are refused (also with network access off).
+- The host is resolved once and every address must be public: loopback,
+  private (RFC 1918), link-local (including cloud metadata addresses such
+  as `169.254.169.254`), unique-local, CGNAT, multicast, unspecified,
+  reserved and documentation addresses are refused, also when embedded in
+  IPv6 forms (IPv4-mapped, NAT64, 6to4; Teredo is refused). A host with any
+  such address is refused as a whole. The connection goes to an address
+  that was checked (no second lookup), while TLS verifies the certificate
+  against the URL's host name with the operating system's trust store.
+- Redirects (at most 5) are followed only to `https` URLs, and every hop
+  is checked again (scheme, allowed hosts, addresses, certificate).
+- Only a plain `GET` is sent: no cookies, no `Authorization`, nothing from
+  `.netrc` or the environment, and a `User-Agent` naming only
+  `simtest-funnel-mcp`, its version and the project link.
+- Status 200 and CSV, plain text, generic binary or no content type, in
+  UTF-8 or ASCII, uncompressed or gzip, are accepted. An HTML page (by type
+  or first bytes) is refused with a hint to use the raw-file URL; JSON is
+  refused with a hint to ask the service for CSV (e.g. `format=csv`). Other
+  statuses fail with the status and up to 300 characters of a short text or
+  JSON body (where services such as Open-Meteo put the reason).
+- Size cap (after decompression) and fetch timeout as above; connecting
+  times out after 10 s per address. For `compare_signals` and
+  `plot_signals` the fetch counts against `time_limit` and is stopped at
+  the deadline; cancelling a call (also `describe_signals`) stops its fetch
+  at once.
+- **No proxies.** The server connects directly and ignores `HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY`, so the address check always
+  applies to the real target. Behind a proxy, download the file and pass
+  its local path (a failed connection says so).
+
+**Cache.** The first call that uses a URL fetches it; later calls in the
+same server process reuse that copy without connecting, so a URL gives the
+same content for the life of the process (restart the server to fetch it
+again; there is no refresh argument and no cache across processes). Two
+calls needing the same URL at once share one fetch. A failed, cancelled or
+timed-out fetch leaves nothing behind. Copies live in a private directory
+`simtest-funnel-mcp-*` in the system temporary directory, created on the
+first fetch and removed when the server stops (end of input, SIGTERM on
+Linux/macOS). After a crash, `SIGKILL` or a forced termination on Windows
+the directory stays until the operating system cleans its temporary
+directory or you delete it; it holds only public files the server fetched,
+readable only by your user. The cache holds at most 10 times the size cap;
+older copies are dropped and fetched again when needed, and if the content
+changed meanwhile the call fails saying so.
+
+**Results** carry, for each URL input, `path` = the URL and a `source`
+object: `url`, `final_url` (when redirected), `fetched_at` (UTC),
+`size`, `sha256` and `reused` (false for the call that fetched it). The
+text shows the URL with fetch time, size and the first 12 hex digits of the
+hash. The cache's file names are never shown.
+
+**Snippets** never fetch. For a URL input the pytest snippet reads a local
+copy, `DATA_ROOT / <name>` (the URL's last path segment, e.g.
+`forecast.csv`), and before comparing checks its SHA-256 against the one
+the server saw; the comment above names the URL and the fetch time. When
+the copy is missing or different, every case fails with the URL, the
+expected path and hash and what to do. Run the snippet once with
+`SIMTEST_FUNNEL_DOWNLOAD=1` to download a missing copy (standard library,
+`https` only, at most the recorded size, 60 s timeout; kept only if its
+SHA-256 matches, never replacing an existing file), then commit the file:
+CI then runs without network access.
+
+## Example: was the forecast made N days ahead close enough?
+
+[Open-Meteo](https://open-meteo.com/)'s Previous Runs API returns, for each
+hour, the latest model run next to the forecasts made 1 to 7 days before.
+The repository bundles one response,
+[`examples/open-meteo/stockholm-2026-11-05-to-19.csv`](../../examples/open-meteo/stockholm-2026-11-05-to-19.csv):
+Stockholm, 15 days hourly (360 rows), `temperature_2m` and its day-1, day-3
+and day-5 forecasts from ECMWF IFS HRES (`ecmwf_ifs`), times in GMT.
+[Weather data by Open-Meteo.com](https://open-meteo.com/), licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), not modified;
+see [ATTRIBUTION.md](../../examples/open-meteo/ATTRIBUTION.md).
+
+Caveats: the "actual" column is the latest model run / analysis, not
+measured station temperature; for dates in the future both columns hold
+forecasts; times are GMT. Open-Meteo's free API is for non-commercial use
+only and limited to fewer than 10,000 calls a day.
+
+The calls below use the bundled file (use its absolute path); the server
+needs no network access for them.
+
+1. Describe it. The file starts with a three-line metadata preamble, so the
+   header is on line 4:
+
+   ```jsonc
+   // describe_signals
+   {"path": "examples/open-meteo/stockholm-2026-11-05-to-19.csv", "header_line": 4}
+   ```
+
+   Result: 360 rows, time column `time` read as ISO 8601 date-times without
+   time zone (read as UTC), 2026-11-05T00:00 .. 2026-11-19T23:00, uniform
+   hourly; columns `temperature_2m (°C)` (-0.8 .. 8.8),
+   `temperature_2m_previous_day1 (°C)`, `..._previous_day3 (°C)`,
+   `..._previous_day5 (°C)`.
+
+2. Compare the latest run against each forecast, once within ±2 °C and once
+   within ±2 °C and ±3 hours (`atolx` is in seconds on a date-time axis):
+
+   ```jsonc
+   // compare_signals
+   {
+     "reference_path": "examples/open-meteo/stockholm-2026-11-05-to-19.csv",
+     "header_line": 4,
+     "pairs": [
+       {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day1 (°C)", "label": "day1"},
+       {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day3 (°C)", "label": "day3"},
+       {"reference": "temperature_2m (°C)", "test": "temperature_2m_previous_day5 (°C)", "label": "day5"}
+     ],
+     "tolerances": [
+       {"label": "2C", "atoly": 2},
+       {"label": "2C_3h", "atoly": 2, "atolx": 10800}
+     ]
+   }
+   ```
+
+   Share of points outside the tube (of 360):
+
+   | Forecast | ±2 °C | ±2 °C and ±3 h |
+   | --- | --- | --- |
+   | `day1` (made 1 day ahead) | pass, 0 of 360 (0.0 %) | pass, 0 of 360 (0.0 %) |
+   | `day3` (made 3 days ahead) | fail, 38 of 360 (10.6 %) | fail, 14 of 360 (3.9 %) |
+   | `day5` (made 5 days ahead) | fail, 84 of 360 (23.3 %) | fail, 47 of 360 (13.1 %) |
+
+   The day-1 forecast stays within 2 °C all the time. Skill drops with lead
+   time, and the time tolerance forgives forecasts that had the right
+   temperature a few hours early or late: with ±3 h, day 3 misses only
+   around a warm spell on 16 November and a cold night on 19 November.
+
+3. Plot the day-3 pair with the ±2 °C ±3 h tube (inline preview; add
+   `output_path` to save an SVG or PNG):
+
+   ```jsonc
+   // plot_signals
+   {
+     "reference_path": "examples/open-meteo/stockholm-2026-11-05-to-19.csv",
+     "header_line": 4,
+     "column": "temperature_2m (°C)",
+     "test_column": "temperature_2m_previous_day3 (°C)",
+     "tolerance": {"label": "2C_3h", "atoly": 2, "atolx": 10800}
+   }
+   ```
+
+**The same from URLs.** With the server started with
+`--allow-host raw.githubusercontent.com`, the raw repository URL of the
+sample gives the same bytes (and the same numbers) once the file is on the
+`main` branch:
+
+```text
+https://raw.githubusercontent.com/Symoptia/simtest-funnel/main/examples/open-meteo/stockholm-2026-11-05-to-19.csv
+```
+
+With `--allow-host previous-runs-api.open-meteo.com` (or `--allow-network`),
+the live request that produced the sample can be passed as
+`reference_path` instead:
+
+```text
+https://previous-runs-api.open-meteo.com/v1/forecast?latitude=59.3293&longitude=18.0686&hourly=temperature_2m,temperature_2m_previous_day1,temperature_2m_previous_day3,temperature_2m_previous_day5&models=ecmwf_ifs&start_date=2026-11-05&end_date=2026-11-19&format=csv
+```
+
+It compares the same columns; Open-Meteo may reprocess archived runs, so
+the bytes (and `source.sha256`) can differ from the bundled copy. Each
+call to the live URL counts against Open-Meteo's free-tier limits (once
+per server process, thanks to the cache).
+
 ## Registering the server
 
 ### Claude Code
@@ -382,8 +602,8 @@ or, from a checkout:
 ```
 
 Use absolute paths in tool calls. When the client declares workspace roots,
-the server refuses paths outside them and resolves relative paths against
-the first root. Only local `file://` roots (empty host or `localhost`)
+the server refuses local paths outside them and resolves relative paths
+against the first root (URLs are not affected by roots). Only local `file://` roots (empty host or `localhost`)
 are used; other roots are ignored with a note in the result.
 
 ### Where plot files may be written
