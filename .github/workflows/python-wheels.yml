@@ -191,7 +191,13 @@ jobs:
           WITH_MCP: ${{ matrix.mcp && 'true' || 'false' }}
         run: |
           for py in $SMOKE_PYTHONS; do
-            uv venv --python "$py" "smoke-$py"
+            # On Windows arm64 uv picks an emulated x86-64 interpreter by
+            # default; ask for the native one so the arm64 wheel is tested.
+            request="$py"
+            if [ "$RUNNER_OS" = Windows ] && [ "$RUNNER_ARCH" = ARM64 ]; then
+              request="cpython-$py-windows-aarch64-none"
+            fi
+            uv venv --python "$request" "smoke-$py"
             pkgs=("$GITHUB_WORKSPACE"/dist/*.whl)
             args=()
             if [ "$WITH_MCP" = true ]; then
