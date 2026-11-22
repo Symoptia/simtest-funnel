@@ -29,10 +29,12 @@ comparison before this change.
 ### Requirement: Tube built from the reference beyond the window
 
 The tube for a window SHALL be built from the reference points inside the
-window plus, on each side, every reference point whose x half-width, taken
-twice, reaches the window, and at least three further samples. Where the
-window reaches the first or last reference point there is nothing to
-extend with on that side.
+window plus, on each side, at least every point whose x half-width, taken
+twice, reaches the window and three further samples, extended until the
+corners of the extended reference give the full-range tube over the window
+(past the end of any collinear or constant run the window edge falls in).
+Where the window reaches the first or last reference point that side is
+not extended.
 
 #### Scenario: Time shift within the x tolerance at a window edge
 - **WHEN** an hourly daily cycle is compared with the same cycle 2 h late,
@@ -50,20 +52,45 @@ extend with on that side.
 - **WHEN** the window is 1 h wide (two samples) and `atolx` is 3 h
 - **THEN** both points are judged as in the full-range comparison
 
+#### Scenario: Window edge inside a collinear run
+- **WHEN** the reference is flat up to 5000, a straight ramp up to 15000,
+  flat up to 17000 and falls after that, `atolx = 5`, and the window is
+  `[10000, 10010]`
+- **THEN** the tube is built from a slice reaching left of 4990 and right
+  of 17005 but not to the data ends, and the deviations in the window
+  equal the full-range ones bit for bit
+
+#### Scenario: Run of points the corner algorithm treats as repeated
+- **WHEN** a reference at epoch-sized x sampled every ~0.02 s is 0 for 13
+  points and then 2 for a long run, `atolx = 0.5585`, `atoly = 0.0555`, and
+  the window ends 0.1185 s after the first sample
+- **THEN** the test point (first sample, y = 0.5) fails with deviation
+  about 0.0915, as in the full-range comparison
+
 ### Requirement: In-window equivalence with the full-range comparison
 
-When `rtolx` and `rtoly` are zero, every test point inside the window
-SHALL get the same verdict (inside or outside the tube) as in the same
-comparison without an x-range. Its deviation and the bounds at its x SHALL
-equal the full-range values up to floating-point rounding.
+With `rtolx = rtoly = 0` and any `atolx`, `atoly`, `ltolx`, `ltoly`, every
+test point inside the window SHALL get the same deviation, bit for bit,
+and the same verdict as without an x-range. This is exact for the corner
+construction; for loop removal it assumes each loop is cut where the curve
+crosses itself (true except in degenerate geometry), which the
+documentation SHALL state.
 
 #### Scenario: Random signals and windows
 - **WHEN** random references, shifted noisy tests on another grid, random
   `atolx`, `ltolx`, `atoly`, `ltoly` and random windows (also partly
   outside the data and narrower than the x tolerance) are compared with
   and without the window
-- **THEN** every judged point has the same verdict in both comparisons and
-  the windowed status is `Fail` exactly when one of them is outside
+- **THEN** every judged point has the same deviation, bit for bit, in
+  both comparisons and the windowed status is `Fail` exactly when one of
+  them is outside
+
+#### Scenario: Adversarial references and windows
+- **WHEN** references with long collinear runs, steps, repeated x,
+  clustered or log-uniform sampling and epoch-sized x are compared in
+  windows whose edges are samples, lie between samples inside runs, are
+  unbounded on one side or are tiny
+- **THEN** every judged deviation equals the full-range one bit for bit
 
 ### Requirement: Range-relative bases and coverage stay within the window
 
@@ -105,14 +132,18 @@ SHALL be `0` for test points outside the x-range.
 
 ### Requirement: Window cost does not grow with the record
 
-The extension SHALL be found without scanning the reference, and its size
-SHALL depend on the x tolerance and the sampling near the window, not on
-the length of the reference, except when the local x tolerance `ltolx` is
-0.5 or more, where the reference up to the data end on that side MAY be
-used.
+The extension SHALL be found by reading only the extended slice, growing
+geometrically, so its cost is proportional to the extension. For a
+reference without long collinear runs that turns less often than the x
+tolerance is wide it SHALL stay within a few half-widths of the window;
+otherwise it MAY reach the data end, as it does when `ltolx` is 0.5 or more.
 
 #### Scenario: Small window on a long record
-- **WHEN** the window `[1000000, 1000010]` (11 samples) lies in a reference
-  of 2 million samples spaced 1 apart and `atolx = 5`
-- **THEN** the tube is built from 13 samples more on each side of the
-  window
+- **WHEN** the window `[1000000, 1000010]` (11 samples) lies in a smooth
+  reference of 2 million samples spaced 1 apart and `atolx = 5`
+- **THEN** the initial extension is 13 samples on each side and the
+  final one at most 100
+
+#### Scenario: Constant reference
+- **WHEN** the reference is constant and the window lies in its middle
+- **THEN** the tube is built from the whole reference
